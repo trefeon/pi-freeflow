@@ -43,14 +43,14 @@ Optimized for deep reasoning, long-horizon coding & autonomous agentic workflows
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `muse-spark-1.2-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal → max` | ✅ |
+| `muse-spark-1.2-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal / low / medium / high / xhigh / max` | ✅ |
 | `x-preview-f-free` | Ox Alpha | **1M** (1.048.576) | **131K** (131.072) | `low / high / max` | ✅ |
 | `mimo-v2.5-free` | Xiaomi MiMo | **1M** (1.048.576) | **131K** (131.072) | `low / medium / high` | ✅ |
-| `deepseek-v4-flash-free` | DeepSeek | **1M** (1.000.000) | **384K** (384.000) | `low → max` | ❌ |
-| `laguna-s-2.1-free` | Poolside | **1M** (1.048.576) | **131K** (131.072) | `low → max` | ❌ |
-| `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `low → max` | ❌ |
-| `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `low → max` | ❌ |
-| `hy3-free` | Tencent Hunyuan | **262K** (262.144) | **262K** (262.144) | `low → max` | ❌ |
+| `deepseek-v4-flash-free` | DeepSeek | **1M** (1.000.000) | **384K** (384.000) | `low / high / max` | ❌ |
+| `laguna-s-2.1-free` | Poolside | **1M** (1.048.576) | **131K** (131.072) | `low / high / max` | ❌ |
+| `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `low / high / max` | ❌ |
+| `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `low / high / max` | ❌ |
+| `hy3-free` | Tencent Hunyuan | **262K** (262.144) | **262K** (262.144) | `low / high / max` | ❌ |
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 
 #### KiloCode Gateway (14 Models), OpenRouter Compatible
@@ -58,20 +58,22 @@ Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI alia
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `dots-3-note-preview` (`dots-studio/...:free`) | Dots Studio | **512K** (512.000) | **512K** (512.000) | `openrouter` (auto) | ✅ |
-| `step-3.7-flash` (`stepfun/...:free`) | StepFun | **262K** (262.144) | **262K** (262.144) | `openrouter` (auto) | ✅ |
-| `nemotron-3-nano-omni` (`nvidia/...:free`) | NVIDIA | **256K** (256.000) | **65K** (65.536) | `openrouter` (auto) | ✅ |
-| `nemotron-3-ultra-550b` (`nvidia/...:free`) | NVIDIA | **1M** (1.000.000) | **65K** (65.536) | `openrouter` (auto) | ❌ |
-| `nvidia/nemotron-3.5-lightning:free` | NVIDIA | **1M** (1.000.000) | **131K** (131.072) | `openrouter` (auto) | ❌ |
-| `nemotron-3-super` (`nvidia/...:free`) | NVIDIA | **262K** (262.144) | **262K** (262.144) | `openrouter` (auto) | ❌ |
-| `hy3:free` (`tencent/hy3:free`) | Tencent Hunyuan | **262K** (262.144) | **262K** (262.144) | `openrouter` (auto) | ❌ |
-| `north-mini-code` (`cohere/...:free`) | Cohere | **256K** (256.000) | **64K** (64.000) | `openrouter` (auto) | ❌ |
-| `laguna-s-2.1:free` (`poolside/...:free`) | Poolside | **1M** (1.048.576) | **131K** (131.072) | `openrouter` (auto) | ❌ |
-| `laguna-xs-2.1:free` (`poolside/...:free`) | Poolside | **262K** (262.144) | **32K** (32.768) | `openrouter` (auto) | ❌ |
-| `lfm-2.5` (`liquid/lfm-2.5-2.6b:free`) | Liquid AI | **128K** (128.000) | **32K** (32.768) | `openrouter` (auto) | ❌ |
+| `dots-3-note-preview` (`dots-studio/...:free`) | Dots Studio | **512K** (512.000) | **512K** (512.000) | `minimal…xhigh`\* | ✅ |
+| `step-3.7-flash` (`stepfun/...:free`) | StepFun | **262K** (262.144) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
+| `nemotron-3-nano-omni` (`nvidia/...:free`) | NVIDIA | **256K** (256.000) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
+| `nemotron-3-ultra-550b` (`nvidia/...:free`) | NVIDIA | **1M** (1.000.000) | **65K** (65.536) | `minimal…xhigh`\* | ❌ |
+| `nvidia/nemotron-3.5-lightning:free` | NVIDIA | **1M** (1.000.000) | **131K** (131.072) | `minimal…xhigh`\* | ❌ |
+| `nemotron-3-super` (`nvidia/...:free`) | NVIDIA | **262K** (262.144) | **262K** (262.144) | `minimal…xhigh`\* | ❌ |
+| `hy3:free` (`tencent/hy3:free`) | Tencent Hunyuan | **262K** (262.144) | **262K** (262.144) | ❌ *(none sent)* | ❌ |
+| `north-mini-code` (`cohere/...:free`) | Cohere | **256K** (256.000) | **64K** (64.000) | `minimal…xhigh`\* | ❌ |
+| `laguna-s-2.1:free` (`poolside/...:free`) | Poolside | **1M** (1.048.576) | **131K** (131.072) | `minimal…xhigh`\* | ❌ |
+| `laguna-xs-2.1:free` (`poolside/...:free`) | Poolside | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
+| `lfm-2.5` (`liquid/lfm-2.5-2.6b:free`) | Liquid AI | **128K** (128.000) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
 | `kilo-auto` (`kilo-auto/free`) | Kilo Gateway Auto | **256K** (256.000) | **10K** (10.000) | ❌ *(non-thinking)* | ❌ |
 | `openrouter` (`openrouter/free`) | OpenRouter Free | **200K** (200.000) | **65K** (65.536) | ❌ *(non-thinking)* | ✅ |
 | `content-safety` (`nvidia/...:free`) | NVIDIA | **128K** (128.000) | **8K** (8.192) | ❌ *(non-thinking)* | ✅ |
+
+\* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. hy3 accepts no reasoning parameter today.
 
 ---
 
@@ -233,7 +235,7 @@ Log rotation at 5MB. Clean, parseable, real-time HTTP lifecycle tracking.
 
 This package stays thin. It ships three things: a model catalog, a relay proxy, and a log. There is no build step and there are no runtime dependencies. Thinking and prompt normalization stay with the host (`pi-ai`).
 
-Current size: about 3.6k lines including tests. 53 tests pass, typecheck clean.
+Current size: about 4.6k lines including tests. 16 tests pass, typecheck clean.
 
 ---
 
@@ -273,7 +275,7 @@ cd pi-freeflow
 pnpm install
 
 # run all three before opening a PR
-pnpm test        # 53 tests across 12 test files
+pnpm test        # 16 tests across 2 test files
 pnpm typecheck   # tsc --noEmit, must pass clean
 pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
