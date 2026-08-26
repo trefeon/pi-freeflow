@@ -13,7 +13,10 @@ relays.local.json
 skills/
 Thumbs.db
 reference/
-test/
-scripts/
 .agents/
 skills-lock.json
+
+# BEGIN oh-my-opencode-slim worktrees
+.slim/worktrees/
+.slim/worktrees.json
+# END oh-my-opencode-slim worktrees

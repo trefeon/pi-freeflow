@@ -145,10 +145,33 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		source: KILO_MODEL_IDS.has(m.id) ? "kilo" : "opencode",
 	}));
 	setAliveCatalog(registeredCatalog);
-	pi.registerProvider(
-		"freeflow",
-		buildProviderConfig(registeredCatalog, actualPort),
-	);
+	const registerCatalog = (models: RegisteredModel[]): void => {
+
+		pi.registerProvider(
+			"freeflow",
+			buildProviderConfig(models, actualPort),
+		);
+	};
+	registerCatalog(registeredCatalog);
+	// Self-heal: if this session attached to an external daemon that later died,
+	// re-bind on the next lifecycle event so model calls recover without a restart.
+	let ensuringDaemon = false;
+	const ensureDaemon = async (): Promise<void> => {
+		if (ensuringDaemon) return;
+		ensuringDaemon = true;
+		try {
+			if (await isProxyAlive(actualPort)) return;
+			const r = await startProxy();
+			if (r.server) server = r.server;
+			if (r.port) actualPort = r.port;
+			registerCatalog(getAliveCatalog());
+			logWarn("proxy daemon was lost — re-bound locally", { port: actualPort });
+		} catch (e) {
+			logWarn("proxy daemon lost and re-bind failed", { error: String(e) });
+		} finally {
+			ensuringDaemon = false;
+		}
+	};
 
 	// 4. Background Catalog Refresh
 	// Asynchronously probe live upstreams and update the provider if alive model list changes
@@ -156,10 +179,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		.then((aliveModels) => {
 			if (aliveModels.length > 0) {
 				setAliveCatalog(aliveModels);
-				pi.registerProvider(
-					"freeflow",
-					buildProviderConfig(mergeCatalog(registeredCatalog, aliveModels), actualPort),
-				);
+				registerCatalog(mergeCatalog(registeredCatalog, aliveModels));
 				logInfo(
 					`Catalog refreshed: ${aliveModels.length} models verified active`,
 				);
@@ -173,10 +193,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
 	// 5. Register slash command
 	const commandSpec = createCommandSpec(pi, (updatedModels) => {
-		pi.registerProvider(
-			"freeflow",
-			buildProviderConfig(updatedModels, actualPort),
-		);
+		registerCatalog(updatedModels);
 	});
 	pi.registerCommand("freeflow", commandSpec);
 
@@ -201,6 +218,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	}
 
 	pi.on?.("session_start", async (_event, ctx: ExtensionContext) => {
+		await ensureDaemon();
 		const freshRelayState = resolveRelayState();
 		setStatusUi(ctx.ui);
 
@@ -231,6 +249,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	});
 
 	pi.on?.("model_select", async (event, ctx: ExtensionContext) => {
+		await ensureDaemon();
 		const freshRelayState = resolveRelayState();
 		setStatusUi(ctx.ui);
 		let provider: string | undefined;
@@ -269,8 +288,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	pi.on?.("session_shutdown", () => {
 		if (server) {
 			logInfo("shutting down proxy daemon...");
-			server.close();
+			const closing = server;
 			server = null;
+			closing.close();
+			// Node 18.2+: closeIdleConnections exists at runtime even if lib types lag
+			const closable = closing as unknown as { closeIdleConnections?: () => void };
+			closable.closeIdleConnections?.();
 			resetRateLimits();
 			logInfo("shutdown complete");
 		}

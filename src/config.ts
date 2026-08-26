@@ -50,7 +50,6 @@ export function opencodeHeaders(): Record<string, string> {
 // ── Relay and Deployment constants ──────────────────────────────────
 export const DEFAULT_RELAY_URL = "";
 export const VERCEL_API = "https://api.vercel.com";
-export const RELAY_MAX_TOKENS = 131_072;
 
 // ── Catalog & Logging constants ─────────────────────────────────────
 export const CATALOG_CACHE_TTL_MS = 86_400_000; // 24 hours — delegate to host fetchDynamicModels

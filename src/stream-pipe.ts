@@ -38,8 +38,11 @@ export function pipeUpstreamStream(
 	// relay health. Client disconnects and clean upstream ends must not.
 	let upstreamEnded = false;
 	let clientAborted = false;
-	const TERMINAL_HEAD_SCAN_BYTES = 2000;
-	const TERMINAL_TAIL_SCAN_BYTES = 2000;
+	// Terminal-marker scan carry: holds the tail of the previously scanned
+	// view so a marker split across adjacent chunks ("[DO" | "NE]") is still
+	// recognized. Longest marker is "response.completed" (18 bytes); 32
+	// gives comfortable headroom.
+	let terminalScanCarry = Buffer.alloc(0);
 
 	const sniffThinking = (chunk: Buffer | string): boolean => {
 		const s =
@@ -136,22 +139,21 @@ export function pipeUpstreamStream(
 					);
 				}
 			}
-			let strPreview: string;
-			if (typeof chunk === "string") {
-				strPreview = chunk;
-			} else if (chunk.length <= TERMINAL_HEAD_SCAN_BYTES) {
-				strPreview = chunk.toString("utf8");
-			} else {
-				// Coalesced final chunks can carry "[DONE]" well past the head —
-				// scan the tail too so healthy completions are not penalized.
-				strPreview = `${chunk.toString("utf8", 0, TERMINAL_HEAD_SCAN_BYTES)}\n${chunk.toString(
-					"utf8",
-					chunk.length - TERMINAL_TAIL_SCAN_BYTES,
-				)}`;
-			}
-			if (!hasTerminalEvent && checkTerminalEvent(strPreview)) {
+			// Always scan the FULL chunk plus the small carry from the previous
+			// view. SSE chunks are KBs at most, so includes() over everything
+			// is negligible against correctness — the removed head/tail windows
+			// are exactly what let markers buried mid-chunk or split across
+			// adjacent chunks escape and cause duplicate synthetic terminals.
+			const buf =
+				typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+			const scanBuf =
+				terminalScanCarry.length > 0
+					? Buffer.concat([terminalScanCarry, buf])
+					: buf;
+			if (!hasTerminalEvent && checkTerminalEvent(scanBuf.toString("utf8"))) {
 				hasTerminalEvent = true;
 			}
+			terminalScanCarry = Buffer.from(scanBuf.subarray(Math.max(0, scanBuf.length - 32)));
 
 			res.write(chunk);
 			const maybeFlush = res as unknown as { flush?: () => void };

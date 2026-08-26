@@ -382,11 +382,21 @@ export function createCommandSpec(
 						persist();
 						flash();
 					} else {
-						// New URL
-						const added = ensureRelay(relayState, targetToken, customLabel);
-						setRelay(true, added.url, added.label);
-						persist();
-						flash();
+						// Only treat unmatched tokens as new relays when they are absolute
+						// http(s) URLs — typos or bad indices must not become saved junk relays.
+						let parsedUrl = null;
+						try {
+							parsedUrl = new URL(targetToken);
+						} catch {}
+						const looksLikeUrl = parsedUrl && (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:");
+						if (looksLikeUrl) {
+							const added = ensureRelay(relayState, targetToken, customLabel);
+							setRelay(true, added.url, added.label);
+							persist();
+							flash();
+						} else {
+							ctx.ui.notify(`Relay '${targetToken}' not found in saved list`, "warning");
+						}
 					}
 				}
 			} else if (sub === "label" || sub === "rename") {

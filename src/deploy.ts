@@ -101,10 +101,18 @@ export async function deployVercelRelay(
 	const deadline = Date.now() + 120_000;
 
 	while (Date.now() < deadline) {
-		const s = await fetch(`${VERCEL_API}/v13/deployments/${depId}`, {
-			headers: { Authorization: `Bearer ${token}` },
-		});
-		if (s.ok) {
+		let s: Response | null = null;
+		try {
+			s = await fetch(`${VERCEL_API}/v13/deployments/${depId}`, {
+				headers: { Authorization: `Bearer ${token}` },
+			});
+		} catch (err) {
+			log(
+				"warn",
+				`Vercel deployment status poll failed, retrying: ${(err as Error).message}`,
+			);
+		}
+		if (s?.ok) {
 			const j = (await s.json()) as { readyState?: string; url?: string };
 			if (j.readyState === "READY" && j.url) {
 				const deployedUrl = `https://${j.url}`;
@@ -440,8 +448,16 @@ export async function deployDenoRelay(
 
 	while (Date.now() < deadline) {
 		await new Promise<void>((r) => setTimeout(r, 2000));
-		const s = await fetch(`${DENO_API}/revisions/${revisionId}`, { headers: auth });
-		if (!s.ok) continue;
+		let s: Response | null = null;
+		try {
+			s = await fetch(`${DENO_API}/revisions/${revisionId}`, { headers: auth });
+		} catch (err) {
+			log(
+				"warn",
+				`Deno Deploy revision status poll failed, retrying: ${(err as Error).message}`,
+			);
+		}
+		if (!s?.ok) continue;
 		info = (await s.json()) as DenoRevision;
 		if (info.status === "succeeded") break;
 		if (info.status === "failed" || info.status === "skipped") {

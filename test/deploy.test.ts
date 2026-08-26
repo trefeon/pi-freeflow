@@ -15,7 +15,7 @@ import {
 	type DeployPlatform,
 } from "../src/deploy.ts";
 
-type StubResponse = { status?: number; body?: unknown };
+type StubResponse = { status?: number; body?: unknown; reject?: string };
 type RecordedCall = { url: string; init?: RequestInit };
 
 /** Replace globalThis.fetch with a scripted responder; auto-restores after the test. */
@@ -30,6 +30,7 @@ function stubFetch(
 			typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 		calls.push({ url, init });
 		const r = responder(url, init, calls.length - 1);
+		if (r.reject) throw new Error(r.reject);
 		const status = r.status ?? 200;
 		const payload = typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? {});
 		return new Response(payload, {
@@ -339,4 +340,25 @@ test("deployVercelRelay keeps its existing contract (regression guard)", async (
 	const url = await deployVercelRelay("vercel-tok", "relay-name");
 	assert.equal(url, "https://relay-test.vercel.app");
 	assert.ok(calls.some((c) => c.init?.body && String(c.init.body).includes("api/relay.js")));
+});
+
+test("deployVercelRelay survives a transient status-poll network failure", async (t) => {
+	instantTimers(t);
+	let pollAttempts = 0;
+	const calls = stubFetch(t, (url, init) => {
+		if (url.includes("/v13/deployments/")) {
+			return pollAttempts++ === 0
+				? { reject: "getaddrinfo EAI_AGAIN api.vercel.com" }
+				: { body: { readyState: "READY", url: "relay-test.vercel.app" } };
+		}
+		if (url.includes("/v13/deployments") && init?.method === "POST") {
+			return { body: { id: "dep1", projectId: "proj1" } };
+		}
+		if (url.includes("/v9/projects/")) return { body: {} };
+		return { status: 500, body: {} };
+	});
+
+	const url = await deployVercelRelay("vercel-tok", "relay-name");
+	assert.equal(url, "https://relay-test.vercel.app");
+	assert.ok(calls.length >= 4); // create + sso patch + failed poll + successful poll
 });

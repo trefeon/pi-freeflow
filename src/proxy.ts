@@ -266,6 +266,9 @@ export function startProxy(
 							connection: "keep-alive",
 							"x-accel-buffering": "no",
 						});
+						// Kilo is fetched directly (not via the relay pool), so pass undefined:
+						// attributing kilo-side stream failures to an unrelated opencode relay
+						// would mark a healthy relay as failed.
 						pipeUpstreamStream(
 							Readable.fromWeb(
 								response.body as unknown as WebReadableStream,
@@ -273,7 +276,7 @@ export function startProxy(
 							res,
 							req,
 							reqId,
-							relayPreview.url,
+							undefined,
 						);
 					} else {
 						const data = await response.text();

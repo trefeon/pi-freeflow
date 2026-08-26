@@ -195,6 +195,9 @@ export async function relayFetch(
 		const directRes = await fetch(url, { ...opts, headers: directHeaders });
 		const directElapsed = ((Date.now() - directStart) / 1000).toFixed(1);
 		log("info", `direct fetch returned HTTP ${directRes.status} in ${directElapsed}s`, undefined, rid);
+		// lastResponse holds an unread body that would otherwise leak its socket
+		// until GC; the salvage path below still needs it, so only cancel here.
+		lastResponse?.body?.cancel().catch(() => {});
 		return directRes;
 	} catch (directErr) {
 		const directElapsed = ((Date.now() - directStart) / 1000).toFixed(1);
