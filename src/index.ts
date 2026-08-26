@@ -11,6 +11,7 @@
 import type * as http from "node:http";
 import {
 	getAliveCatalog,
+	mergeCatalog,
 	readCatalogCache,
 	refreshCatalog,
 	setAliveCatalog,
@@ -157,7 +158,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				setAliveCatalog(aliveModels);
 				pi.registerProvider(
 					"freeflow",
-					buildProviderConfig(registeredCatalog, actualPort),
+					buildProviderConfig(mergeCatalog(registeredCatalog, aliveModels), actualPort),
 				);
 				logInfo(
 					`Catalog refreshed: ${aliveModels.length} models verified active`,
