@@ -1,0 +1,55 @@
+{
+	"name": "pi-freeflow",
+	"type": "module",
+	"version": "1.4.2",
+	"description": "Thin provider for OMP/Pi — model list + dumb relay proxy + log; host pi-ai owns thinking/normalization",
+	"main": "extensions/index.ts",
+	"types": "src/index.ts",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"oh-my-pi",
+		"omp",
+		"free-models",
+		"opencode",
+		"kilocode",
+		"ai-models",
+		"relay"
+	],
+	"author": "trefeon",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/trefeon/pi-freeflow.git"
+	},
+	"homepage": "https://github.com/trefeon/pi-freeflow#readme",
+	"engines": {
+		"node": ">=22.6.0"
+	},
+	"omp": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"files": [
+		"extensions",
+		"src",
+		"README.md",
+		"LICENSE"
+	],
+	"scripts": {
+		"test": "node --experimental-strip-types --test test/**/*.test.ts",
+		"typecheck": "tsc --noEmit",
+		"smoke": "node --experimental-strip-types -e \"import('./extensions/index.ts').then(() => console.log('✓ Smoke test passed: extensions/index.ts loaded successfully')).catch(err => { console.error(err); process.exit(1); })\""
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "^0.84.3",
+		"@types/node": "^22.13.9",
+		"typescript": "^5.8.2"
+	}
+}
