@@ -54,6 +54,21 @@ export function setAliveCatalog(catalog: RegisteredModel[]): void {
 }
 
 /**
+ * Overlay a refreshed model list onto a base list without dropping base entries.
+ * Fresh entries win on id collision; unknown fresh ids are appended after the base.
+ * Guards the background refresh against a partial upstream cache removing
+ * verified static models from provider registration.
+ */
+export function mergeCatalog(
+	base: RegisteredModel[],
+	fresh: RegisteredModel[],
+): RegisteredModel[] {
+	const byId = new Map(base.map((m) => [m.id, m]));
+	for (const m of fresh) byId.set(m.id, m);
+	return [...byId.values()];
+}
+
+/**
  * Format a clean, human-readable display name for any upstream model ID.
  */
 export function formatCleanDisplayName(id: string, customName?: string): string {
