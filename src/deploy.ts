@@ -14,18 +14,61 @@ import { log, logError } from "./logger.ts";
  */
 export const VERCEL_RELAY_WORKER = `// Only the 2 upstreams pi-freeflow talks to. Anything else = open proxy abuse.
 const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
+const resolveRelayTarget = function(target, relayPath) {
+  let targetUrl;
+  try { targetUrl = new URL(target); } catch { return { ok: false, status: 400, reason: "invalid x-relay-target" }; }
+  if (typeof relayPath !== "string" || relayPath.indexOf("@") !== -1 || relayPath.indexOf("\\") !== -1 || relayPath.charAt(0) !== "/") {
+    return { ok: false, status: 403, reason: "forbidden x-relay-path" };
+  }
+  let finalUrl;
+  try { finalUrl = new URL(relayPath, targetUrl); } catch { return { ok: false, status: 403, reason: "forbidden x-relay-path" }; }
+  if (finalUrl.hostname !== targetUrl.hostname || finalUrl.protocol !== targetUrl.protocol || finalUrl.port !== targetUrl.port || finalUrl.username || finalUrl.password) {
+    return { ok: false, status: 403, reason: "forbidden x-relay-path (host mismatch)" };
+  }
+  return { ok: true, url: finalUrl.toString() };
+};
+const isPrivateHostname = function(h) {
+  if (!h) return true
+  let host = String(h).trim().toLowerCase().replace(/^\[|\]$/g, "")
+  if (host.length > 1 && host.endsWith(".")) host = host.slice(0, -1)
+  if (!host) return true
+  if (host === "localhost" || host === "0.0.0.0" || host === "127.0.0.1" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true
+  if (host.startsWith("::")) return true
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (v4) {
+    const a = Number(v4[1])
+    const b = Number(v4[2])
+    if (a === 0 || a === 10 || a === 127) return true
+    if (a === 169 && b === 254) return true
+    if (a === 192 && b === 168) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 100 && b >= 64 && b <= 127) return true
+    return false
+  }
+  if (host.includes(":")) {
+    if (host.startsWith("fc") || host.startsWith("fd")) return true
+    if (/^fe[89ab]/.test(host)) return true
+    return false
+  }
+  return false
+};
 export const config = { runtime: "edge" };
 export default async function handler(req) {
   const target = req.headers.get("x-relay-target");
-  const relayPath = req.headers.get("x-relay-path") || "/";
   if (!target) return new Response(JSON.stringify({ error: "Missing x-relay-target header" }), { status: 400, headers: { "content-type": "application/json" } });
-  const cleanTarget = target.replace(/\\/$/, "");
+  let targetUrl;
+  try { targetUrl = new URL(target); } catch { return new Response(JSON.stringify({ error: "invalid x-relay-target" }), { status: 400, headers: { "content-type": "application/json" } }); }
+  if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") return new Response(JSON.stringify({ error: "forbidden x-relay-target protocol" }), { status: 403, headers: { "content-type": "application/json" } });
+  if (targetUrl.username || targetUrl.password) return new Response(JSON.stringify({ error: "forbidden x-relay-target (embedded credentials)" }), { status: 403, headers: { "content-type": "application/json" } });
+  if (isPrivateHostname(targetUrl.hostname)) return new Response(JSON.stringify({ error: "forbidden x-relay-target (private/loopback host)" }), { status: 403, headers: { "content-type": "application/json" } });
+  const cleanTarget = target.replace(/\/$/, "");
   if (!ALLOWED_TARGETS.includes(cleanTarget)) return new Response(JSON.stringify({ error: "Forbidden target" }), { status: 403, headers: { "content-type": "application/json" } });
-  if (!relayPath.startsWith("/")) return new Response(JSON.stringify({ error: "Bad path" }), { status: 400, headers: { "content-type": "application/json" } });
-  const targetUrl = cleanTarget + relayPath;
+  const relayPath = req.headers.get("x-relay-path") || "/";
+  const resolved = resolveRelayTarget(target, relayPath);
+  if (!resolved.ok) return new Response(JSON.stringify({ error: resolved.reason }), { status: resolved.status, headers: { "content-type": "application/json" } });
   const headers = new Headers(req.headers);
-  headers.delete("x-relay-target"); headers.delete("x-relay-path"); headers.delete("host");
-  const response = await fetch(targetUrl, { method: req.method, headers, body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined, duplex: "half" });
+  ["host", "connection", "content-length", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "transfer-encoding", "te", "trailer", "upgrade", "x-relay-target", "x-relay-path", "x-relay-auth"].forEach((h) => headers.delete(h));
+  const response = await fetch(resolved.url, { method: req.method, headers, body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined, duplex: "half" });
   return new Response(response.body, { status: response.status, headers: response.headers });
 }`;
 
@@ -142,23 +185,68 @@ export type DeployPlatform = "vercel" | "cloudflare" | "deno";
 
 /**
  * Module Worker relay deployed to Cloudflare Workers.
- * Same whitelist contract as the Vercel Edge relay, without Vercel's
- * `config` export or undici-only `duplex` flag (plain body passthrough).
+ * Same whitelist contract as the Vercel Edge relay, with SSRF guard, relay-path resolver, and streaming duplex.
  */
 export const CLOUDFLARE_RELAY_WORKER = `// Only the 2 upstreams this relay talks to. Anything else = open proxy abuse.
 const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
+const resolveRelayTarget = function(target, relayPath) {
+  let targetUrl;
+  try { targetUrl = new URL(target); } catch { return { ok: false, status: 400, reason: "invalid x-relay-target" }; }
+  if (typeof relayPath !== "string" || relayPath.indexOf("@") !== -1 || relayPath.indexOf("\\") !== -1 || relayPath.charAt(0) !== "/") {
+    return { ok: false, status: 403, reason: "forbidden x-relay-path" };
+  }
+  let finalUrl;
+  try { finalUrl = new URL(relayPath, targetUrl); } catch { return { ok: false, status: 403, reason: "forbidden x-relay-path" }; }
+  if (finalUrl.hostname !== targetUrl.hostname || finalUrl.protocol !== targetUrl.protocol || finalUrl.port !== targetUrl.port || finalUrl.username || finalUrl.password) {
+    return { ok: false, status: 403, reason: "forbidden x-relay-path (host mismatch)" };
+  }
+  return { ok: true, url: finalUrl.toString() };
+};
+const isPrivateHostname = function(h) {
+  if (!h) return true
+  let host = String(h).trim().toLowerCase().replace(/^\[|\]$/g, "")
+  if (host.length > 1 && host.endsWith(".")) host = host.slice(0, -1)
+  if (!host) return true
+  if (host === "localhost" || host === "0.0.0.0" || host === "127.0.0.1" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true
+  if (host.startsWith("::")) return true
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (v4) {
+    const a = Number(v4[1])
+    const b = Number(v4[2])
+    if (a === 0 || a === 10 || a === 127) return true
+    if (a === 169 && b === 254) return true
+    if (a === 192 && b === 168) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 100 && b >= 64 && b <= 127) return true
+    return false
+  }
+  if (host.includes(":")) {
+    if (host.startsWith("fc") || host.startsWith("fd")) return true
+    if (/^fe[89ab]/.test(host)) return true
+    return false
+  }
+  return false
+};
 export default {
   async fetch(request) {
     const target = request.headers.get("x-relay-target");
-    const relayPath = request.headers.get("x-relay-path") || "/";
     if (!target) return new Response(JSON.stringify({ error: "Missing x-relay-target header" }), { status: 400, headers: { "content-type": "application/json" } });
-    const cleanTarget = target.replace(/\\/$/, "");
+    let targetUrl;
+    try { targetUrl = new URL(target); } catch { return new Response(JSON.stringify({ error: "invalid x-relay-target" }), { status: 400, headers: { "content-type": "application/json" } }); }
+    if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") return new Response(JSON.stringify({ error: "forbidden x-relay-target protocol" }), { status: 403, headers: { "content-type": "application/json" } });
+    if (targetUrl.username || targetUrl.password) return new Response(JSON.stringify({ error: "forbidden x-relay-target (embedded credentials)" }), { status: 403, headers: { "content-type": "application/json" } });
+    if (isPrivateHostname(targetUrl.hostname)) return new Response(JSON.stringify({ error: "forbidden x-relay-target (private/loopback host)" }), { status: 403, headers: { "content-type": "application/json" } });
+    const cleanTarget = target.replace(/\/$/, "");
     if (!ALLOWED_TARGETS.includes(cleanTarget)) return new Response(JSON.stringify({ error: "Forbidden target" }), { status: 403, headers: { "content-type": "application/json" } });
-    if (!relayPath.startsWith("/")) return new Response(JSON.stringify({ error: "Bad path" }), { status: 400, headers: { "content-type": "application/json" } });
+    const relayPath = request.headers.get("x-relay-path") || "/";
+    const resolved = resolveRelayTarget(target, relayPath);
+    if (!resolved.ok) return new Response(JSON.stringify({ error: resolved.reason }), { status: resolved.status, headers: { "content-type": "application/json" } });
     const headers = new Headers(request.headers);
-    headers.delete("x-relay-target"); headers.delete("x-relay-path"); headers.delete("host");
+    ["host", "connection", "content-length", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "transfer-encoding", "te", "trailer", "upgrade", "x-relay-target", "x-relay-path", "x-relay-auth"].forEach((h) => headers.delete(h));
     try {
-      const response = await fetch(cleanTarget + relayPath, { method: request.method, headers, body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined });
+      const init = { method: request.method, headers };
+      if (request.method !== "GET" && request.method !== "HEAD") { init.body = request.body; init.duplex = "half"; }
+      const response = await fetch(resolved.url, init);
       return new Response(response.body, { status: response.status, headers: response.headers });
     } catch (error) {
       return new Response(JSON.stringify({ error: String(error) }), { status: 502, headers: { "content-type": "application/json" } });
@@ -168,21 +256,67 @@ export default {
 
 /**
  * Relay script deployed to Deno Deploy (Deno.serve variant).
- * Same whitelist contract; plain streaming passthrough, no duplex flag.
+ * Same whitelist contract as the Vercel Edge relay, with SSRF guard and relay-path resolver.
  */
 export const DENO_RELAY_SCRIPT = `// Only the 2 upstreams this relay talks to. Anything else = open proxy abuse.
 const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
+const resolveRelayTarget = function(target, relayPath) {
+  let targetUrl;
+  try { targetUrl = new URL(target); } catch { return { ok: false, status: 400, reason: "invalid x-relay-target" }; }
+  if (typeof relayPath !== "string" || relayPath.indexOf("@") !== -1 || relayPath.indexOf("\\") !== -1 || relayPath.charAt(0) !== "/") {
+    return { ok: false, status: 403, reason: "forbidden x-relay-path" };
+  }
+  let finalUrl;
+  try { finalUrl = new URL(relayPath, targetUrl); } catch { return { ok: false, status: 403, reason: "forbidden x-relay-path" }; }
+  if (finalUrl.hostname !== targetUrl.hostname || finalUrl.protocol !== targetUrl.protocol || finalUrl.port !== targetUrl.port || finalUrl.username || finalUrl.password) {
+    return { ok: false, status: 403, reason: "forbidden x-relay-path (host mismatch)" };
+  }
+  return { ok: true, url: finalUrl.toString() };
+};
+const isPrivateHostname = function(h) {
+  if (!h) return true
+  let host = String(h).trim().toLowerCase().replace(/^\[|\]$/g, "")
+  if (host.length > 1 && host.endsWith(".")) host = host.slice(0, -1)
+  if (!host) return true
+  if (host === "localhost" || host === "0.0.0.0" || host === "127.0.0.1" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true
+  if (host.startsWith("::")) return true
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (v4) {
+    const a = Number(v4[1])
+    const b = Number(v4[2])
+    if (a === 0 || a === 10 || a === 127) return true
+    if (a === 169 && b === 254) return true
+    if (a === 192 && b === 168) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 100 && b >= 64 && b <= 127) return true
+    return false
+  }
+  if (host.includes(":")) {
+    if (host.startsWith("fc") || host.startsWith("fd")) return true
+    if (/^fe[89ab]/.test(host)) return true
+    return false
+  }
+  return false
+};
 Deno.serve(async (request) => {
   const target = request.headers.get("x-relay-target");
-  const relayPath = request.headers.get("x-relay-path") || "/";
   if (!target) return new Response(JSON.stringify({ error: "Missing x-relay-target header" }), { status: 400, headers: { "content-type": "application/json" } });
-  const cleanTarget = target.replace(/\\/$/, "");
+  let targetUrl;
+  try { targetUrl = new URL(target); } catch { return new Response(JSON.stringify({ error: "invalid x-relay-target" }), { status: 400, headers: { "content-type": "application/json" } }); }
+  if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") return new Response(JSON.stringify({ error: "forbidden x-relay-target protocol" }), { status: 403, headers: { "content-type": "application/json" } });
+  if (targetUrl.username || targetUrl.password) return new Response(JSON.stringify({ error: "forbidden x-relay-target (embedded credentials)" }), { status: 403, headers: { "content-type": "application/json" } });
+  if (isPrivateHostname(targetUrl.hostname)) return new Response(JSON.stringify({ error: "forbidden x-relay-target (private/loopback host)" }), { status: 403, headers: { "content-type": "application/json" } });
+  const cleanTarget = target.replace(/\/$/, "");
   if (!ALLOWED_TARGETS.includes(cleanTarget)) return new Response(JSON.stringify({ error: "Forbidden target" }), { status: 403, headers: { "content-type": "application/json" } });
-  if (!relayPath.startsWith("/")) return new Response(JSON.stringify({ error: "Bad path" }), { status: 400, headers: { "content-type": "application/json" } });
+  const relayPath = request.headers.get("x-relay-path") || "/";
+  const resolved = resolveRelayTarget(target, relayPath);
+  if (!resolved.ok) return new Response(JSON.stringify({ error: resolved.reason }), { status: resolved.status, headers: { "content-type": "application/json" } });
   const headers = new Headers(request.headers);
-  headers.delete("x-relay-target"); headers.delete("x-relay-path"); headers.delete("host");
+  ["host", "connection", "content-length", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "transfer-encoding", "te", "trailer", "upgrade", "x-relay-target", "x-relay-path", "x-relay-auth"].forEach((h) => headers.delete(h));
   try {
-    const response = await fetch(cleanTarget + relayPath, { method: request.method, headers, body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined });
+    const init = { method: request.method, headers };
+    if (request.method !== "GET" && request.method !== "HEAD") { init.body = request.body; init.duplex = "half"; }
+    const response = await fetch(resolved.url, init);
     return new Response(response.body, { status: response.status, headers: response.headers });
   } catch (error) {
     return new Response(JSON.stringify({ error: String(error) }), { status: 502, headers: { "content-type": "application/json" } });

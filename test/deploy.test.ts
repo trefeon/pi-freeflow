@@ -67,12 +67,13 @@ test("relay worker sources keep the whitelist contract on every platform", () =>
 		assert.match(src, /\["https:\/\/opencode\.ai", "https:\/\/api\.kilo\.ai"\]/);
 		assert.match(src, /x-relay-target/);
 		assert.match(src, /x-relay-path/);
-		assert.match(src, /startsWith\("\/"\)/, `${label}: bad-path guard`);
+		assert.match(src, /charAt\(0\) !== "\/"/, `${label}: bad-path guard`);
 		assert.match(src, /status: 403/, `${label}: non-whitelisted target rejected`);
 		assert.match(src, /status: 400/, `${label}: missing header rejected`);
-		assert.match(src, /delete\("host"\)/, `${label}: host header stripped`);
+		assert.match(src, /headers\.delete\(h\)/, `${label}: header denylist stripped`);
+		assert.ok(src.includes('"host"'), `${label}: host in denylist`);
 		assert.equal(src.includes("export const config"), false, `${label}: no Vercel config`);
-		assert.equal(src.includes("duplex"), false, `${label}: no undici duplex flag`);
+		assert.ok(src.includes('duplex'), `${label}: duplex half for streaming`);
 	}
 	assert.match(CLOUDFLARE_RELAY_WORKER, /export default\s*\{[\s\S]*async fetch/);
 	assert.doesNotMatch(CLOUDFLARE_RELAY_WORKER, /^export (const|async function)/m);

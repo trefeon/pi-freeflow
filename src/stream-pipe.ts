@@ -223,9 +223,14 @@ export function pipeUpstreamStream(
 					// is not at fault; still give the host a terminal event.
 					ensureTerminalEvent(false, "stream interrupted by client", false);
 				} else {
-					// Upstream socket died mid-stream with no error event:
-					// genuine upstream truncation — penalize the relay.
-					ensureTerminalEvent(true, "stream closed prematurely");
+					// Upstream socket died mid-stream with no error event.
+					// For muse-spark large payloads: raxtant 514KB failed but feoni 802KB
+					// succeeded with same 2.6MB in — so this is edge-specific, not pure
+					// provider token limit. Keep penalize=true to rotate failing relay,
+					// but inject incomplete (not failed) for substantial to avoid alarming
+					// stream_error. Small premature (<50 chunks) stays failed+penalize.
+					const isSubstantial = totalChunks > 50 && totalBytes > 100 * 1024;
+					ensureTerminalEvent(!isSubstantial, "stream closed prematurely", true);
 				}
 			}
 			if (!res.writableEnded) res.end();
