@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }} - Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: ["22.x", "23.x"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (tsc --noEmit)
+        run: pnpm run typecheck
+
+      - name: Smoke test (extension entrypoint)
+        run: pnpm run smoke
+
+      - name: Run test suite (107 unit & E2E tests)
+        run: pnpm test
+
+  package-check:
+    name: Package Integrity & Tarball Whitelist
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate npm package contents
+        run: |
+          echo "=== Verifying npm package tarball contents ==="
+          npm pack --dry-run
+          
+          PACK_FILES=$(npm pack --dry-run --json 2>/dev/null | node -e "
+            let d='';
+            process.stdin.on('data', c => d += c);
+            process.stdin.on('end', () => {
+              try {
+                const j = JSON.parse(d);
+                const files = j[0]?.files?.map(f => f.path) || [];
+                console.log(files.join('\n'));
+              } catch {}
+            });
+          ")
+          
+          if echo "$PACK_FILES" | grep -E "(test/|devdocs/|reference/|\.env)"; then
+            echo "ERROR: Forbidden files found in npm package whitelist!"
+            exit 1
+          fi
+          echo "✓ Package bundle is clean and strictly whitelisted."

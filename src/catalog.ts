@@ -34,8 +34,7 @@ import type {
 /**
  * Pruned model IDs that must never re-enter the catalog via disk cache or upstream merge.
  */
-const DEAD_MODEL_IDS = new Set<string>(["deepseek-v4-flash-free", "x-preview-f-free"]);
-
+export const DEAD_MODEL_IDS = new Set<string>(["deepseek-v4-flash-free", "x-preview-f-free"]);
 /**
  * In-memory cache of currently active/available free models.
  * Initialized with all 21 verified models for 0ms instant availability.
