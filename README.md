@@ -146,9 +146,11 @@ Default ships direct. Add relays via `/freeflow add <url> [label]`.
 
 **Zero setup?** Run `/freeflow deploy cloudflare` (or `deno`, `vercel`), paste your platform token once, and the relay is created and activated for you. Manual snippets below.
 
-**Option A: Cloudflare Workers (100k req/day, no 25s timeout)**
-1. Go to `dash.cloudflare.com` → Workers → Create → Deploy → Edit code
-2. Paste this Worker relay snippet:
+**Option A: Cloudflare Workers (100k req/day, no 25s timeout) — Auto Deploy**
+```bash
+/freeflow deploy cloudflare  # prompts token in-memory, auto-adds to pool
+```
+*Manual fallback:* `dash.cloudflare.com` → Workers → Create → Deploy → Edit code → paste snippet below → Deploy → `/freeflow add https://your.workers.dev cf-worker-1`
 
 ```js
 // Only the 2 upstreams pi-freeflow talks to. Anything else = open proxy abuse.
@@ -168,20 +170,18 @@ export default {
   },
 };
 ```
-3. Deploy and add it:
 
+**Option B: Vercel Edge Relay (1M req/mo) — Auto Deploy**
 ```bash
-omp → /freeflow add https://your.workers.dev cf-worker-1
+/freeflow deploy vercel  # prompts token in-memory, auto-adds to pool
+# or shorthand: /freeflow deploy
 ```
 
-**Option B: Vercel Edge Relay (1M req/mo), Auto Deploy**
+**Option C: Deno Deploy (100k req/day) — Auto Deploy**
 ```bash
-/freeflow deploy  # prompts token in-memory, auto-adds to pool
+/freeflow deploy deno  # prompts token in-memory, auto-adds to pool
 ```
-
-**Option C: Deno Deploy (100k req/day)**
-1. Go to `dash.deno.com` → New Project → Playground
-2. Paste this relay and click **Deploy**:
+*Manual fallback:* `dash.deno.com` → New Project → Playground → paste snippet below → Deploy → `/freeflow add https://your-project.deno.dev deno-relay-1`
 
 ```ts
 const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
@@ -197,12 +197,6 @@ Deno.serve(async (req) => {
   const res = await fetch(target.replace(/\/$/, "") + relayPath, { method: req.method, headers, body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined });
   return new Response(res.body, { status: res.status, headers: res.headers });
 });
-```
-
-3. Add it:
-
-```bash
-/freeflow add https://your-project.deno.dev deno-relay-1
 ```
 
 **Verify your pool:**
