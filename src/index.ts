@@ -2,7 +2,7 @@
  * pi-freeflow — Modular, high-resiliency LLM extension for Pi & Oh My Pi (OMP)
  *
  * Provides access to 21 free models (7 OpenCode Zen + 14 KiloCode Gateway) with:
- * - Single-port daemon reuse on 18080 across concurrent subagents
+ * - Single-port daemon reuse on 28180 across concurrent subagents
  * - Multi-cloud rolling egress relays (Vercel Edge, Cloudflare, Deno)
  * - 0ms instant startup with verified static catalog and background live health checks
  * - Per-model thinking/reasoning translation and streaming SSE pass-through
@@ -17,7 +17,7 @@ import {
 	setAliveCatalog,
 } from "./catalog.ts";
 import { createCommandSpec, updateStatusBar } from "./commands.ts";
-import { DEFAULT_HOST, HOST, PORT } from "./config.ts";
+import { DEFAULT_HOST, HOST, LEGACY_PORT, PORT } from "./config.ts";
 import { log, logInfo, logWarn } from "./logger.ts";
 import { ALL_MODELS, KILO_MODEL_IDS, MODEL_MAP, getAllRegisteredModels, resolveCanonicalModelId } from "./models.ts";
 import { isProxyAlive, startProxy } from "./proxy.ts";
@@ -117,12 +117,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	let actualPort = PORT;
 
 	// 2. Single-Port Shared Pattern: Check if daemon is already running (e.g. parent session)
-	const alreadyRunning = await isProxyAlive(PORT);
+	// Dual-probe: probe current PORT first; if missing, check LEGACY_PORT so existing v1.4.9
+	// sessions on 18080 are seamlessly reused without split-brain or duplicate daemons.
+	let alreadyRunning = await isProxyAlive(PORT);
 	if (alreadyRunning) {
 		logInfo(
 			`Reusing existing pi-freeflow proxy daemon on http://${HOST}:${PORT}`,
 		);
 		actualPort = PORT;
+	} else if (PORT !== LEGACY_PORT && (await isProxyAlive(LEGACY_PORT))) {
+		logInfo(
+			`Reusing existing legacy pi-freeflow proxy daemon on http://${HOST}:${LEGACY_PORT}`,
+		);
+		alreadyRunning = true;
+		actualPort = LEGACY_PORT;
 	} else {
 		try {
 			const r = await startProxy();
@@ -161,6 +169,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		ensuringDaemon = true;
 		try {
 			if (await isProxyAlive(actualPort)) return;
+			// If actualPort died, check if another daemon is alive on PORT or LEGACY_PORT before binding
+			if (await isProxyAlive(PORT)) {
+				actualPort = PORT;
+				registerCatalog(getAliveCatalog());
+				logInfo(`Re-attached to proxy daemon on http://${HOST}:${PORT}`);
+				return;
+			}
+			if (PORT !== LEGACY_PORT && (await isProxyAlive(LEGACY_PORT))) {
+				actualPort = LEGACY_PORT;
+				registerCatalog(getAliveCatalog());
+				logInfo(`Re-attached to legacy proxy daemon on http://${HOST}:${LEGACY_PORT}`);
+				return;
+			}
 			const r = await startProxy();
 			if (r.server) server = r.server;
 			if (r.port) actualPort = r.port;

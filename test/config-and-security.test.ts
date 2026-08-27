@@ -8,6 +8,8 @@ import path from "node:path";
 import {
 	ALLOWED_METHODS,
 	ALLOWED_PATH_PATTERN,
+	DEFAULT_PORT,
+	LEGACY_PORT,
 	PATH_TRAVERSAL_PATTERN,
 	STRIP_HEADERS,
 	resolvePort,
@@ -52,7 +54,7 @@ test("zero hardcoded API keys exist in source tree", () => {
 
 test("sanitizeHeaders never emits duplicate User-Agent headers", () => {
 	const incoming = {
-		host: "127.0.0.1:18080",
+		host: "127.0.0.1:28180",
 		"user-agent": "node",
 		"content-type": "application/json",
 	};
@@ -62,12 +64,17 @@ test("sanitizeHeaders never emits duplicate User-Agent headers", () => {
 	assert.equal(fwd[uaKeys[0]], "opencode/latest/1.14.50/cli");
 });
 
-test("resolvePort falls back to default 18080 without env overrides", () => {
+test("resolvePort falls back to default 28180 without env overrides", () => {
 	const original = process.env.FREEFLOW_PORT;
 	delete process.env.FREEFLOW_PORT;
 	try {
-		assert.equal(resolvePort(), 18080);
+		assert.equal(resolvePort(), 28180);
 	} finally {
 		if (original) process.env.FREEFLOW_PORT = original;
 	}
+});
+
+test("LEGACY_PORT is defined as 18080 for backward compatibility", () => {
+	assert.equal(LEGACY_PORT, 18080);
+	assert.equal(DEFAULT_PORT, 28180);
 });

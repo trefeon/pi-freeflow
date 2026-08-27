@@ -1,22 +1,79 @@
-devdocs/
-dist/
-.DS_Store
-.env
-HANDOFF.md
-*.log
+# ── Dependencies ──────────────────────────────────────────────────────
 node_modules/
-pi-freeflow-relay-state.json
+.pnpm-store/
+package-lock.json.bak
+
+# ── Build & Test Output ───────────────────────────────────────────────
+dist/
+build/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# ── Environment & Secrets ─────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# ── Logs ──────────────────────────────────────────────────────────────
+*.log
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ── Local Relay State & Private Configs ───────────────────────────────
+*relay-state.json
 .relay-state.json
+*.backup.json
+*.local.json
+*.local
 relays.backup.json
 relays.local.json
-*.local.json
-skills/
-Thumbs.db
-reference/
-.agents/
-skills-lock.json
+pi-freeflow-relay-state.json
 
-# BEGIN oh-my-opencode-slim worktrees
-.slim/worktrees/
-.slim/worktrees.json
-# END oh-my-opencode-slim worktrees
+# ── Internal Docs & Scratch / Test Scripts ────────────────────────────
+devdocs/
+reference/
+HANDOFF.md
+live-validate.mjs
+live-validation.md
+reproduce-*.js
+reproduce-*.mjs
+release-notes*.md
+*.scratch.*
+*.test-temp.*
+
+# ── Agent, Skills & Worktree Artifacts ────────────────────────────────
+skills/
+skills-lock.json
+.agents/
+.slim/
+.tmp/
+tmp/
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# ── OS & Editor Metadata ──────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+.history/

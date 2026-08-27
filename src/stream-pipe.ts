@@ -175,7 +175,8 @@ export function pipeUpstreamStream(
 			if (!res.headersSent) {
 				res.writeHead(502, { "content-type": "application/json" });
 			} else {
-				ensureTerminalEvent(true, errorMsg);
+				const isSubstantial = totalChunks > 50 && totalBytes > 100 * 1024;
+				ensureTerminalEvent(!isSubstantial, errorMsg, true);
 			}
 			if (!res.writableEnded) {
 				res.end();

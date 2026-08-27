@@ -25,7 +25,7 @@ Join devs bypassing rate limits with their own relay pools. BYO, add as many as 
 | **Smart Model Aliasing** | Clean slash-free & colon-free CLI model names compatible with thinking selectors | DX Optimized | **$0** |
 | **Auto-Enabled on Session** | Relay stays enabled in `auto` mode on session start and model switch | Zero Friction | **$0** |
 | **Interactive CLI Management** | 10+ `/freeflow` subcommands (`status`, `list`, `use`, `add`, `label`, `remove`, `deploy`, `logs`, `debug`) | Full Control | **$0** |
-| **Dumb Proxy That Never Breaks** | `127.0.0.1:18080`, host-normalized, pathname-guarded `/v1/models` | 100% Uptime | **$0** |
+| **Dumb Proxy That Never Breaks** | `127.0.0.1:28180`, host-normalized, pathname-guarded `/v1/models` | 100% Uptime | **$0** |
 | **Observable Real Logs** | `~/.pi/agent/pi-freeflow.log`, 5MB auto-rotation, real-time debug toggle | Observable | **$0** |
 
 Philosophy: **Thin by design.** We only ship model list + relay proxy + log. Host owns thinking & normalization.
@@ -78,7 +78,7 @@ Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI alia
 ### How It Works: BYO Relays, Zero Rate Limits
 
 ```
-You → 127.0.0.1:18080 (dumb proxy, host-normalized) → x-relay-target → N egress IPs (your pool) → opencode.ai / api.kilo.ai
+You → 127.0.0.1:28180 (dumb proxy, host-normalized) → x-relay-target → N egress IPs (your pool) → opencode.ai / api.kilo.ai
                                      ↑ host already normalized thinking → proxy just forwards
 ```
 
@@ -175,6 +175,34 @@ export default {
 ```bash
 /freeflow deploy vercel  # prompts token in-memory, auto-adds to pool
 # or shorthand: /freeflow deploy
+```
+*Manual fallback:* Push 2 files (`api/relay.js` + `vercel.json`) to GitHub $\to$ Import on `vercel.com` $\to$ `/freeflow add https://your.vercel.app vercel-relay-1`
+
+```js
+// api/relay.js
+const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
+export const config = { runtime: "edge" };
+export default async function handler(req) {
+  const target = req.headers.get("x-relay-target");
+  const relayPath = req.headers.get("x-relay-path") || "/";
+  if (!target || !ALLOWED_TARGETS.includes(target.replace(/\/$/, ""))) {
+    return new Response(JSON.stringify({ error: "Forbidden target" }), { status: 403 });
+  }
+  const headers = new Headers(req.headers);
+  headers.delete("x-relay-target"); headers.delete("x-relay-path"); headers.delete("host");
+  const res = await fetch(target.replace(/\/$/, "") + relayPath, {
+    method: req.method,
+    headers,
+    body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
+    duplex: "half",
+  });
+  return new Response(res.body, { status: res.status, headers: res.headers });
+}
+```
+
+```json
+// vercel.json
+{ "rewrites": [{ "source": "/(.*)", "destination": "/api/relay" }] }
 ```
 
 **Option C: Deno Deploy (100k req/day) — Auto Deploy**
@@ -279,7 +307,7 @@ src/
 ├── index.ts          # extension entry, lifecycle hooks
 ├── models.ts         # 21-model catalog definitions
 ├── catalog.ts        # model catalog cache (24h disk)
-├── proxy.ts          # local proxy server (127.0.0.1:18080)
+├── proxy.ts          # local proxy server (127.0.0.1:28180)
 ├── relay.ts          # relay selection & round-robin
 ├── relay-state.ts    # relay pool state, health tracking
 ├── rate-limiter.ts   # adaptive cooldown on 429/504/socket errors

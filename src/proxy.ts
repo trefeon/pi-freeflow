@@ -1,7 +1,7 @@
 /**
  * Single-port local HTTP proxy and dynamic upstream router for pi-freeflow
  *
- * Provides loopback proxying on port 18080 (shared across parent and subagents),
+ * Provides loopback proxying on port 28180 (shared across parent and subagents),
  * intelligent routing to OpenCode Zen and KiloCode Gateway, and failover support.
  */
 
@@ -111,9 +111,8 @@ export async function isProxyAlive(port: number): Promise<boolean> {
 
 /**
  * Start the local HTTP proxy daemon.
- *
- * Implements master/worker single-port reuse: if port 18080 is already held by a live
- * parent or sibling OMP session, resolves immediately with { server: null, port: 18080 }.
+ * Implements master/worker single-port reuse: if port 28180 is already held by a live
+ * parent or sibling OMP session, resolves immediately with { server: null, port: 28180 }.
  */
 export function startProxy(
 	overridePort?: number,

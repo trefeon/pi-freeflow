@@ -14,7 +14,8 @@ export const KILO_CHAT_URL = "https://api.kilo.ai/api/gateway/chat/completions";
 export const OPENCODE_API_URL = `${UPSTREAM_OPENCODE}/v1`;
 
 // ── Network & Server defaults ───────────────────────────────────────
-export const DEFAULT_PORT = 18080;
+export const DEFAULT_PORT = 28180;
+export const LEGACY_PORT = 18080;
 export const HOST = "127.0.0.1";
 export const DEFAULT_HOST = "127.0.0.1";
 
