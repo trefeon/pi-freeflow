@@ -475,10 +475,12 @@ export function startProxy(
 					log("error", "server error", { code: err.code, message: err.message });
 					reject(err);
 				});
-
 				server.listen(port, HOST, () => {
 					if (settled) return;
 					settled = true;
+					try {
+						server.unref();
+					} catch {}
 					const addr = server.address();
 					const realPort = addr && typeof addr === "object" ? addr.port : port;
 					log("info", `proxy listening on http://${HOST}:${realPort}`);
