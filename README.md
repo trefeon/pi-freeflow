@@ -105,7 +105,7 @@ Manage your relay pool directly from the OMP / Pi terminal:
 /freeflow label <index|url> <name># Assign a friendly label to a relay
 /freeflow remove <index|url|label># Remove a relay from the pool
 /freeflow on | off | auto         # Toggle relay mode (auto = enabled for freeflow)
-/freeflow deploy vercel            # Guided Vercel Edge relay deploy (also: deploy cloudflare, deploy deno)
+/freeflow deploy <platform>       # Guided relay deploy: vercel|cloudflare|deno — token in-memory, auto-adds (Vercel 1M/mo recommended)
 /freeflow logs [lines]            # Inspect recent proxy logs
 /freeflow debug on | off          # Toggle full HTTP lifecycle debug logging
 ```
