@@ -179,11 +179,16 @@ export function startProxy(
 
 		const target = validatePath(req.url ?? "/");
 		if (!target) {
-			res.writeHead(403, { "content-type": "application/json" });
-			res.end(JSON.stringify({ error: "forbidden" }));
+			const cleaned = (req.url ?? "/").replace(/^\/+/, "");
+			if (PATH_TRAVERSAL_PATTERN.test(cleaned)) {
+				res.writeHead(403, { "content-type": "application/json" });
+				res.end(JSON.stringify({ error: "forbidden" }));
+			} else {
+				res.writeHead(404, { "content-type": "application/json" });
+				res.end(JSON.stringify({ error: "not found" }));
+			}
 			return;
 		}
-
 		// Buffer request body to inspect model ID for upstream routing
 		const bodyChunks: Buffer[] = [];
 		req.on("error", (err) => {

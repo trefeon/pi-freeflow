@@ -653,7 +653,9 @@ export function createCommandSpec(
 							} else if (lower === "trace" || lower === "req") {
 								continue;
 							} else {
-								filterReqId = t;
+								// Unrecognized token: an invalid level must default to info,
+								// not silently become a request-id filter.
+								filterLevel = filterLevel ?? "info";
 							}
 						}
 					}

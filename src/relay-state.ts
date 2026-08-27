@@ -129,14 +129,15 @@ export function setRelayLabel(
 }
 
 /**
- * Find a relay in state by 1-based index, short name / label, or URL.
+ * Find a relay in state by 1-based index (numeric 0 also maps to the first relay),
+ * short name / label, or URL.
  */
 export function findRelay(
 	s: RelayState,
 	identifier: string | number,
 ): KnownRelay | undefined {
 	if (typeof identifier === "number") {
-		const idx = identifier - 1;
+		const idx = identifier === 0 ? 0 : identifier - 1;
 		return s.relays[idx];
 	}
 	const str = String(identifier || "").trim();

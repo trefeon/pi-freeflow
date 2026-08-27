@@ -92,9 +92,9 @@ export interface RateLimitStatus {
 export interface ExtensionUIContext {
 	notify(message: string, type?: "info" | "warning" | "error"): void;
 	setStatus(key: string, status: string | undefined): void;
-	input(prompt: string, defaultValue?: string): Promise<string | undefined>;
+	input(prompt: string, placeholder?: string): Promise<string | undefined>;
 	select(prompt: string, options: string[]): Promise<string | undefined>;
-	confirm?(prompt: string): Promise<boolean>;
+	confirm?(title: string, message?: string): Promise<boolean>;
 	/** Optional status-bar click handler (when host supports clickable widgets) */
 	onStatusClick?(handler: () => void | Promise<void>): void | (() => void);
 	/** Fallback/alternate names hosts may expose */

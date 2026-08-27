@@ -32,9 +32,9 @@ test("proxy starts, responds to /v1/models, and shuts down cleanly", async () =>
 		});
 		assert.equal(putRes.status, 405);
 
-		// Test 403 on path traversal
+		// Test 404 on unknown path (fetch normalizes "..", so /v1/../admin → /admin → unknown)
 		const trapRes = await fetch(`http://127.0.0.1:${testPort}/v1/../admin`);
-		assert.equal(trapRes.status, 403);
+		assert.equal(trapRes.status, 404);
 		// Test server is unref'd so CLI commands like omp plugin install exit cleanly
 		// In Node.js, an unref'd server has its underlying handle unref'd.
 		// We can verify fetch still succeeds on unref server:

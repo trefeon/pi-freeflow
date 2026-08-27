@@ -177,6 +177,11 @@ export async function relayFetch(
 			updateRelayStatusUi(targetUrl);
 			return res;
 		} catch (err) {
+			// Client abort: do not mark the relay failed — the client cancelled the
+			// request, the relay itself is not at fault. Propagate immediately.
+			if ((err as Error)?.name === "AbortError") {
+				throw err;
+			}
 			const elapsed = ((Date.now() - attemptStart) / 1000).toFixed(1);
 			lastError = err;
 			const errMsg = (err as Error)?.message || String(err);

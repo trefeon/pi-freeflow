@@ -178,9 +178,10 @@ export function readCatalogCache(): CatalogCacheData | null {
 		}
 		const raw = fs.readFileSync(CATALOG_CACHE_FILE, "utf8");
 		const data = JSON.parse(raw) as CatalogCacheData;
-		if (Array.isArray(data.models)) {
-			data.models = data.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
+		if (!Array.isArray(data.models)) {
+			return null;
 		}
+		data.models = data.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
 		if (Date.now() - data.timestamp < CATALOG_CACHE_TTL_MS) {
 			return data;
 		}
