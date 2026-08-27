@@ -1,6 +1,6 @@
 # pi-freeflow 🌊
 
-> **23 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.**
+> **21 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.**
 
 Thin by design: model list + dumb relay + log. Host `pi-ai` owns thinking, normalization & provider magic. We just make it free, fast, and unbreakable.
 
@@ -18,7 +18,7 @@ Join devs bypassing rate limits with their own relay pools. BYO, add as many as 
 
 | Feature | Description | Value | Cost |
 | :--- | :--- | :--- | :--- |
-| **23 Curated Free Models** | 9 OpenCode Zen + 14 KiloCode Gateway models, up to 1M context & 512K output | Ceiling Unlocked | **$0** |
+| **21 Curated Free Models** | 7 OpenCode Zen + 14 KiloCode Gateway models, up to 1M context & 512K output | Ceiling Unlocked | **$0** |
 | **BYO Relay Pool** | Round-robin load balancing across your Cloudflare Workers & Vercel Edges | Zero Rate Limits | **$0** (your free tiers) |
 | **Adaptive Health & Error Detection** | Auto-cooldown on 429 rate limits, 504 timeouts, and socket drops | 0ms Wasted Latency | **$0** |
 | **Stream Truncation Resilience** | Stateful SSE terminal tracking (`response.failed` / `response.incomplete` injection) | Zero Host Crashes | **$0** |
@@ -32,21 +32,19 @@ Philosophy: **Thin by design.** We only ship model list + relay proxy + log. Hos
 
 ---
 
-### 23 Curated Models, One Command
+### 21 Curated Models, One Command
 
 ```bash
 /model → freeflow → pick
 ```
 
-#### OpenCode Zen (9 Models), Responses & Chat API
+#### OpenCode Zen (7 Models), Responses & Chat API
 Optimized for deep reasoning, long-horizon coding & autonomous agentic workflows.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `muse-spark-1.2-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal / low / medium / high / xhigh / max` | ✅ |
-| `x-preview-f-free` | Ox Alpha | **1M** (1.048.576) | **131K** (131.072) | `low / high / max` | ✅ |
 | `mimo-v2.5-free` | Xiaomi MiMo | **1M** (1.048.576) | **131K** (131.072) | `low / medium / high` | ✅ |
-| `deepseek-v4-flash-free` | DeepSeek | **1M** (1.000.000) | **384K** (384.000) | `low / high / max` | ❌ |
 | `laguna-s-2.1-free` | Poolside | **1M** (1.048.576) | **131K** (131.072) | `low / high / max` | ❌ |
 | `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `low / high / max` | ❌ |
 | `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `low / high / max` | ❌ |
@@ -285,7 +283,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
 src/
 ├── index.ts          # extension entry, lifecycle hooks
-├── models.ts         # 23-model catalog definitions
+├── models.ts         # 21-model catalog definitions
 ├── catalog.ts        # model catalog cache (24h disk)
 ├── proxy.ts          # local proxy server (127.0.0.1:18080)
 ├── relay.ts          # relay selection & round-robin

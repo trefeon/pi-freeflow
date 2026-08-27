@@ -1,7 +1,7 @@
 /**
  * pi-freeflow — Modular, high-resiliency LLM extension for Pi & Oh My Pi (OMP)
  *
- * Provides access to 23 free models (9 OpenCode Zen + 14 KiloCode Gateway) with:
+ * Provides access to 21 free models (7 OpenCode Zen + 14 KiloCode Gateway) with:
  * - Single-port daemon reuse on 18080 across concurrent subagents
  * - Multi-cloud rolling egress relays (Vercel Edge, Cloudflare, Deno)
  * - 0ms instant startup with verified static catalog and background live health checks

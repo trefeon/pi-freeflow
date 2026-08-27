@@ -1,8 +1,8 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 23 verified free models:
- * - 9 OpenCode Zen models (1 Responses API + 8 Chat Completions)
+ * Defines the 21 verified free models:
+ * - 7 OpenCode Zen models (1 Responses API + 6 Chat Completions)
  * - 14 KiloCode Keyless Gateway models (10 OpenRouter format + 4 Standard format)
  */
 
@@ -13,40 +13,6 @@ import type { ModelDef, Upstream } from "./types.ts";
  * Endpoint: https://opencode.ai/zen/v1
  */
 export const OPENCODE_MODELS: ModelDef[] = [
-	{
-		id: "deepseek-v4-flash-free",
-		name: "DeepSeek V4 Flash (1M)",
-		reasoning: true,
-		contextWindow: 1_000_000,
-		maxTokens: 384_000,
-		input: ["text"],
-		thinkingLevelMap: {
-			off: null,
-			minimal: "low",
-			low: "low",
-			medium: "high",
-			high: "high",
-			xhigh: "max",
-			max: "max",
-		},
-	},
-	{
-		id: "x-preview-f-free",
-		name: "Ox Alpha (1M)",
-		reasoning: true,
-		contextWindow: 1_048_576,
-		maxTokens: 131_072,
-		input: ["text", "image"],
-		thinkingLevelMap: {
-			off: null,
-			minimal: "low",
-			low: "low",
-			medium: "high",
-			high: "high",
-			xhigh: "max",
-			max: "max",
-		},
-	},
 	{
 		id: "muse-spark-1.2-contributor-free",
 		name: "Muse Spark 1.2 (1M)",
@@ -305,37 +271,27 @@ export const KILO_MODELS: ModelDef[] = [
 
 /**
  * Model ID Aliases — maps user-friendly / slash-free CLI IDs to canonical upstream model IDs.
+ * Single clean alias per model (no :free duplicates). Wrong cross-lab aliases removed:
+ * - Muse Spark 1.2 = Meta Superintelligence Labs (not Anthropic Claude) → removed claude-sonnet aliases
+ * - Laguna S 2.1 = Poolside (not MiniMax) → removed minimax-m2.1 alias
+ * - Hy3 = Tencent Hunyuan (not Alibaba Qwen) → removed qwen3-coder alias
  */
 export const MODEL_ALIASES: Record<string, string> = {
-	// Kilo Gateway slash-free & colon-free CLI aliases
+	// Kilo Gateway — slash-free & colon-free clean aliases (one per model)
 	"dots-3-note-preview": "dots-studio/dots-3-note-preview:free",
-	"dots-3-note-preview:free": "dots-studio/dots-3-note-preview:free",
 	"step-3.7-flash": "stepfun/step-3.7-flash:free",
-	"step-3.7-flash:free": "stepfun/step-3.7-flash:free",
 	"nemotron-3-nano-omni": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-	"nemotron-3-nano-omni:free": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
 	"nemotron-3-ultra-550b": "nvidia/nemotron-3-ultra-550b-a55b:free",
-	"nemotron-3-ultra-550b:free": "nvidia/nemotron-3-ultra-550b-a55b:free",
 	"nemotron-3-super": "nvidia/nemotron-3-super-120b-a12b:free",
-	"nemotron-3-super:free": "nvidia/nemotron-3-super-120b-a12b:free",
-	"hy3:free": "tencent/hy3:free",
 	"north-mini-code": "cohere/north-mini-code:free",
-	"north-mini-code:free": "cohere/north-mini-code:free",
+	"lfm-2.5": "liquid/lfm-2.5-2.6b:free",
+	"content-safety": "nvidia/nemotron-3.5-content-safety:free",
+	// provider-prefixed short aliases (slash-normalized)
+	"hy3:free": "tencent/hy3:free",
 	"laguna-s-2.1:free": "poolside/laguna-s-2.1:free",
 	"laguna-xs-2.1:free": "poolside/laguna-xs-2.1:free",
-	"lfm-2.5": "liquid/lfm-2.5-2.6b:free",
-	"lfm-2.5:free": "liquid/lfm-2.5-2.6b:free",
-	"content-safety": "nvidia/nemotron-3.5-content-safety:free",
-	"content-safety:free": "nvidia/nemotron-3.5-content-safety:free",
 	"kilo-auto": "kilo-auto/free",
 	"openrouter": "openrouter/free",
-
-	// OpenCode Zen aliases
-	"claude-sonnet-4.5-free": "muse-spark-1.2-contributor-free",
-	"claude-sonnet-4.5-contributor-free": "muse-spark-1.2-contributor-free",
-	"grok-code-fast-1-preview-f-free": "x-preview-f-free",
-	"minimax-m2.1-free": "laguna-s-2.1-free",
-	"qwen3-coder-480b-free": "hy3-free",
 };
 
 /**
@@ -357,7 +313,7 @@ export const KILO_MODEL_IDS = new Set<string>([
 ]);
 
 /**
- * Combined list of all 23 static free models (canonical)
+ * Combined list of all 21 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS];
 

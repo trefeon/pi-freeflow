@@ -32,8 +32,13 @@ import type {
 } from "./types.ts";
 
 /**
+ * Pruned model IDs that must never re-enter the catalog via disk cache or upstream merge.
+ */
+const DEAD_MODEL_IDS = new Set<string>(["deepseek-v4-flash-free", "x-preview-f-free"]);
+
+/**
  * In-memory cache of currently active/available free models.
- * Initialized with all 23 verified models for 0ms instant availability.
+ * Initialized with all 21 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
 	...m,
@@ -58,14 +63,17 @@ export function setAliveCatalog(catalog: RegisteredModel[]): void {
  * Fresh entries win on id collision; unknown fresh ids are appended after the base.
  * Guards the background refresh against a partial upstream cache removing
  * verified static models from provider registration.
+ * Filters pruned dead IDs so they never re-enter via fresh upstream data.
  */
 export function mergeCatalog(
 	base: RegisteredModel[],
 	fresh: RegisteredModel[],
 ): RegisteredModel[] {
+	const filteredFresh = fresh.filter((m) => !DEAD_MODEL_IDS.has(m.id));
 	const byId = new Map(base.map((m) => [m.id, m]));
-	for (const m of fresh) byId.set(m.id, m);
-	return [...byId.values()];
+	for (const m of filteredFresh) byId.set(m.id, m);
+	// Ensure no dead IDs survive even if base was stale
+	return [...byId.values()].filter((m) => !DEAD_MODEL_IDS.has(m.id));
 }
 
 /**
@@ -122,7 +130,6 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
 		idLower.includes("r1") ||
 		idLower.includes("o1") ||
 		idLower.includes("think") ||
-		idLower.includes("alpha") ||
 		idLower.includes("spark");
 
 	let contextWindow =
@@ -162,6 +169,7 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
 
 /**
  * Read cached catalog data from disk if valid and unexpired.
+ * Filters out pruned dead IDs so stale disk entries never repopulate the catalog.
  */
 export function readCatalogCache(): CatalogCacheData | null {
 	try {
@@ -170,6 +178,9 @@ export function readCatalogCache(): CatalogCacheData | null {
 		}
 		const raw = fs.readFileSync(CATALOG_CACHE_FILE, "utf8");
 		const data = JSON.parse(raw) as CatalogCacheData;
+		if (Array.isArray(data.models)) {
+			data.models = data.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
+		}
 		if (Date.now() - data.timestamp < CATALOG_CACHE_TTL_MS) {
 			return data;
 		}
@@ -203,20 +214,37 @@ export function writeCatalogCache(data: CatalogCacheData): void {
 export async function refreshCatalog(force = false): Promise<RegisteredModel[]> {
 	// Thin provider: no live fetch — subagents must not hit upstream directly
 	// (proxy-only). Host Pi/OMP owns dynamic discovery via fetchDynamicModels (24h).
-	// We only serve disk cache if fresh, otherwise static 23-model aliveCatalog.
+	// We only serve disk cache if fresh, otherwise static 21-model aliveCatalog.
 	const disk = readCatalogCache();
 	if (disk && Array.isArray(disk.models) && disk.models.length > 0) {
 		const age = Date.now() - (disk.timestamp ?? 0);
 		if (!force && age < CATALOG_CACHE_TTL_MS) {
-			aliveCatalog = disk.models;
+			aliveCatalog = disk.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
 			return aliveCatalog;
 		}
-		// Stale cache still better than empty — return it without network
-		if (disk.models.length >= 23) {
-			aliveCatalog = disk.models;
+		// Stale cache still better than empty — return it without network (filtered)
+		const filtered = disk.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
+		if (filtered.length >= 21) {
+			aliveCatalog = filtered;
 			return aliveCatalog;
 		}
 	}
-	// No valid cache — return in-memory static 23 (host will refresh if needed)
+	// No valid fresh cache — try stale disk cache directly (readCatalogCache returns null when expired)
+	try {
+		if (fs.existsSync(CATALOG_CACHE_FILE)) {
+			const raw = fs.readFileSync(CATALOG_CACHE_FILE, "utf8");
+			const stale = JSON.parse(raw) as CatalogCacheData;
+			if (Array.isArray(stale.models) && stale.models.length > 0) {
+				const filtered = stale.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
+				if (filtered.length >= 21) {
+					aliveCatalog = filtered;
+					return aliveCatalog;
+				}
+			}
+		}
+	} catch (err) {
+		logDebug("Failed reading stale catalog cache", { error: String(err) });
+	}
+	// No valid cache — return in-memory static 21 (host will refresh if needed)
 	return aliveCatalog;
 }

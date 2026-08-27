@@ -30,7 +30,7 @@ test("extension registers provider, commands, and lifecycle hooks", async () => 
 	// Verify provider registration
 	assert.equal(registeredProviderName, "freeflow");
 	assert.ok(registeredProviderConfig);
-	assert.ok(registeredProviderConfig!.models.length >= 23);
+	assert.ok(registeredProviderConfig!.models.length >= 21);
 	assert.ok(registeredCommands.has("freeflow"));
 
 	// Verify lifecycle hooks

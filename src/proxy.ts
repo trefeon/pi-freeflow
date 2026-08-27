@@ -88,21 +88,11 @@ export function sanitizeHeaders(
 }
 
 /**
- * Clamps reasoning_effort for upstream models with strict non-standard enums
- * (e.g. OpenCode x-preview strictly requires 'low', 'high', or 'max' and rejects 'medium' with 400).
+ * Reasoning normalization is owned by host pi-ai; proxy passes through reasoning fields unchanged.
+ * Kept as no-op for compatibility — no per-model clamping.
  */
-function sanitizeReasoningForModel(bodyObj: Record<string, unknown>): void {
-	const model = String(bodyObj.model || "").toLowerCase();
-	if (model.includes("x-preview")) {
-		const effort = String(bodyObj.reasoning_effort || "").toLowerCase();
-		if (effort === "medium") {
-			bodyObj.reasoning_effort = "high";
-		} else if (effort === "minimal") {
-			bodyObj.reasoning_effort = "low";
-		} else if (!effort || effort === "off" || effort === "none") {
-			bodyObj.reasoning_effort = "low";
-		}
-	}
+function sanitizeReasoningForModel(_bodyObj: Record<string, unknown>): void {
+	// no-op
 }
 /**
  * Probe whether an existing pi-freeflow proxy daemon is running and responsive on a given port.
