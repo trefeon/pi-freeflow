@@ -138,7 +138,21 @@ export function resolveDebugStatePath(): string {
 	}
 }
 
+export function resolveUpdateCachePath(): string {
+	try {
+		return path.join(homedir(), ".pi", "agent", "pi-freeflow-update.json");
+	} catch {
+		return path.join(
+			path.dirname(fileURLToPath(import.meta.url)),
+			"..",
+			".update-cache.json",
+		);
+	}
+}
+
 export const RELAY_STATE_FILE = resolveRelayStatePath();
 export const LOG_FILE = resolveLogFilePath();
 export const CATALOG_CACHE_FILE = resolveCatalogCachePath();
 export const DEBUG_STATE_FILE = resolveDebugStatePath();
+export const UPDATE_CACHE_FILE = resolveUpdateCachePath();
+export const UPDATE_CHECK_TTL_MS = 86_400_000;

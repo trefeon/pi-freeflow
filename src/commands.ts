@@ -4,8 +4,18 @@
  * log viewing, debug level configuration, and live catalog refreshing.
  */
 
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { refreshCatalog, setAliveCatalog } from "./catalog.ts";
 import { DEBUG_STATE_FILE, DEFAULT_RELAY_URL, LOG_FILE } from "./config.ts";
+import {
+	compareVersions,
+	fetchLatestVersion,
+	getCachedUpdate,
+	isLinkedInstall,
+} from "./update-checker.ts";
 import {
 	deployCloudflareWorker,
 	deployDenoRelay,
@@ -66,13 +76,59 @@ export function updateStatusBar(ui?: ExtensionUIContext): void {
 	}
 }
 
+function getLocalVersion(): string {
+	try {
+		const thisDir = path.dirname(fileURLToPath(import.meta.url));
+		const pkgPath = path.join(thisDir, "..", "package.json");
+		const raw = readFileSync(pkgPath, "utf8");
+		const pkg = JSON.parse(raw) as { version?: string };
+		if (typeof pkg.version === "string" && pkg.version.trim().length > 0) {
+			return pkg.version.trim();
+		}
+		return "0.0.0";
+	} catch {
+		return "0.0.0";
+	}
+}
+
+function spawnWithProgress(
+	cmd: string,
+	args: string[],
+	ctx: ExtensionContext,
+): Promise<number> {
+	return new Promise((resolve) => {
+		try {
+			const child = spawn(cmd, args, {
+				shell: process.platform === "win32",
+				stdio: "pipe",
+			});
+			child.stdout?.on("data", (d: Buffer) => {
+				const s = String(d).trim();
+				if (s) ctx.ui.notify(s, "info");
+			});
+			child.stderr?.on("data", (d: Buffer) => {
+				const s = String(d).trim();
+				if (s) ctx.ui.notify(s, "info");
+			});
+			child.on("error", (err: Error) => {
+				ctx.ui.notify(`spawn ${cmd} failed: ${err.message}`, "warning");
+				resolve(1);
+			});
+			child.on("close", (code: number | null) => resolve(code ?? 0));
+		} catch (e) {
+			ctx.ui.notify(`spawn ${cmd} failed: ${(e as Error).message}`, "warning");
+			resolve(1);
+		}
+	});
+}
+
 export function createCommandSpec(
 	_pi: ExtensionAPI,
 	onCatalogRefreshed?: (models: RegisteredModel[]) => void,
 ): Omit<RegisteredCommand, "name"> {
 	return {
 		description:
-			"Relay egress: auto | on | off | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | logs [level] [n] | debug on|off | refresh | deploy vercel | deploy cloudflare | deploy deno",
+			"Relay egress: auto | on | off | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno",
 		getArgumentCompletions: (prefix: string) =>
 			[
 				"auto",
@@ -348,6 +404,71 @@ export function createCommandSpec(
 				flash();
 			} else if (sub === "status") {
 				flash();
+				try {
+					const local = getLocalVersion();
+					let latest: string | null = null;
+					const cached = getCachedUpdate();
+					if (cached && typeof cached.latest === "string") {
+						latest = cached.latest;
+					}
+					if (latest && compareVersions(latest, local) > 0) {
+						ctx.ui.notify(
+							`Update available: ${local} -> ${latest} - run /freeflow update`,
+							"info",
+						);
+					}
+				} catch {
+					// swallow — status banner is best-effort
+				}
+			} else if (sub === "update") {
+				if (isLinkedInstall()) {
+					ctx.ui.notify(
+						"LINK install (D:/github_repo/pi-freeflow) is live - just omp restart, no npm update needed.",
+						"info",
+					);
+				} else {
+					try {
+						ctx.ui.notify("Checking for updates…", "info");
+						let latest: string | null = null;
+						try {
+							latest = await fetchLatestVersion();
+						} catch {
+							latest = null;
+						}
+						if (!latest) {
+							const cached = getCachedUpdate();
+							if (cached && typeof cached.latest === "string") {
+								latest = cached.latest;
+							}
+						}
+						if (!latest) {
+							ctx.ui.notify("Could not check latest version (offline?)", "warning");
+						} else {
+							const local = getLocalVersion();
+							const cmp = compareVersions(latest, local);
+							if (cmp <= 0) {
+								ctx.ui.notify(`Already on latest (v${local})`, "info");
+							} else {
+								ctx.ui.notify(`Update available: v${local} → v${latest} — updating…`, "info");
+								let code = await spawnWithProgress("omp", ["plugin", "update", "pi-freeflow"], ctx);
+								if (code !== 0) {
+									ctx.ui.notify(`omp update exited ${code}, trying npm…`, "info");
+									code = await spawnWithProgress("npm", ["i", "-g", "pi-freeflow@latest"], ctx);
+								}
+								if (code === 0) {
+									ctx.ui.notify(`Updated to ${latest}, restart OMP`, "info");
+								} else {
+									ctx.ui.notify(
+										`Update failed (exit ${code}) — try manually: npm i -g pi-freeflow@latest`,
+										"warning",
+									);
+								}
+							}
+						}
+					} catch (e) {
+						ctx.ui.notify(`Update failed: ${(e as Error).message} — try manually: npm i -g pi-freeflow@latest`, "warning");
+					}
+				}
 			} else if (sub === "list") {
 				showList();
 			} else if (sub === "add") {
