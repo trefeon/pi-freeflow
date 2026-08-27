@@ -53,8 +53,8 @@ export const VERCEL_API = "https://api.vercel.com";
 
 // ── Catalog & Logging constants ─────────────────────────────────────
 export const CATALOG_CACHE_TTL_MS = 86_400_000; // 24 hours — delegate to host fetchDynamicModels
-export const LOG_MAX_BYTES = 10 * 1024 * 1024; // 10MB
-export const LOG_MAX_FILES = 3;
+export const LOG_MAX_BYTES = 10 * 1024 * 1024; // 10MB per file
+export const LOG_MAX_FILES = 10; // 10 archived + current ≈ 110MB max (≈100MB per your request, rotated, not single 100MB blob)
 
 // ── Rate Limit Maxima ───────────────────────────────────────────────
 export const RATE_LIMIT_MAX: Record<Upstream, number> = {
