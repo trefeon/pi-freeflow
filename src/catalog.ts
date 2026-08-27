@@ -169,6 +169,7 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
 /**
  * Read cached catalog data from disk if valid and unexpired.
  * Filters out pruned dead IDs so stale disk entries never repopulate the catalog.
+ * Preserves etag for conditional If-None-Match requests.
  */
 export function readCatalogCache(): CatalogCacheData | null {
 	try {
@@ -191,6 +192,7 @@ export function readCatalogCache(): CatalogCacheData | null {
 
 /**
  * Atomically write catalog cache data to disk using temporary file + rename.
+ * Persists etag alongside models for subsequent If-None-Match conditional requests.
  */
 export function writeCatalogCache(data: CatalogCacheData): void {
 	try {
@@ -208,12 +210,13 @@ export function writeCatalogCache(data: CatalogCacheData): void {
 
 /**
  * Refresh free model catalog from OpenCode Zen and KiloCode Gateway endpoints.
- * Falls back gracefully to cached or static models if network requests fail.
+ * Uses ETag conditional requests (If-None-Match) to avoid re-merging unchanged
+ * catalogs; a 304 Not Modified response skips merge and returns the in-memory
+ * catalog unchanged. Falls back gracefully to cached or static models if network
+ * requests fail.
  */
 export async function refreshCatalog(force = false): Promise<RegisteredModel[]> {
-	// Thin provider: no live fetch — subagents must not hit upstream directly
-	// (proxy-only). Host Pi/OMP owns dynamic discovery via fetchDynamicModels (24h).
-	// We only serve disk cache if fresh, otherwise static 21-model aliveCatalog.
+	// Thin provider: serve fresh disk cache instantly when valid
 	const disk = readCatalogCache();
 	if (disk && Array.isArray(disk.models) && disk.models.length > 0) {
 		const age = Date.now() - (disk.timestamp ?? 0);
@@ -221,7 +224,79 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 			aliveCatalog = disk.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
 			return aliveCatalog;
 		}
-		// Stale cache still better than empty — return it without network (filtered)
+	}
+
+	// Resolve etag from fresh or stale cache for conditional request
+	let cachedEtag: string | undefined = disk?.etag;
+	let staleForEtag: CatalogCacheData | null = disk;
+	if (!cachedEtag) {
+		try {
+			if (fs.existsSync(CATALOG_CACHE_FILE)) {
+				const raw = fs.readFileSync(CATALOG_CACHE_FILE, "utf8");
+				const stale = JSON.parse(raw) as CatalogCacheData;
+				cachedEtag = stale.etag;
+				staleForEtag = stale;
+			}
+		} catch (err) {
+			logDebug("Failed reading stale catalog cache for etag", { error: String(err) });
+		}
+	}
+
+	// Attempt conditional fetch with If-None-Match when we have an etag
+	if (cachedEtag || force) {
+		try {
+			const headers: Record<string, string> = { ...opencodeHeaders() };
+			if (cachedEtag) {
+				headers["If-None-Match"] = cachedEtag;
+			}
+			const res = await fetch(`${OPENCODE_API_URL}/models`, { headers });
+			if (res.status === 304) {
+				// Not modified — skip merge, extend timestamp to avoid tight loop
+				if (staleForEtag && Array.isArray(staleForEtag.models)) {
+					try {
+						writeCatalogCache({ ...staleForEtag, timestamp: Date.now() });
+					} catch {}
+				}
+				return aliveCatalog;
+			}
+			if (res.ok) {
+				const newEtag = res.headers.get("etag") ?? res.headers.get("ETag") ?? cachedEtag;
+				const body: unknown = await res.json();
+				let rawList: RawModelItem[] = [];
+				if (Array.isArray(body)) {
+					rawList = body as RawModelItem[];
+				} else if (body !== null && typeof body === "object" && "data" in body) {
+					const dataVal = body.data as unknown;
+					if (Array.isArray(dataVal)) {
+						rawList = dataVal as RawModelItem[];
+					}
+				}
+				if (rawList.length > 0) {
+					const fresh = rawList.map((r) => enrichModelDef(r, "opencode"));
+					const merged = mergeCatalog(aliveCatalog, fresh);
+					aliveCatalog = merged;
+					writeCatalogCache({
+						timestamp: Date.now(),
+						opencode: fresh.map((m) => m.id),
+						kilo: staleForEtag?.kilo ?? [],
+						models: merged,
+						etag: newEtag ?? cachedEtag,
+					});
+					return aliveCatalog;
+				}
+				// Empty payload but 200 — treat as no-op, return current
+				if (newEtag && newEtag !== cachedEtag && staleForEtag) {
+					writeCatalogCache({ ...staleForEtag, timestamp: Date.now(), etag: newEtag });
+				}
+				return aliveCatalog;
+			}
+		} catch (err) {
+			logDebug("Conditional catalog fetch failed, falling back to cache", { error: String(err) });
+		}
+	}
+
+	// Stale cache still better than empty — return it without network (filtered)
+	if (disk && Array.isArray(disk.models) && disk.models.length > 0) {
 		const filtered = disk.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
 		if (filtered.length >= 21) {
 			aliveCatalog = filtered;

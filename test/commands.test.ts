@@ -4,8 +4,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import { createCommandSpec, updateStatusBar } from "../src/commands.ts";
-import { RELAY_STATE_FILE } from "../src/config.ts";
+import { LOG_FILE, RELAY_STATE_FILE } from "../src/config.ts";
 import {
 	getActiveRelayState,
 	setActiveRelayState,
@@ -147,4 +148,52 @@ test("updateStatusBar displays short name in TUI format", () => {
 		assert.equal(lastStatus.key, "freeflow");
 		assert.equal(lastStatus.status, "relay: ON | cf-edge 1/2");
 	});
+});
+test("command spec: /freeflow logs --follow tails via setInterval 1s", async () => {
+	const origSetInterval = globalThis.setInterval;
+	const origClearInterval = globalThis.clearInterval;
+	let capturedMs: number | null = null;
+	let capturedFn: (() => void) | null = null;
+	// @ts-ignore mock setInterval to capture 1s tail interval
+	globalThis.setInterval = (fn: () => void, ms?: number) => {
+		capturedFn = fn;
+		capturedMs = ms ?? null;
+		return 999 as unknown as NodeJS.Timeout;
+	};
+	// @ts-ignore mock clearInterval noop
+	globalThis.clearInterval = (() => {}) as unknown as typeof clearInterval;
+	const hadLog = fs.existsSync(LOG_FILE);
+	const backup = hadLog ? fs.readFileSync(LOG_FILE, "utf8") : null;
+	try {
+		fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+		fs.writeFileSync(LOG_FILE, "[INFO] test log line 1\n[INFO] test log line 2\n");
+		const spec = createCommandSpec(mockApi);
+		const { ctx, notifications } = createMockContext();
+		await spec.handler("logs --follow", ctx);
+		assert.equal(capturedMs, 1000);
+		assert.ok(capturedFn, "setInterval not called for --follow");
+		assert.ok(notifications.length >= 1, "initial logs notify missing");
+		// simulate new log arriving and interval tick notifies tail
+		fs.writeFileSync(LOG_FILE, "[INFO] test log line 1\n[INFO] test log line 2\n[INFO] live tail line\n");
+		const before = notifications.length;
+		(capturedFn as unknown as () => void)!();
+		assert.ok(notifications.length > before, "interval tick did not notify");
+		assert.ok(notifications.some((n) => n.message.includes("live tail line")), "tail content not notified");
+		// also verify -f alias triggers interval
+		capturedMs = null;
+		capturedFn = null;
+		const { ctx: ctx2, notifications: n2 } = createMockContext();
+		await spec.handler("logs -f", ctx2);
+		assert.equal(capturedMs, 1000);
+		assert.ok(capturedFn);
+		assert.ok(n2.length >= 1);
+	} finally {
+		globalThis.setInterval = origSetInterval;
+		globalThis.clearInterval = origClearInterval;
+		if (hadLog && backup !== null) {
+			fs.writeFileSync(LOG_FILE, backup);
+		} else if (!hadLog) {
+			try { fs.unlinkSync(LOG_FILE); } catch {}
+		}
+	}
 });

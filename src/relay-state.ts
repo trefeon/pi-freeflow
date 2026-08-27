@@ -192,8 +192,6 @@ export function resolveRelayState(): RelayState {
 }
 
 let activeRelayState: RelayState = resolveRelayState();
-// Monotonic counter to distribute primary relay across concurrent subagents
-let roundRobinCounter = 0;
 let activeStatusUi: ExtensionUIContext | null = null;
 let isFreeFlowModelActive = true;
 
@@ -206,6 +204,7 @@ export interface RelayHealth {
 }
 
 const relayHealthMap = new Map<string, RelayHealth>();
+let last429Warn = 0;
 
 /**
  * Mark a relay as healthy and active on successful response.
@@ -231,11 +230,15 @@ export function markRelayFailure(url: string, status?: number, error?: string): 
 	let cooldownMs = 30_000; // 30s default for socket/network/502/503
 
 	if (status === 429) {
-		cooldownMs = 90_000; // 90s cooldown for upstream rate limits
+		cooldownMs = 90_000;
+		if (now - last429Warn > 10 * 60 * 1000) {
+			logWarn("relay 429 burst >5/min, consider adding egress", { relay: clean });
+			last429Warn = now;
+		}
 	} else if (status === 504) {
-		cooldownMs = 60_000; // 60s cooldown for gateway timeout
+		cooldownMs = 60_000;
 	} else if (status && status >= 500) {
-		cooldownMs = 45_000; // 45s for 5xx errors
+		cooldownMs = 45_000;
 	}
 
 	// Escalate with consecutive failures so chronic offenders back off up to
@@ -273,7 +276,10 @@ export function getRelayHealth(url: string): RelayHealth | undefined {
  */
 export function resetAllRelayHealth(): void {
 	relayHealthMap.clear();
+	last429Warn = 0;
 }
+/** Test-only: reset 429 warn throttle */
+export function _reset429WarnForTest(): void { last429Warn = 0; }
 /**
  * Mtime of the on-disk state file at the moment we last read or wrote it.
  * session's master daemon, while never clobbering this process's own
@@ -381,11 +387,11 @@ export function getOrderedRelayUrls(): string[] {
 		if (activeIdx < 0) {
 			activeIdx = 0;
 		}
-		// Rotate starting point per-request to avoid thundering herd when many
-		// subagents hit the shared 127.0.0.1 daemon at once — each request
-		// tries a different primary relay, but still rolls seamlessly on 429.
+		// Sticky primary until error — keep active relay as primary for all requests,
+		// only rolling to next healthy on 429/5xx or cooldown. Avoids per-request
+		// rotation that sprays load; successive requests reuse same egress IP.
 		const totalRelays = activeRelayState.relays.length;
-		const startIdx = (activeIdx + (roundRobinCounter++ % totalRelays)) % totalRelays;
+		const startIdx = activeIdx;
 		const rawOrdered: string[] = [];
 		for (let i = 0; i < totalRelays; i++) {
 			const r = activeRelayState.relays[(startIdx + i) % totalRelays];
@@ -413,6 +419,10 @@ export function updateRelayStatusUi(targetUrl?: string): void {
 	}
 	// Do not update status bar if the user switched to another provider (e.g. Gemini/Claude)
 	if (!isFreeFlowModelActive) {
+		activeStatusUi.setStatus("freeflow", undefined);
+		return;
+	}
+	if (getActiveRelayState().hideWidget) {
 		activeStatusUi.setStatus("freeflow", undefined);
 		return;
 	}

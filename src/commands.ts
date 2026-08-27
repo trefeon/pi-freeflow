@@ -60,6 +60,10 @@ import type {
 export function updateStatusBar(ui?: ExtensionUIContext): void {
 	if (!ui) return;
 	const relayState = getActiveRelayState();
+	if (relayState.hideWidget) {
+		ui.setStatus("freeflow", undefined);
+		return;
+	}
 	if (relayState.enabled && relayState.relays.length > 0) {
 		const label = shortRelayLabel(relayState.url);
 		const idx = Math.max(
@@ -128,12 +132,16 @@ export function createCommandSpec(
 ): Omit<RegisteredCommand, "name"> {
 	return {
 		description:
-			"Relay egress: auto | on | off | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno",
+			"Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno",
 		getArgumentCompletions: (prefix: string) =>
 			[
 				"auto",
 				"on",
 				"off",
+				"hide",
+				"show",
+				"widget hide",
+				"widget show",
 				"status",
 				"add",
 				"list",
@@ -402,6 +410,16 @@ export function createCommandSpec(
 				setActiveRelayState(relayState);
 				persist();
 				flash();
+			} else if (sub === "hide" || (sub === "widget" && rest === "hide")) {
+				relayState.hideWidget = true;
+				persist();
+				updateStatusBar(ctx.ui);
+				ctx.ui.notify("Widget hidden — use /freeflow show or /freeflow widget show to restore", "info");
+			} else if (sub === "show" || (sub === "widget" && rest === "show")) {
+				relayState.hideWidget = false;
+				persist();
+				flash();
+				ctx.ui.notify("Widget shown", "info");
 			} else if (sub === "status") {
 				flash();
 				try {
@@ -611,12 +629,14 @@ export function createCommandSpec(
 					let filterLevel: LogLevel | null = null;
 					let filterReqId: string | null = null;
 					let count = 25;
+					const rawTokens = rawRest ? rawRest.split(/\s+/) : [];
+					const isFollow = rawTokens.includes("--follow") || rawTokens.includes("-f");
 
 					if (sub === "trace" && rawRest) {
-						filterReqId = rawRest.split(/\s+/)[0];
+						filterReqId = rawTokens.filter((t) => t !== "--follow" && t !== "-f")[0] || null;
 					} else if (rawRest) {
-						const tokens = rawRest.split(/\s+/);
-						for (const t of tokens) {
+						for (const t of rawTokens) {
+							if (t === "--follow" || t === "-f") continue;
 							const lower = t.toLowerCase();
 							if (lower in LOG_LEVEL_ORDER) {
 								filterLevel = lower as LogLevel;
@@ -655,6 +675,18 @@ export function createCommandSpec(
 								"warning",
 							);
 						}
+						if (isFollow) {
+							const _t = setInterval(() => {
+								try {
+									const tail = readRecentLogs(filterLevel, filterReqId, count);
+									if (tail.lines.length > 0) {
+										ctx.ui.notify(tail.lines.join("\n"), "info");
+									}
+								} catch {}
+							}, 1000);
+							// @ts-ignore allow unref to not block process exit in CLI
+							_t.unref?.();
+						}
 						return;
 					}
 
@@ -663,6 +695,18 @@ export function createCommandSpec(
 						`${header}\n\n${result.lines.join("\n")}`,
 						"info",
 					);
+					if (isFollow) {
+						const _t2 = setInterval(() => {
+							try {
+								const tail = readRecentLogs(filterLevel, filterReqId, count);
+								if (tail.lines.length > 0) {
+									ctx.ui.notify(tail.lines.join("\n"), "info");
+								}
+							} catch {}
+						}, 1000);
+						// @ts-ignore allow unref to not block process exit in CLI
+						_t2.unref?.();
+					}
 				} catch (e) {
 					ctx.ui.notify(
 						`Could not read log file: ${(e as Error).message}`,

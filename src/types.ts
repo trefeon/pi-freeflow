@@ -46,6 +46,7 @@ export interface RelayState {
 	enabled: boolean;
 	url: string;
 	relays: KnownRelay[];
+	hideWidget?: boolean;
 }
 export type LogLevel = "debug" | "info" | "warn" | "error" | "audit";
 
@@ -70,6 +71,7 @@ export interface CatalogCacheData {
 	opencode: string[];
 	kilo: string[];
 	models?: RegisteredModel[];
+	etag?: string;
 }
 
 export interface RateLimitEntry {
@@ -93,6 +95,11 @@ export interface ExtensionUIContext {
 	input(prompt: string, defaultValue?: string): Promise<string | undefined>;
 	select(prompt: string, options: string[]): Promise<string | undefined>;
 	confirm?(prompt: string): Promise<boolean>;
+	/** Optional status-bar click handler (when host supports clickable widgets) */
+	onStatusClick?(handler: () => void | Promise<void>): void | (() => void);
+	/** Fallback/alternate names hosts may expose */
+	onStatusBarClick?(handler: () => void | Promise<void>): void | (() => void);
+	onWidgetClick?(handler: () => void | Promise<void>): void | (() => void);
 }
 
 export interface ExtensionContext {

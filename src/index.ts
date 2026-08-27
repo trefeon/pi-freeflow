@@ -22,16 +22,20 @@ import { log, logInfo, logWarn } from "./logger.ts";
 import { ALL_MODELS, KILO_MODEL_IDS, MODEL_MAP, getAllRegisteredModels, resolveCanonicalModelId } from "./models.ts";
 import { isProxyAlive, startProxy } from "./proxy.ts";
 import { resetRateLimits } from "./rate-limiter.ts";
+import { checkForUpdateInBackground } from "./update-checker.ts";
 import {
+	ensureRelay,
 	getActiveRelayState,
 	resolveRelayState,
 	setActiveRelayState,
 	setStatusUi,
 	setFreeFlowModelActive,
+	shortRelayLabel,
 } from "./relay-state.ts";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
+	ExtensionUIContext,
 	ProviderConfig,
 	RegisteredModel,
 } from "./types.ts";
@@ -49,6 +53,56 @@ export * from "./deploy.ts";
 export * from "./stream-pipe.ts";
 export * from "./proxy.ts";
 export * from "./commands.ts";
+/**
+ * Bind widget click to relay picker when host supports it.
+ * Feature-detects `onStatusClick` (or similar) on ExtensionUIContext.
+ * Falls back to no-op; status hint already tells user to use `/freeflow use`.
+ */
+export function bindWidgetClick(ui: ExtensionUIContext): void {
+	const anyUi = ui as unknown as Record<string, unknown>;
+	const candidates = ["onStatusClick", "onStatusBarClick", "onWidgetClick"] as const;
+	let clickFn: ((h: () => void | Promise<void>) => unknown) | undefined;
+	for (const name of candidates) {
+		const v = anyUi[name];
+		if (typeof v === "function") {
+			clickFn = v as (h: () => void | Promise<void>) => unknown;
+			break;
+		}
+	}
+	if (!clickFn) return;
+	try {
+		clickFn.call(anyUi, async () => {
+			try {
+				const state = getActiveRelayState();
+				if (!state.relays.length) {
+					ui.notify("Use /freeflow use — no relays saved. Add one with /freeflow add <URL>", "info");
+					return;
+				}
+				const fmt = (r: { url: string; label?: string }, idx: number) => {
+					const isAct = r.url === state.url ? "★ " : "  ";
+					const lbl = r.label ? `[${r.label}] ` : `[${shortRelayLabel(r.url, state.relays)}] `;
+					return `${isAct}[${idx + 1}] ${lbl}→ ${r.url}`;
+				};
+				const opts = state.relays.map(fmt);
+				const choice = await ui.select("Switch active relay", opts);
+				if (!choice) return;
+				const idx = opts.indexOf(choice);
+				const match = idx >= 0 ? state.relays[idx] : undefined;
+				// Fallback find by formatting match
+				const resolved = match ?? state.relays.find((r, i) => fmt(r, i) === choice);
+				if (!resolved) return;
+				state.enabled = true;
+				state.url = resolved.url;
+				ensureRelay(state, resolved.url, resolved.label);
+				setActiveRelayState(state);
+				setStatusUi(ui);
+				updateStatusBar(ui);
+				ui.notify(`Relay active: ${resolved.label || shortRelayLabel(resolved.url, state.relays)}`, "info");
+			} catch {}
+		});
+	} catch {}
+}
+
 
 /**
  * Construct standard ProviderConfig for pi-ai / OMP registration.
@@ -242,6 +296,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		await ensureDaemon();
 		const freshRelayState = resolveRelayState();
 		setStatusUi(ctx.ui);
+		try { bindWidgetClick(ctx.ui); } catch {}
 
 		let provider: string | undefined;
 		let modelId: string | undefined;
@@ -267,12 +322,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		} else {
 			ctx.ui?.setStatus?.("freeflow", undefined);
 		}
+		try { checkForUpdateInBackground(ctx.ui as unknown as ExtensionUIContext); } catch {}
 	});
-
 	pi.on?.("model_select", async (event, ctx: ExtensionContext) => {
 		await ensureDaemon();
 		const freshRelayState = resolveRelayState();
 		setStatusUi(ctx.ui);
+		try { bindWidgetClick(ctx.ui); } catch {}
 		let provider: string | undefined;
 		let modelId: string | undefined;
 		if (event && typeof event === "object" && "model" in event && event.model && typeof event.model === "object") {

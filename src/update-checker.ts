@@ -1,19 +1,10 @@
-/**
- * Update checker for pi-freeflow — background npm registry poll with 24h cache.
- *
- * LINK-skip: when the extension entry is a symlink (developer `omp plugin link`),
- * the checker is disabled entirely.
- */
-
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
 import { UPDATE_CACHE_FILE, UPDATE_CHECK_TTL_MS } from "./config.ts";
 import { logInfo } from "./logger.ts";
-
+import type { ExtensionUIContext } from "./types.ts";
 const REGISTRY_URL = "https://registry.npmjs.org/pi-freeflow/latest";
-
 export interface UpdateCacheData {
 	latest: string;
 	checkedAt: number;
@@ -110,14 +101,7 @@ function getLocalVersion(): string | null {
 	}
 }
 
-/**
- * Non-blocking background update check. Safe to call during extension
- * activation without awaiting — it never throws and never blocks the caller.
- *
- * Flow: LINK-skip → cache TTL (24h) skip → fetchLatestVersion in background
- * → cache result → log if latest > local.
- */
-export function checkForUpdateInBackground(): void {
+export function checkForUpdateInBackground(ui?: ExtensionUIContext | null): void {
 	try {
 		if (isLinkedInstall()) return;
 
@@ -142,6 +126,16 @@ export function checkForUpdateInBackground(): void {
 					const local = getLocalVersion();
 					if (local && compareVersions(latest, local) > 0) {
 						logInfo(`pi-freeflow update available: ${local} -> ${latest} (run /freeflow update)`);
+						const targetUi = ui ?? null;
+						if (targetUi?.setStatus) {
+							try { targetUi.setStatus("freeflow", `update: ${local} → ${latest}`); } catch {}
+						} else {
+							try {
+								const { getStatusUi } = require("./relay-state.ts") as { getStatusUi: () => ExtensionUIContext | null };
+								const fallback = getStatusUi();
+								if (fallback?.setStatus) fallback.setStatus("freeflow", `update: ${local} → ${latest}`);
+							} catch {}
+						}
 					}
 				} catch {
 					// swallow

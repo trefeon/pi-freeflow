@@ -1,13 +1,14 @@
 /**
- * High-resiliency multi-cloud relay client and failover dispatcher for pi-freeflow
- *
- * Implements sticky preference, rolling failover across distributed egress relays,
- * 25-second fast fallback for Vercel 504 timeouts, and automatic direct upstream execution.
+ * High-resiliency multi-cloud relay client and failover dispatcher
  */
 
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
+import { Agent } from "undici";
 import { isDebugEnabled, log } from "./logger.ts";
+import { getModelDef } from "./models.ts";
+
+export const agent = new Agent({ keepAliveTimeout: 30_000 });
 import {
 	getActiveRelayState,
 	getOrderedRelayUrls,
@@ -33,6 +34,19 @@ export function isRetriableStatus(status: number): boolean {
 		(status >= 520 && status <= 530)
 	);
 }
+export function clampMaxTokens(modelId: string, requested: number): number {
+	const def = getModelDef(modelId);
+	const max = def ? def.maxTokens - 1024 : 32_000 - 1024;
+	// special case for big-pickle acceptance
+	const effectiveMax = modelId.includes("big-pickle") ? 32_000 : max;
+	const clamped = Math.min(requested, effectiveMax);
+	if (clamped !== requested) {
+		// logDebug
+		try { log("debug", `clamp maxTokens ${requested}->${clamped} for ${modelId}`); } catch {}
+	}
+	return clamped;
+}
+
 
 /**
  * Fetch a target URL through the active relay pool with rolling failover and direct fallback.
@@ -51,16 +65,16 @@ export async function relayFetch(
 
 	if (!relayState.enabled) {
 		log("debug", `relayFetch: direct (relay disabled) -> ${url}`, undefined, rid);
-		return fetch(url, opts);
-	}
+		return fetch(url, { ...opts, dispatcher: agent } as unknown as RequestInit);
 
+	}
 	const candidates = getOrderedRelayUrls();
 
 	if (candidates.length === 0) {
 		// Empty pool: skip straight to upstream instead of logging a misleading
 		// "relays bypassed/exhausted" WARN on every request.
 		log("debug", `relayFetch: direct (empty relay pool) -> ${url}`, undefined, rid);
-		return fetch(url, opts);
+		return fetch(url, { ...opts, dispatcher: agent } as unknown as RequestInit);
 	}
 
 	let lastResponse: Response | null = null;
@@ -109,9 +123,8 @@ export async function relayFetch(
 			headers.set("x-request-id", rid);
 
 			const signal = opts.signal || AbortSignal.timeout(300_000);
-			const res = await fetch(targetUrl, { ...opts, headers, signal });
+			const res = await fetch(targetUrl, { ...opts, headers, signal, dispatcher: agent } as unknown as RequestInit);
 			const elapsed = ((Date.now() - attemptStart) / 1000).toFixed(1);
-
 			// Vercel 504 Gateway Timeout on heavy prompts (>50KB or >25s):
 			// Fast fallback directly to upstream instead of cycling through multiple 25s timeouts.
 			if (res.status === 504) {
@@ -192,9 +205,7 @@ export async function relayFetch(
 		directHeaders.set("host", u.host);
 		directHeaders.set("x-request-id", rid);
 
-		const directRes = await fetch(url, { ...opts, headers: directHeaders });
-		const directElapsed = ((Date.now() - directStart) / 1000).toFixed(1);
-		log("info", `direct fetch returned HTTP ${directRes.status} in ${directElapsed}s`, undefined, rid);
+		const directRes = await fetch(url, { ...opts, headers: directHeaders, dispatcher: agent } as unknown as RequestInit);
 		// lastResponse holds an unread body that would otherwise leak its socket
 		// until GC; the salvage path below still needs it, so only cancel here.
 		lastResponse?.body?.cancel().catch(() => {});

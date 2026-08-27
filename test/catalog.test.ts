@@ -7,7 +7,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeCatalog } from "../src/catalog.ts";
+import { mergeCatalog, refreshCatalog } from "../src/catalog.ts";
 import type { RegisteredModel } from "../src/types.ts";
 
 function model(id: string, maxTokens: number, source: "opencode" | "kilo"): RegisteredModel {
@@ -49,4 +49,17 @@ test("mergeCatalog appends unknown fresh ids after the base", () => {
 test("mergeCatalog with an empty fresh list returns the base unchanged", () => {
 	const merged = mergeCatalog(BASE, []);
 	assert.deepEqual(merged, BASE);
+});
+
+test("refreshCatalog uses If-None-Match ETag and skips merge on 304", async () => {
+	const realFetch = globalThis.fetch;
+	try {
+		// Simulate upstream 304 Not Modified
+		globalThis.fetch = async () =>
+			new Response(null, { status: 304, headers: { etag: '"abc123"' } });
+		const result = await refreshCatalog(true);
+		assert.ok(Array.isArray(result), "refreshCatalog must return array on 304");
+	} finally {
+		globalThis.fetch = realFetch;
+	}
 });

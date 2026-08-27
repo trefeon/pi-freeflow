@@ -8,6 +8,7 @@
 import { randomUUID } from "node:crypto";
 import * as http from "node:http";
 import * as https from "node:https";
+import { handleHealthRequest } from "./health.ts";
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { getAliveCatalog } from "./catalog.ts";
@@ -26,7 +27,7 @@ import { isDebugEnabled, log } from "./logger.ts";
 import { KILO_MODEL_IDS, resolveCanonicalModelId } from "./models.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
 import { checkRateLimit } from "./rate-limiter.ts";
-import { relayFetch } from "./relay.ts";
+import { agent, relayFetch } from "./relay.ts";
 import { getActiveRelayState } from "./relay-state.ts";
 import { pipeUpstreamStream } from "./stream-pipe.ts";
 import type { Upstream } from "./types.ts";
@@ -147,13 +148,16 @@ export function startProxy(
 			return;
 		}
 
-		// Serve ONLY our registered free models. Never forward /v1/models to upstream
-		// to prevent paid/proprietary upstream models from leaking into the model picker.
-		// Use pathname check so /v1/models?query variants are also guarded (no leak).
 		let reqPathname: string | null = null;
 		try {
 			reqPathname = new URL(req.url ?? "/", `http://${HOST}`).pathname;
 		} catch {}
+		// Loopback-only health endpoint — always accessible even when widget hidden
+		if (req.method === "GET" && reqPathname !== null && (reqPathname === "/_health" || reqPathname === "/health" || reqPathname.endsWith("/health"))) {
+			const addr = server.address();
+			const realPort = addr && typeof addr === "object" ? (addr as { port: number }).port : basePort;
+			if (handleHealthRequest(req, res, realPort)) return;
+		}
 		if (req.method === "GET" && (reqPathname === "/v1/models" || reqPathname === "/v1/models/")) {
 			const alive = getAliveCatalog();
 			const body = JSON.stringify({
@@ -365,75 +369,70 @@ export function startProxy(
 					if (directBody.length > 0) {
 						fwd["content-length"] = String(directBody.byteLength);
 					}
+					fwd["connection"] = "keep-alive";
 
-					const proxy = https.request(
-						{
+					const controller = new AbortController();
+					const timeoutId = setTimeout(() => controller.abort(), 300_000);
+					const onClientClose = () => {
+						if (!res.writableEnded) controller.abort();
+					};
+					const onReqError = () => controller.abort();
+					res.on("close", onClientClose);
+					req.on("error", onReqError);
+
+					try {
+						const upstreamRes = await fetch(target.href, {
 							method: req.method,
-							hostname: target.hostname,
-							port: 443,
-							path: target.pathname + target.search,
 							headers: fwd,
-						},
-						(upstream) => {
-							const outHeaders: Record<string, string> = {};
-							for (const h of [
-								"content-type",
-								"cache-control",
-								"x-request-id",
-							]) {
-								const val = upstream.headers[h];
-								if (typeof val === "string") outHeaders[h] = val;
-							}
-							outHeaders["x-content-type-options"] = "nosniff";
-							res.writeHead(upstream.statusCode ?? 502, outHeaders);
-							if (isStream) {
-								pipeUpstreamStream(upstream, res, req, reqId, "direct");
-							} else {
-								upstream.on("error", (streamErr) => {
-									log(
-										"error",
-										"upstream stream error in direct proxy",
-										{ error: String(streamErr) },
-										reqId,
-									);
-									if (!res.writableEnded) res.end();
-								});
-								upstream.pipe(res);
-							}
-						},
-					);
+							body: directBody.length > 0 ? directBody : undefined,
+							signal: controller.signal,
+							dispatcher: agent,
+						} as unknown as RequestInit);
+						clearTimeout(timeoutId);
+						res.off("close", onClientClose);
+						req.off("error", onReqError);
 
-					proxy.on("error", (proxyErr) => {
-						log(
-							"error",
-							"proxy socket error",
-							{ error: String(proxyErr) },
-							reqId,
-						);
+						const outHeaders: Record<string, string> = {};
+						for (const h of ["content-type", "cache-control", "x-request-id"] as const) {
+							const v = upstreamRes.headers.get(h);
+							if (v) outHeaders[h] = v;
+						}
+						outHeaders["x-content-type-options"] = "nosniff";
+						outHeaders["connection"] = "keep-alive";
+						const ka = upstreamRes.headers.get("keep-alive");
+						if (ka) outHeaders["keep-alive"] = ka;
+
+						res.writeHead(upstreamRes.status, outHeaders);
+						if (isStream && upstreamRes.body) {
+							pipeUpstreamStream(
+								Readable.fromWeb(upstreamRes.body as unknown as WebReadableStream),
+								res,
+								req,
+								reqId,
+								"direct",
+							);
+						} else if (upstreamRes.body) {
+							const nodeStream = Readable.fromWeb(upstreamRes.body as unknown as WebReadableStream);
+							nodeStream.on("error", (streamErr) => {
+								log("error", "upstream stream error in direct proxy", { error: String(streamErr) }, reqId);
+								if (!res.writableEnded) res.end();
+							});
+							nodeStream.pipe(res);
+						} else {
+							res.end();
+						}
+					} catch (proxyErr) {
+						clearTimeout(timeoutId);
+						res.off("close", onClientClose);
+						req.off("error", onReqError);
+						log("error", "proxy socket error", { error: String(proxyErr) }, reqId);
 						if (!res.headersSent) {
 							res.writeHead(502, { "content-type": "application/json" });
 							res.end(JSON.stringify({ error: "upstream error" }));
 						} else if (!res.writableEnded) {
 							res.end();
 						}
-					});
-
-					proxy.setTimeout(300_000, () => {
-						proxy.destroy(new Error("timeout"));
-					});
-
-					// Premature client disconnect guard.
-					// Node >= 19 emits req 'close' right after the request body 'end',
-					// so destroying on req close/aborted kills every healthy upstream
-					// socket milliseconds after creation. Only tear down when the
-					// client response connection actually drops mid-flight.
-					const destroyIfClientGone = () => {
-						if (!res.writableEnded && !proxy.destroyed) proxy.destroy();
-					};
-					req.on("error", destroyIfClientGone);
-					res.on("close", destroyIfClientGone);
-
-					proxy.end(directBody);
+					}
 				}
 			} catch (err) {
 				log("error", "proxy error", { error: String(err) }, reqId);

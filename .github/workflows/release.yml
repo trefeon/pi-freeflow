@@ -41,9 +41,9 @@ jobs:
       - name: Run test suite
         run: pnpm test
 
-      - name: Publish to NPM (if NPM_TOKEN is configured)
+      - name: Publish with Changesets (if NPM_TOKEN is configured)
         if: env.NPM_TOKEN != ''
-        run: npm publish --provenance --access public
+        run: pnpm changeset publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

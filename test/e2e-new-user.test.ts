@@ -18,7 +18,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-import defaultExtension, { buildProviderConfig } from "../src/index.ts";
+import defaultExtension, { bindWidgetClick, buildProviderConfig } from "../src/index.ts";
 import {
 	DEFAULT_PORT,
 	LEGACY_PORT,
@@ -47,6 +47,7 @@ import {
 import type {
 	ExtensionAPI,
 	ExtensionContext,
+	ExtensionUIContext,
 	KnownRelay,
 	ProviderConfig,
 	RegisteredCommand,
@@ -323,4 +324,84 @@ test("E2E [10/10] proxy security whitelist strictly guards API paths and rejects
 	assert.ok(PATH_TRAVERSAL_PATTERN.test("../etc/passwd"));
 	assert.ok(PATH_TRAVERSAL_PATTERN.test("/v1/.."));
 	assert.ok(PATH_TRAVERSAL_PATTERN.test("/v1/../../etc/shadow"));
+});
+
+// ── 11. Widget Status-Bar Click Opens Relay Picker ───────────────────────
+
+test("E2E [11/11] widget click on status bar triggers select relay picker via onStatusClick", async () => {
+	const existed = fs.existsSync(RELAY_STATE_FILE);
+	const backup = existed ? fs.readFileSync(RELAY_STATE_FILE, "utf8") : "";
+	try {
+		// Seed two relays so picker has options
+		const seed = resolveRelayState();
+		ensureRelay(seed, "https://relay-a.example.com", "relay-a");
+		ensureRelay(seed, "https://relay-b.example.com", "relay-b");
+		seed.url = "https://relay-a.example.com";
+		seed.enabled = true;
+		seed.mode = "on";
+		saveRelayState(seed);
+		setActiveRelayState(seed, false);
+
+		let registeredEvents: Record<string, (event: unknown, ctx: ExtensionContext) => Promise<void> | void> = {};
+		const mockPi: ExtensionAPI = {
+			registerProvider() {},
+			registerCommand() {},
+			on(event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void) {
+				registeredEvents[event] = handler;
+			},
+		};
+		await defaultExtension(mockPi);
+		assert.ok(registeredEvents.session_start, "session_start must be registered for widget binding");
+
+		let capturedHandler: (() => void | Promise<void>) | undefined;
+		let selectCalls: Array<{ title: string; options: string[] }> = [];
+		let notifyMessages: string[] = [];
+
+		const mockUi: ExtensionContext["ui"] = {
+			notify(msg: string) { notifyMessages.push(msg); },
+			setStatus() {},
+			input: async () => undefined,
+			select: async (title: string, options: string[]) => {
+				selectCalls.push({ title, options });
+				return options[0];
+			},
+			// Host clickable widget API — feature-detected by bindWidgetClick
+			onStatusClick: (handler: () => void | Promise<void>) => {
+				capturedHandler = handler;
+			},
+		} as unknown as ExtensionContext["ui"];
+
+		const ctx: ExtensionContext = { ui: mockUi } as ExtensionContext;
+		await registeredEvents.session_start({}, ctx);
+
+		assert.ok(capturedHandler, "bindWidgetClick must register onStatusClick handler when available");
+
+		// Simulate widget click
+		await capturedHandler!();
+
+		// Picker must have been opened with relay options
+		assert.ok(selectCalls.length >= 1, "widget click must trigger ui.select relay picker");
+		const firstCall = selectCalls[0];
+		assert.ok(firstCall.title.toLowerCase().includes("relay"), "picker title must mention relay");
+		assert.ok(firstCall.options.some((o) => o.includes("relay-a.example.com")), "picker options must include relay-a");
+		assert.ok(firstCall.options.some((o) => o.includes("relay-b.example.com")), "picker options must include relay-b");
+
+		// Fallback path: when onStatusClick absent, fallback notify hint is not thrown — verify bindWidgetClick is no-op without handler
+		let fallbackSelectCalled = false;
+		const fallbackUi = {
+			notify(msg: string) { notifyMessages.push(msg); },
+			setStatus() {},
+			input: async () => undefined,
+			select: async () => { fallbackSelectCalled = true; return undefined; },
+		} as unknown as ExtensionUIContext;
+		// Should not throw when no click API present
+		bindWidgetClick(fallbackUi);
+		assert.equal(fallbackSelectCalled, false, "fallback without onStatusClick must not auto-trigger select");
+	} finally {
+		if (existed) fs.writeFileSync(RELAY_STATE_FILE, backup);
+		else fs.rmSync(RELAY_STATE_FILE, { force: true });
+		// restore in-memory state
+		const fresh = resolveRelayState();
+		setActiveRelayState(fresh, false);
+	}
 });

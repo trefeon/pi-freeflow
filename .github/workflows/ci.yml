@@ -91,3 +91,44 @@ jobs:
             exit 1
           fi
           echo "✓ Package bundle is clean and strictly whitelisted."
+
+  load-test:
+    name: Load Test (k6)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start proxy in background
+        run: |
+          node --experimental-strip-types -e "import('./src/proxy.ts').then(async ({ startProxy }) => { await startProxy(); setInterval(() => {}, 1000); })" &
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:28180/_health > /dev/null 2>&1; then
+              echo "Proxy ready on http://localhost:28180"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://localhost:28180/_health > /dev/null
+
+      - name: Install k6 and run load test
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq k6
+          k6 run test/load/k6.js
