@@ -10,34 +10,95 @@ import path from "node:path";
 import { DEFAULT_RELAY_URL, RELAY_STATE_FILE } from "./config.ts";
 import { logWarn } from "./logger.ts";
 import type { ExtensionUIContext, KnownRelay, RelayMode, RelayState } from "./types.ts";
+
+/**
+ * Parse a relay-state JSON blob into a usable state.
+ * Returns null when the blob is corrupt or has an empty relay pool —
+ * either makes the state unusable for routing.
+ */
+function parseRelayState(raw: string): RelayState | null {
+	try {
+		const s = JSON.parse(raw);
+		const relays: KnownRelay[] = Array.isArray(s?.relays) ? s.relays : [];
+		if (relays.length === 0) {
+			return null;
+		}
+		const mode: RelayMode =
+			s?.mode === "on" || s?.mode === "off" || s?.mode === "auto"
+				? s.mode
+				: "auto";
+		return {
+			mode,
+			enabled:
+				mode === "on"
+					? true
+					: mode === "off"
+						? false
+						: s?.enabled !== false && relays.length > 0,
+			url: typeof s?.url === "string" ? s.url.trim() : (relays[0]?.url || DEFAULT_RELAY_URL),
+			relays,
+		};
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Load persisted relay state from disk.
+ * Falls back to .bak when the main file is corrupt OR empty — an empty save
+ * over real relays leaves exactly a valid-but-empty main, and the backup is
+ * the only surviving copy (see tmp 50-byte litter wipe).
  */
 export function loadRelayState(): RelayState {
 	try {
 		if (!fs.existsSync(RELAY_STATE_FILE)) {
 			return { mode: "auto", enabled: true, url: DEFAULT_RELAY_URL, relays: [] };
 		}
-		const s = JSON.parse(fs.readFileSync(RELAY_STATE_FILE, "utf8"));
-		const relays: KnownRelay[] = Array.isArray(s?.relays) ? s.relays : [];
-		const mode: RelayMode =
-			s?.mode === "on" || s?.mode === "off" || s?.mode === "auto"
-				? s.mode
-				: "auto";
-		const enabled =
-			mode === "on"
-				? true
-				: mode === "off"
-					? false
-					: s?.enabled !== false && relays.length > 0;
-		return {
-			mode,
-			enabled,
-			url: typeof s?.url === "string" ? s.url.trim() : (relays[0]?.url || DEFAULT_RELAY_URL),
-			relays,
-		};
+		const main = parseRelayState(fs.readFileSync(RELAY_STATE_FILE, "utf8"));
+		if (main) {
+			return main;
+		}
+		// Try backup before giving up — user data loss is worse than stale data
+		try {
+			const bak = parseRelayState(fs.readFileSync(`${RELAY_STATE_FILE}.bak`, "utf8"));
+			if (bak) {
+				logWarn("relay state unusable — recovered from .bak", { relays: bak.relays.length });
+				return bak;
+			}
+		} catch {}
+		return { mode: "auto", enabled: true, url: DEFAULT_RELAY_URL, relays: [] };
 	} catch {
 		return { mode: "auto", enabled: true, url: DEFAULT_RELAY_URL, relays: [] };
+	}
+}
+
+/**
+ * Atomically save relay state to disk using a temporary file and rename.
+ * Backs up the current non-empty state to .bak before overwriting so a
+ * corrupt or empty save can always be recovered by loadRelayState.
+ */
+export function saveRelayState(s: RelayState): void {
+	try {
+		const dir = path.dirname(RELAY_STATE_FILE);
+		if (!fs.existsSync(dir)) {
+			fs.mkdirSync(dir, { recursive: true });
+		}
+		// Backup current file before overwrite for recovery
+		try {
+			if (fs.existsSync(RELAY_STATE_FILE)) {
+				const cur = fs.readFileSync(RELAY_STATE_FILE, "utf8");
+				// Only backup non-empty states
+				const parsed = JSON.parse(cur);
+				if (Array.isArray(parsed?.relays) && parsed.relays.length > 0) {
+					fs.writeFileSync(`${RELAY_STATE_FILE}.bak`, cur, "utf8");
+				}
+			}
+		} catch {}
+		const tmpPath = `${RELAY_STATE_FILE}.${randomUUID()}.tmp`;
+		fs.writeFileSync(tmpPath, JSON.stringify(s, null, 2), "utf8");
+		renameWithRetry(tmpPath, RELAY_STATE_FILE);
+	} catch (e) {
+		logWarn("Could not persist relay state", { error: String(e) });
 	}
 }
 
@@ -64,23 +125,6 @@ function renameWithRetry(from: string, to: string): void {
 			}
 			sleepSync(50);
 		}
-	}
-}
-
-/**
- * Atomically save relay state to disk using a temporary file and rename.
- */
-export function saveRelayState(s: RelayState): void {
-	try {
-		const dir = path.dirname(RELAY_STATE_FILE);
-		if (!fs.existsSync(dir)) {
-			fs.mkdirSync(dir, { recursive: true });
-		}
-		const tmpPath = `${RELAY_STATE_FILE}.${randomUUID()}.tmp`;
-		fs.writeFileSync(tmpPath, JSON.stringify(s, null, 2), "utf8");
-		renameWithRetry(tmpPath, RELAY_STATE_FILE);
-	} catch (e) {
-		logWarn("Could not persist relay state", { error: String(e) });
 	}
 }
 

@@ -330,19 +330,28 @@ test("Error Matrix [9/10] stream truncation thresholds enforce >50 chunks AND >1
 test("Error Matrix [10/10] loadRelayState and readCatalogCache recover cleanly from corrupt disk files", () => {
 	const existedState = fs.existsSync(RELAY_STATE_FILE);
 	const backupState = existedState ? fs.readFileSync(RELAY_STATE_FILE, "utf8") : "";
-
+	const bakFile = `${RELAY_STATE_FILE}.bak`;
+	const existedBak = fs.existsSync(bakFile);
+	const backupBak = existedBak ? fs.readFileSync(bakFile, "utf8") : "";
 	const existedCatalog = fs.existsSync(CATALOG_CACHE_FILE);
 	const backupCatalog = existedCatalog ? fs.readFileSync(CATALOG_CACHE_FILE, "utf8") : "";
-
 	try {
-		// Corrupt relay state file
+		try { fs.rmSync(bakFile, { force: true }); } catch {}
 		fs.writeFileSync(RELAY_STATE_FILE, "!!! not valid json !!!", "utf8");
 		const recoveredState = loadRelayState();
 		assert.ok(recoveredState, "loadRelayState must never throw on corrupt JSON");
 		assert.equal(recoveredState.mode, "auto");
 		assert.equal(recoveredState.relays.length, 0);
-
-		// Corrupt catalog cache file
+		fs.writeFileSync(bakFile, JSON.stringify({ mode: "on", enabled: true, url: "https://bak.example.com", relays: [{ url: "https://bak.example.com" }] }));
+		fs.writeFileSync(RELAY_STATE_FILE, "!!! not valid json !!!", "utf8");
+		const recoveredFromBak = loadRelayState();
+		assert.equal(recoveredFromBak.relays.length, 1, "should recover from .bak when main is corrupt");
+		assert.equal(recoveredFromBak.url, "https://bak.example.com");
+		// Valid-but-empty main with data in .bak → must recover (wipe aftermath)
+		fs.writeFileSync(RELAY_STATE_FILE, JSON.stringify({ mode: "auto", enabled: false, url: "", relays: [] }));
+		const recoveredEmptyMain = loadRelayState();
+		assert.equal(recoveredEmptyMain.relays.length, 1, "should recover from .bak when main is valid but empty");
+		assert.equal(recoveredEmptyMain.url, "https://bak.example.com");
 		fs.writeFileSync(CATALOG_CACHE_FILE, "{ corrupted catalog cache", "utf8");
 		const recoveredCatalog = readCatalogCache();
 		assert.equal(recoveredCatalog, null, "readCatalogCache must return null on corrupt JSON without throwing");
@@ -351,6 +360,11 @@ test("Error Matrix [10/10] loadRelayState and readCatalogCache recover cleanly f
 			fs.writeFileSync(RELAY_STATE_FILE, backupState);
 		} else {
 			fs.rmSync(RELAY_STATE_FILE, { force: true });
+		}
+		if (existedBak) {
+			fs.writeFileSync(bakFile, backupBak);
+		} else {
+			try { fs.rmSync(bakFile, { force: true }); } catch {}
 		}
 		if (existedCatalog) {
 			fs.writeFileSync(CATALOG_CACHE_FILE, backupCatalog);
