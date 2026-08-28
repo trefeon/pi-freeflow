@@ -7,7 +7,8 @@
  * - 0ms instant startup with verified static catalog and background live health checks
  * - Per-model thinking/reasoning translation and streaming SSE pass-through
  */
-
+import fs from "node:fs";
+import path from "node:path";
 import type * as http from "node:http";
 import {
 	getAliveCatalog,
@@ -17,7 +18,7 @@ import {
 	setAliveCatalog,
 } from "./catalog.ts";
 import { createCommandSpec, updateStatusBar } from "./commands.ts";
-import { DEFAULT_HOST, HOST, LEGACY_PORT, PORT } from "./config.ts";
+import { DEFAULT_HOST, HOST, LEGACY_PORT, ONBOARDED_FLAG_FILE, PORT } from "./config.ts";
 import { log, logInfo, logWarn } from "./logger.ts";
 import { ALL_MODELS, KILO_MODEL_IDS, MODEL_MAP, getAllRegisteredModels, resolveCanonicalModelId } from "./models.ts";
 import { isProxyAlive, startProxy } from "./proxy.ts";
@@ -297,6 +298,23 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		const freshRelayState = resolveRelayState();
 		setStatusUi(ctx.ui);
 		try { bindWidgetClick(ctx.ui); } catch {}
+
+		// First-run onboarding: write the flag before notifying so a crash can
+		// never re-fire the message; never block session start.
+		try {
+			if (!fs.existsSync(ONBOARDED_FLAG_FILE)) {
+				fs.mkdirSync(path.dirname(ONBOARDED_FLAG_FILE), { recursive: true });
+				fs.writeFileSync(ONBOARDED_FLAG_FILE, "1", "utf8");
+				const hint =
+					freshRelayState.relays.length > 0
+						? `Relay pool ready: ${freshRelayState.relays.length} relay(s). Run /freeflow for pool management.`
+						: "Relay pool empty — direct mode. Run /freeflow deploy to add your own egress.";
+				ctx.ui?.notify?.(
+					`freeflow ready: 21 free models via local proxy 127.0.0.1:28180. ${hint}`,
+					"info",
+				);
+			}
+		} catch {}
 
 		let provider: string | undefined;
 		let modelId: string | undefined;
