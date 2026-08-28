@@ -235,3 +235,52 @@ test("remove-last-relay contract: empty pool save is not blocked and persists", 
 		assert.deepEqual(loaded.relays, [], "without a .bak, the empty pool stays empty");
 	});
 });
+
+test("recovery heals the main file so it is not re-done on every load", () => {
+	withIsolatedRelayFiles(() => {
+		clearRelayFiles();
+		fs.writeFileSync(BAK_FILE, JSON.stringify(BAK_STATE), "utf8");
+		fs.writeFileSync(RELAY_STATE_FILE, "!!! not valid json !!!", "utf8");
+		const first = loadRelayState();
+		assert.equal(first.relays.length, 1, "first load recovers from .bak");
+		assert.equal(
+			JSON.parse(fs.readFileSync(RELAY_STATE_FILE, "utf8")).relays.length,
+			1,
+			"recovery must heal the main file",
+		);
+		// Once healed, the main file alone carries the state — even without .bak.
+		fs.rmSync(BAK_FILE, { force: true });
+		const second = loadRelayState();
+		assert.equal(second.relays.length, 1, "healed main must load without .bak");
+		assert.equal(second.url, "https://bak.example.com");
+	});
+});
+
+test("corrupt main with no usable backup starts fresh without crashing", () => {
+	withIsolatedRelayFiles(() => {
+		clearRelayFiles();
+		fs.writeFileSync(RELAY_STATE_FILE, "!!! not valid json !!!", "utf8");
+		const s = loadRelayState();
+		assert.equal(s.relays.length, 0, "unrecoverable corruption falls back to default");
+		assert.equal(s.mode, "auto");
+		assert.equal(s.enabled, true);
+	});
+});
+
+test("stale tmp litter from crashed saves is cleaned up on load", () => {
+	withIsolatedRelayFiles(() => {
+		clearRelayFiles();
+		const stale = `${RELAY_STATE_FILE}.stale-uuid.tmp`;
+		const fresh = `${RELAY_STATE_FILE}.fresh-uuid.tmp`;
+		fs.writeFileSync(stale, "litter", "utf8");
+		fs.writeFileSync(fresh, "litter", "utf8");
+		const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+		fs.utimesSync(stale, old, old);
+		loadRelayState();
+		assert.equal(fs.existsSync(stale), false, "stale tmp must be removed");
+		assert.equal(fs.existsSync(fresh), true, "fresh tmp must be left alone");
+		try {
+			fs.rmSync(fresh, { force: true });
+		} catch {}
+	});
+});

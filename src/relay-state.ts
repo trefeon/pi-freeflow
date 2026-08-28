@@ -44,13 +44,40 @@ function parseRelayState(raw: string): RelayState | null {
 }
 
 /**
+ * Remove leftover `<state>.<uuid>.tmp` files from crashed or failed saves.
+ * Only files older than an hour are removed, so an in-flight save by a
+ * sibling process is never disturbed.
+ */
+function cleanupStaleTmpFiles(): void {
+	try {
+		const dir = path.dirname(RELAY_STATE_FILE);
+		const prefix = `${path.basename(RELAY_STATE_FILE)}.`;
+		const cutoff = Date.now() - 60 * 60 * 1000;
+		for (const entry of fs.readdirSync(dir)) {
+			if (!entry.startsWith(prefix) || !entry.endsWith(".tmp")) {
+				continue;
+			}
+			const full = path.join(dir, entry);
+			try {
+				if (fs.statSync(full).mtimeMs < cutoff) {
+					fs.rmSync(full, { force: true });
+				}
+			} catch {}
+		}
+	} catch {}
+}
+
+/**
  * Load persisted relay state from disk.
  * Falls back to .bak when the main file is corrupt OR empty — an empty save
  * over real relays leaves exactly a valid-but-empty main, and the backup is
- * the only surviving copy (see tmp 50-byte litter wipe).
+ * the only surviving copy (see tmp 50-byte litter wipe). A successful
+ * recovery is written back to the main file so it is not re-done on every
+ * load.
  */
 export function loadRelayState(): RelayState {
 	try {
+		cleanupStaleTmpFiles();
 		if (!fs.existsSync(RELAY_STATE_FILE)) {
 			return { mode: "auto", enabled: true, url: DEFAULT_RELAY_URL, relays: [] };
 		}
@@ -63,9 +90,13 @@ export function loadRelayState(): RelayState {
 			const bak = parseRelayState(fs.readFileSync(`${RELAY_STATE_FILE}.bak`, "utf8"));
 			if (bak) {
 				logWarn("relay state unusable — recovered from .bak", { relays: bak.relays.length });
+				saveRelayState(bak); // heal the main file so recovery is sticky
 				return bak;
 			}
 		} catch {}
+		logWarn("relay state file unusable and no valid backup — starting fresh", {
+			path: RELAY_STATE_FILE,
+		});
 		return { mode: "auto", enabled: true, url: DEFAULT_RELAY_URL, relays: [] };
 	} catch {
 		return { mode: "auto", enabled: true, url: DEFAULT_RELAY_URL, relays: [] };
