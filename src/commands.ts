@@ -30,6 +30,7 @@ import {
 	readRecentLogs,
 	saveDebugState,
 } from "./logger.ts";
+import { probeRelay } from "./probe.ts";
 import {
 	ensureRelay,
 	findRelay,
@@ -309,7 +310,16 @@ export function createCommandSpec(
 					);
 					setRelay(true, url, `deployed ${name}`);
 					persist();
-					ctx.ui.notify(`✓ Deployed & active: ${url}`, "info");
+					let probeNote = "";
+					try {
+						const probe = await probeRelay(url);
+						probeNote = probe.ok
+							? ` ✓ reachable (HTTP ${probe.status}, ${probe.latencyMs}ms)`
+							: ` ⚠ deployed but unreachable (${probe.error || `HTTP ${probe.status}`}) — verify with /freeflow test`;
+					} catch {
+						// probeRelay never throws, but keep the notify safe regardless
+					}
+					ctx.ui.notify(`✓ Deployed & active: ${url}${probeNote}`, "info");
 				} catch (e) {
 					updateStatusBar(ctx.ui);
 					ctx.ui.notify(
