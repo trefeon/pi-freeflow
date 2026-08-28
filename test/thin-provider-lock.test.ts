@@ -18,24 +18,12 @@ test("thin-provider lock: 21 models catalog intact", () => {
 	assert.equal(ALL_MODELS.length, 21);
 });
 
-test("thin-provider lock: isRetriableStatus seamless set (429 rolls, 400/500 do not)", () => {
+test("thin-provider lock: isRetriableStatus regression lock (429 rolls, 400/500 do not)", () => {
+	// Canonical boundary coverage lives in error-matrix [1/10]; this is a
+	// minimal regression lock for the pool-retry contract.
 	assert.equal(isRetriableStatus(429), true, "429 must roll");
-	assert.equal(isRetriableStatus(408), true);
 	assert.equal(isRetriableStatus(500), false, "500 deterministic upstream fault must not roll (pool-retry + cooldown poison)");
-	assert.equal(isRetriableStatus(502), true);
-	assert.equal(isRetriableStatus(503), true);
-	assert.equal(isRetriableStatus(504), true);
-	assert.equal(isRetriableStatus(520), true);
-	assert.equal(isRetriableStatus(521), true);
-	assert.equal(isRetriableStatus(530), true);
-	assert.equal(isRetriableStatus(519), false, "below Cloudflare 52x band");
-	assert.equal(isRetriableStatus(531), false, "above Cloudflare 52x band");
-	assert.equal(isRetriableStatus(501), false);
 	assert.equal(isRetriableStatus(400), false, "400 bad request must not roll (was P0)");
-	assert.equal(isRetriableStatus(402), false);
-	assert.equal(isRetriableStatus(403), false);
-	assert.equal(isRetriableStatus(404), false);
-	assert.equal(isRetriableStatus(410), false);
 });
 
 test("thin-provider lock: proxy /v1/models pathname guard (no ?query leak)", async () => {

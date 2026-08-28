@@ -38,7 +38,7 @@ import type { RegisteredModel, RelayState } from "../src/types.ts";
 
 // ── 1. HTTP Status Error Decision Matrix ─────────────────────────────────────
 
-test("Error Matrix [1/10] isRetriableStatus strictly separates transient errors from deterministic faults", () => {
+test("Error Matrix [1/10] isRetriableStatus strictly separates transient errors from deterministic faults (canonical boundary test)", () => {
 	// Retriable statuses (trigger relay rolling)
 	const retriable = [429, 408, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530];
 	for (const code of retriable) {
@@ -46,10 +46,14 @@ test("Error Matrix [1/10] isRetriableStatus strictly separates transient errors 
 	}
 
 	// Non-retriable client errors (must surface immediately to client, never roll relays)
-	const nonRetriable = [400, 401, 402, 403, 404, 405, 409, 410, 413, 422];
+	const nonRetriable = [400, 401, 402, 403, 404, 405, 409, 410, 413, 422, 501];
 	for (const code of nonRetriable) {
 		assert.equal(isRetriableStatus(code), false, `Status ${code} must not roll relays`);
 	}
+
+	// Cloudflare 52x band boundaries: just below/above must NOT roll
+	assert.equal(isRetriableStatus(519), false, "519 is below the 52x band");
+	assert.equal(isRetriableStatus(531), false, "531 is above the 52x band");
 
 	// Bare 500 Internal Server Error (deterministic upstream fault - do not roll)
 	assert.equal(isRetriableStatus(500), false, "Bare 500 must not roll relays");

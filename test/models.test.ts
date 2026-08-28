@@ -15,15 +15,17 @@ import {
 	getAllRegisteredModels,
 } from "../src/models.ts";
 
-test("catalog contains exactly 21 verified models (7 OpenCode + 14 Kilo)", () => {
-	assert.equal(OPENCODE_MODELS.length, 7);
-	assert.equal(KILO_MODELS.length, 14);
-	assert.equal(ALL_MODELS.length, 21);
+test("catalog composition: OpenCode + Kilo lists make up the full catalog", () => {
+	// Composition over hardcoded counts — resilient to catalog growth while
+	// still locking the invariant that every model belongs to exactly one source.
+	assert.ok(OPENCODE_MODELS.length > 0, "OpenCode list must be non-empty");
+	assert.ok(KILO_MODELS.length > 0, "Kilo list must be non-empty");
+	assert.equal(OPENCODE_MODELS.length + KILO_MODELS.length, ALL_MODELS.length);
 });
 
 test("all model IDs are unique", () => {
 	const ids = new Set(ALL_MODELS.map((m) => m.id));
-	assert.equal(ids.size, 21);
+	assert.equal(ids.size, ALL_MODELS.length);
 });
 
 test("all models have positive contextWindow and maxTokens", () => {
@@ -42,10 +44,14 @@ test("muse-spark uses openai-responses api", () => {
 });
 
 test("1M context window models are properly configured", () => {
+	// Known 1M models must exist with a >= 1M window (spec lock), and every
+	// model in the catalog advertising >= 1M must be in that known list
+	// (drift guard — no unaccounted-for 1M models).
 	const oneMillionModels = [
 		"muse-spark-1.2-contributor-free",
 		"mimo-v2.5-free",
 		"laguna-s-2.1-free",
+		"poolside/laguna-s-2.1:free",
 		"nemotron-3.5-lightning-free",
 		"nemotron-3-ultra-free",
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
@@ -56,6 +62,15 @@ test("1M context window models are properly configured", () => {
 		const m = getModelDef(id);
 		assert.ok(m, `1M model ${id} exists`);
 		assert.ok(m!.contextWindow >= 1_000_000, `model ${id} context window is >= 1M`);
+	}
+
+	const knownCanonical = new Set(oneMillionModels.map((id) => resolveCanonicalModelId(id)));
+	const catalogOneMillion = ALL_MODELS.filter((m) => m.contextWindow >= 1_000_000).map((m) => m.id);
+	for (const id of catalogOneMillion) {
+		assert.ok(
+			knownCanonical.has(id),
+			`catalog model ${id} has >= 1M window but is not in the known 1M list`,
+		);
 	}
 });
 
@@ -86,6 +101,5 @@ test("model aliases resolve correctly to canonical IDs", () => {
 	assert.equal(getModelUpstream("step-3.7-flash"), "kilo");
 
 	const allRegistered = getAllRegisteredModels();
-	assert.equal(allRegistered.length, 21);
 	assert.equal(allRegistered.length, ALL_MODELS.length);
 });

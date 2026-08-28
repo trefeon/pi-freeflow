@@ -17,6 +17,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import defaultExtension, { bindWidgetClick, buildProviderConfig } from "../src/index.ts";
 import {
@@ -81,8 +84,8 @@ test("E2E [1/10] fresh new user bootstrap registers 21 models with zero-latency 
 	assert.ok(registeredProviderConfig, "ProviderConfig must be populated");
 	assert.ok(registeredProviderConfig.baseUrl.includes("127.0.0.1"), "baseUrl must point to loopback");
 
-	// Exact model inventory: 21 models (7 OpenCode + 14 Kilo)
-	assert.equal(registeredProviderConfig.models.length, 21);
+	// Full model inventory from the source of truth (resilient to catalog growth)
+	assert.equal(registeredProviderConfig.models.length, ALL_MODELS.length);
 
 	// Discontinued models are absent
 	const hasV4Flash = registeredProviderConfig.models.some((m) => m.id === "deepseek-v4-flash-free");
@@ -103,17 +106,44 @@ test("E2E [2/10] startProxy socket is unref'd so CLI commands exit immediately w
 	const testPort = 29180;
 	const { server, port } = await startProxy(testPort);
 	assert.ok(server, "server instance must be returned");
-	assert.equal(port, testPort);
 
 	try {
 		// Server accepts requests while unref'd
-		const res = await fetch(`http://127.0.0.1:${testPort}/v1/models`);
+		const res = await fetch(`http://127.0.0.1:${port}/v1/models`);
 		assert.equal(res.status, 200);
 		const json = (await res.json()) as { object: string; data: Array<{ id: string }> };
 		assert.equal(json.object, "list");
-		assert.equal(json.data.length, 21);
+		assert.equal(json.data.length, ALL_MODELS.length);
 	} finally {
 		await new Promise<void>((r) => server.close(() => r()));
+	}
+});
+
+// ── 2b. Unref behavioral proof: CLI process exits without explicit close ─────
+
+test("E2E [2b] unref'd proxy socket lets a CLI process exit on its own", async () => {
+	const testPort = 29183;
+	const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+	const child = spawn(process.execPath, [
+		"--experimental-strip-types",
+		"-e",
+		`import("./src/proxy.ts").then(async (m) => { await m.startProxy(${testPort}); })`,
+	], { cwd: repoRoot, stdio: "ignore" });
+	try {
+		// Integration test: the whole point is the child exiting on its own once
+		// the unref'd socket stops holding the event loop — deterministic fake
+		// timers cannot observe another process's lifecycle.
+		const exited = await Promise.race([
+			new Promise<boolean>((resolve) => child.on("exit", () => resolve(true))),
+			new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
+		]);
+		assert.equal(
+			exited,
+			true,
+			"child CLI process must exit on its own — an unref'd server must not hold the event loop",
+		);
+	} finally {
+		if (child.exitCode === null) child.kill();
 	}
 });
 

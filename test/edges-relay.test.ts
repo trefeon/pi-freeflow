@@ -198,25 +198,12 @@ test("edges-relay: clampMaxTokens requested 0 returns 0", () => {
 });
 
 // ── (6) isRetriableStatus boundaries ─────────────────────────────────
-// Already covered by thin-provider-lock.test.ts — included as regression lock
+// Canonical boundary coverage lives in error-matrix [1/10]; this is a
+// single regression lock for the Cloudflare 52x band.
 
-test("edges-relay: isRetriableStatus boundary values (regression lock)", () => {
-	// True: Cloudflare 52x band
+test("edges-relay: isRetriableStatus 52x band regression lock", () => {
 	assert.equal(isRetriableStatus(520), true, "520 is retriable");
-	assert.equal(isRetriableStatus(521), true, "521 is retriable");
-	assert.equal(isRetriableStatus(530), true, "530 is retriable");
-	// False: just below and above band
-	assert.equal(isRetriableStatus(519), false, "519 is not retriable");
-	assert.equal(isRetriableStatus(531), false, "531 is not retriable");
-	// Standard retriable codes
-	assert.equal(isRetriableStatus(429), true, "429 is retriable");
-	assert.equal(isRetriableStatus(408), true, "408 is retriable");
-	assert.equal(isRetriableStatus(502), true, "502 is retriable");
-	assert.equal(isRetriableStatus(503), true, "503 is retriable");
-	assert.equal(isRetriableStatus(504), true, "504 is retriable");
-	// Non-retriable
-	assert.equal(isRetriableStatus(500), false, "500 is not retriable");
-	assert.equal(isRetriableStatus(400), false, "400 is not retriable");
+	assert.equal(isRetriableStatus(531), false, "531 is above the band");
 });
 
 // ── (7) targetUrl invalid → relayFetch still works (URL parse fallback) ──
