@@ -33,6 +33,20 @@ import { pipeUpstreamStream } from "./stream-pipe.ts";
 import type { Upstream } from "./types.ts";
 
 /**
+ * Direct-mode 429 hint throttle: the guidance hint is emitted at most once per
+ * 10 minutes per process so repeated rate-limit responses don't spam clients.
+ */
+let last429HintAt = 0;
+function shouldShow429Hint(): boolean {
+	const now = Date.now();
+	if (now - last429HintAt < 10 * 60 * 1000) return false;
+	last429HintAt = now;
+	return true;
+}
+/** Test-only: reset 429 hint throttle */
+export function _reset429HintForTest(): void { last429HintAt = 0; }
+
+/**
  * Extract client IP address from incoming HTTP request.
  */
 export function getClientIP(req: http.IncomingMessage): string {
@@ -233,8 +247,12 @@ export function startProxy(
 			const relayPreview = getActiveRelayState();
 			const willUseRelay = relayPreview.enabled && Boolean(relayPreview.url || relayPreview.relays.length > 0);
 			if (!willUseRelay && !checkRateLimit(clientIP, upstream)) {
+				const body: Record<string, unknown> = { error: "rate limit exceeded" };
+				if (shouldShow429Hint()) {
+					body.hint = "Shared free-tier IP quota reached. Add your own relay egress: /freeflow deploy (Vercel 1M/mo recommended)";
+				}
 				res.writeHead(429, { "content-type": "application/json" });
-				res.end(JSON.stringify({ error: "rate limit exceeded" }));
+				res.end(JSON.stringify(body));
 				return;
 			}
 
