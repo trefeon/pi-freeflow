@@ -25,16 +25,24 @@ import type { RelayState } from "../src/types.ts";
 
 /** Backup real state file so user data is untouched by these tests. */
 function withSavedDiskState(fn: () => void): void {
-	const existed = fs.existsSync(RELAY_STATE_FILE);
-	const backup = existed ? fs.readFileSync(RELAY_STATE_FILE, "utf8") : "";
+	const read = (p: string): string | null =>
+		fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
+	const mainBefore = read(RELAY_STATE_FILE);
+	const bakBefore = read(`${RELAY_STATE_FILE}.bak`);
 	try {
 		fn();
 	} finally {
-		if (existed) {
-			fs.writeFileSync(RELAY_STATE_FILE, backup);
-		} else {
-			fs.rmSync(RELAY_STATE_FILE, { force: true });
-		}
+		const restore = (p: string, before: string | null): void => {
+			if (before !== null) {
+				fs.writeFileSync(p, before, "utf8");
+			} else {
+				try {
+					fs.rmSync(p, { force: true });
+				} catch {}
+			}
+		};
+		restore(RELAY_STATE_FILE, mainBefore);
+		restore(`${RELAY_STATE_FILE}.bak`, bakBefore);
 	}
 }
 

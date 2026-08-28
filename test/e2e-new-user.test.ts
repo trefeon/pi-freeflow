@@ -234,6 +234,8 @@ test("E2E [6/10] model catalog accurately maps thinking formats and source routi
 test("E2E [7/10] relay state supports add, use, remove, and mode toggles with atomic disk persistence", () => {
 	const existed = fs.existsSync(RELAY_STATE_FILE);
 	const backup = existed ? fs.readFileSync(RELAY_STATE_FILE, "utf8") : "";
+	const bakExisted = fs.existsSync(`${RELAY_STATE_FILE}.bak`);
+	const bakBackup = bakExisted ? fs.readFileSync(`${RELAY_STATE_FILE}.bak`, "utf8") : "";
 
 	try {
 		const state = resolveRelayState();
@@ -258,6 +260,11 @@ test("E2E [7/10] relay state supports add, use, remove, and mode toggles with at
 			fs.writeFileSync(RELAY_STATE_FILE, backup);
 		} else {
 			fs.rmSync(RELAY_STATE_FILE, { force: true });
+		}
+		if (bakExisted) {
+			fs.writeFileSync(`${RELAY_STATE_FILE}.bak`, bakBackup);
+		} else {
+			fs.rmSync(`${RELAY_STATE_FILE}.bak`, { force: true });
 		}
 		resolveRelayState();
 	}
@@ -331,6 +338,8 @@ test("E2E [10/10] proxy security whitelist strictly guards API paths and rejects
 test("E2E [11/11] widget click on status bar triggers select relay picker via onStatusClick", async () => {
 	const existed = fs.existsSync(RELAY_STATE_FILE);
 	const backup = existed ? fs.readFileSync(RELAY_STATE_FILE, "utf8") : "";
+	const bakExisted = fs.existsSync(`${RELAY_STATE_FILE}.bak`);
+	const bakBackup = bakExisted ? fs.readFileSync(`${RELAY_STATE_FILE}.bak`, "utf8") : "";
 	try {
 		// Seed two relays so picker has options
 		const seed = resolveRelayState();
@@ -400,6 +409,8 @@ test("E2E [11/11] widget click on status bar triggers select relay picker via on
 	} finally {
 		if (existed) fs.writeFileSync(RELAY_STATE_FILE, backup);
 		else fs.rmSync(RELAY_STATE_FILE, { force: true });
+		if (bakExisted) fs.writeFileSync(`${RELAY_STATE_FILE}.bak`, bakBackup);
+		else fs.rmSync(`${RELAY_STATE_FILE}.bak`, { force: true });
 		// restore in-memory state
 		const fresh = resolveRelayState();
 		setActiveRelayState(fresh, false);

@@ -45,7 +45,7 @@ test("probeRelay reports ok + latency for a 200 and sends the expected request",
 		assert.equal(calledUrl, "https://relay.example.com/v1/models");
 		const headers = (calledInit?.headers ?? {}) as Record<string, string>;
 		assert.equal(headers["x-relay-target"], "https://opencode.ai");
-		assert.equal(headers["x-relay-path"], "/v1/models");
+		assert.equal(headers["x-relay-path"], "/zen/v1/models");
 	} finally {
 		globalThis.fetch = realFetch;
 	}

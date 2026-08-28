@@ -17,6 +17,11 @@ export interface RelayProbeResult {
  * x-relay-path headers the relay expects, timing the round trip. Never
  * throws: network failures, timeouts, and non-2xx statuses are all reported
  * on the returned result instead.
+ *
+ * The path mirrors the proxy's real relay contract (`relayFetch` in relay.ts):
+ * `x-relay-target` is the upstream origin and `x-relay-path` the full path
+ * including the `/zen` prefix — the workers only allow the exact origins
+ * `https://opencode.ai` / `https://api.kilo.ai` and forward `target + path`.
  */
 export async function probeRelay(url: string): Promise<RelayProbeResult> {
 	const cleanUrl = url.trim().replace(/\/+$/, "");
@@ -25,7 +30,7 @@ export async function probeRelay(url: string): Promise<RelayProbeResult> {
 		const res = await fetch(`${cleanUrl}/v1/models`, {
 			headers: {
 				"x-relay-target": "https://opencode.ai",
-				"x-relay-path": "/v1/models",
+				"x-relay-path": "/zen/v1/models",
 			},
 			signal: AbortSignal.timeout(5_000),
 		});
