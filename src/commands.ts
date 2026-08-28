@@ -391,7 +391,10 @@ export function createCommandSpec(
 						: health?.lastLatencyMs != null && Number.isFinite(health.lastLatencyMs)
 							? ` ✓ [${health.lastLatencyMs}ms]`
 							: " ✓";
-					return `${star} [${idx + 1}] ${paddedName} → ${r.url}${healthBadge}`;
+					const counterText = health && (health.successCount != null || health.failureCount != null)
+						? ` ${health.successCount ?? 0} ok / ${health.failureCount ?? 0} fail`
+						: "";
+					return `${star} [${idx + 1}] ${paddedName} → ${r.url}${healthBadge}${counterText}`;
 				});
 				const activeLabel = shortRelayLabel(relayState.url, relayState.relays);
 				const activeIdx = Math.max(
@@ -679,6 +682,8 @@ export function createCommandSpec(
 					const rawRest = rest.trim();
 					let filterLevel: LogLevel | null = null;
 					let filterReqId: string | null = null;
+					let filterText: string | null = null;
+					let expectRelay = false;
 					let count = 25;
 					const rawTokens = rawRest ? rawRest.split(/\s+/) : [];
 					const isFollow = rawTokens.includes("--follow") || rawTokens.includes("-f");
@@ -689,6 +694,15 @@ export function createCommandSpec(
 						for (const t of rawTokens) {
 							if (t === "--follow" || t === "-f") continue;
 							const lower = t.toLowerCase();
+							if (expectRelay) {
+								filterText = t;
+								expectRelay = false;
+								continue;
+							}
+							if (t === "relay") {
+								expectRelay = true;
+								continue;
+							}
 							if (lower in LOG_LEVEL_ORDER) {
 								filterLevel = lower as LogLevel;
 							} else if (/^\d+$/.test(t)) {
@@ -715,6 +729,7 @@ export function createCommandSpec(
 						filterLevel,
 						filterReqId,
 						count,
+						filterText,
 					);
 					if (result.lines.length === 0) {
 						if (result.totalLines === 0) {
@@ -724,14 +739,14 @@ export function createCommandSpec(
 							);
 						} else {
 							ctx.ui.notify(
-								`No logs matched (level=${filterLevel || "any"} reqId=${filterReqId || "any"} count=${count})`,
+								`No logs matched (level=${filterLevel || "any"} reqId=${filterReqId || "any"} text=${filterText || "any"} count=${count})`,
 								"warning",
 							);
 						}
 						if (isFollow) {
 							const _t = setInterval(() => {
 								try {
-									const tail = readRecentLogs(filterLevel, filterReqId, count);
+									const tail = readRecentLogs(filterLevel, filterReqId, count, filterText);
 									if (tail.lines.length > 0) {
 										ctx.ui.notify(tail.lines.join("\n"), "info");
 									}
@@ -743,7 +758,7 @@ export function createCommandSpec(
 						return;
 					}
 
-					const header = `pi-freeflow logs (last ${result.lines.length}/${result.totalMatched} matched, total ${result.totalLines} lines, file: ${LOG_FILE}${filterLevel ? ` level=${filterLevel}` : ""}${filterReqId ? ` req=${filterReqId}` : ""}):`;
+					const header = `pi-freeflow logs (last ${result.lines.length}/${result.totalMatched} matched, total ${result.totalLines} lines, file: ${LOG_FILE}${filterLevel ? ` level=${filterLevel}` : ""}${filterReqId ? ` req=${filterReqId}` : ""}${filterText ? ` text=${filterText}` : ""}):`;
 					ctx.ui.notify(
 						`${header}\n\n${result.lines.join("\n")}`,
 						"info",
@@ -751,7 +766,7 @@ export function createCommandSpec(
 					if (isFollow) {
 						const _t2 = setInterval(() => {
 							try {
-								const tail = readRecentLogs(filterLevel, filterReqId, count);
+								const tail = readRecentLogs(filterLevel, filterReqId, count, filterText);
 								if (tail.lines.length > 0) {
 									ctx.ui.notify(tail.lines.join("\n"), "info");
 								}

@@ -269,11 +269,16 @@ export interface ReadRecentLogsResult {
 
 /**
  * Read recent log entries from log file and its rotated archives.
+ * @param filterLevel Optional log-level filter (case-insensitive label match).
+ * @param filterReqId Optional request-ID substring filter.
+ * @param count Max lines to return (clamped 1-200).
+ * @param filterText Optional case-insensitive text substring filter.
  */
 export function readRecentLogs(
 	filterLevel?: LogLevel | null,
 	filterReqId?: string | null,
 	count = 25,
+	filterText?: string | null,
 ): ReadRecentLogsResult {
 	const files: string[] = [
 		LOG_FILE,
@@ -313,6 +318,11 @@ export function readRecentLogs(
 		filtered = filtered.filter(
 			(l) => l.includes(cleanedReqId) || l.includes(`[${cleanedReqId}]`),
 		);
+	}
+
+	if (filterText) {
+		const lower = filterText.toLowerCase();
+		filtered = filtered.filter((l) => l.toLowerCase().includes(lower));
 	}
 
 	const clampedCount = Math.min(200, Math.max(1, count));

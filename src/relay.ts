@@ -12,6 +12,7 @@ export const agent = new Agent({ keepAliveTimeout: 30_000 });
 import {
 	getActiveRelayState,
 	getOrderedRelayUrls,
+	getStatusUi,
 	markRelayFailure,
 	markRelaySuccess,
 	saveRelayState,
@@ -19,6 +20,11 @@ import {
 	shortRelayLabel,
 	updateRelayStatusUi,
 } from "./relay-state.ts";
+
+// Throttle user-facing roll notifications so a burst of failures surfaces
+// one warning instead of a wall of identical toasts.
+let lastRollNotify = 0;
+const ROLL_NOTIFY_MS = 5 * 60 * 1_000;
 
 /**
  * Determine if an HTTP status code indicates a temporary relay or upstream error
@@ -136,6 +142,14 @@ export async function relayFetch(
 					{ upstream: url, sizeKB: bodySizeKB },
 					rid,
 				);
+				const now = Date.now();
+				if (now - lastRollNotify > ROLL_NOTIFY_MS) {
+					lastRollNotify = now;
+					const ui = getStatusUi();
+					if (ui?.notify) {
+						ui.notify(`relay ${shortRelayLabel(targetUrl)} hit HTTP 504 — falling back to direct`, "warning");
+					}
+				}
 				break;
 			}
 
@@ -149,6 +163,14 @@ export async function relayFetch(
 					{ upstream: url, status: res.status },
 					rid,
 				);
+				const now = Date.now();
+				if (now - lastRollNotify > ROLL_NOTIFY_MS) {
+					lastRollNotify = now;
+					const ui = getStatusUi();
+					if (ui?.notify) {
+						ui.notify(`relay ${shortRelayLabel(targetUrl)} failed (HTTP ${res.status}) — rolled to next relay`, "warning");
+					}
+				}
 				continue;
 			}
 

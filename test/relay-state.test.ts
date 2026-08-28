@@ -284,6 +284,38 @@ test("markRelaySuccess after markRelayFailure clears failure state but keeps rec
 	resetAllRelayHealth();
 });
 
+test("relay health counters: successCount and failureCount increment, last429At tracks 429", () => {
+	resetAllRelayHealth();
+	const r = "https://counter.example.com";
+
+	markRelayFailure(r, 429);
+	markRelaySuccess(r, 150);
+	let health = getRelayHealth(r);
+	assert.ok(health, "record must be kept after success with latency");
+	assert.equal(health!.successCount, 1);
+	assert.equal(health!.failureCount, 1);
+	assert.ok(
+		typeof health!.last429At === "number" && health!.last429At > 0,
+		`last429At should be a positive timestamp, got ${health!.last429At}`,
+	);
+	const first429At = health!.last429At;
+
+	// A second success keeps incrementing successCount.
+	markRelaySuccess(r, 200);
+	health = getRelayHealth(r);
+	assert.ok(health);
+	assert.equal(health!.successCount, 2);
+
+	// A non-429 failure increments failureCount but preserves last429At.
+	markRelayFailure(r, 503);
+	health = getRelayHealth(r);
+	assert.ok(health);
+	assert.equal(health!.failureCount, 2);
+	assert.equal(health!.last429At, first429At);
+
+	resetAllRelayHealth();
+});
+
 test("saveRelayState retries atomic rename once EPERM clears (Windows file lock)", () => {
 	withSavedDiskState(() => {
 		const realRenameSync = fs.renameSync.bind(fs);

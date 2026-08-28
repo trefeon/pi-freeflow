@@ -279,6 +279,12 @@ export interface RelayHealth {
 	lastError?: string;
 	/** most recent successful response latency in ms */
 	lastLatencyMs?: number;
+	/** total successful responses recorded while keeping the health record */
+	successCount?: number;
+	/** total failures recorded since the health record was created */
+	failureCount?: number;
+	/** timestamp of the most recent HTTP 429 (if any) */
+	last429At?: number;
 }
 
 const relayHealthMap = new Map<string, RelayHealth>();
@@ -295,7 +301,7 @@ export function markRelaySuccess(url: string, latencyMs?: number): void {
 	if (typeof latencyMs === "number" && Number.isFinite(latencyMs)) {
 		const prev = relayHealthMap.get(clean);
 		const record: RelayHealth = prev
-			? { ...prev, consecutiveFailures: 0, lastFailureTime: 0, cooldownUntil: 0, lastLatencyMs: Math.round(latencyMs) }
+			? { ...prev, consecutiveFailures: 0, lastFailureTime: 0, cooldownUntil: 0, lastLatencyMs: Math.round(latencyMs), successCount: (prev?.successCount ?? 0) + 1 }
 			: { consecutiveFailures: 0, lastFailureTime: 0, cooldownUntil: 0, lastLatencyMs: Math.round(latencyMs) };
 		relayHealthMap.set(clean, record);
 		return;
@@ -334,11 +340,14 @@ export function markRelayFailure(url: string, status?: number, error?: string): 
 	// 4x their base cooldown instead of re-hammering at a fixed interval.
 	const multiplier = Math.min(4, consecutive);
 	relayHealthMap.set(clean, {
+		...prev,
 		consecutiveFailures: consecutive,
 		lastFailureTime: now,
 		cooldownUntil: now + cooldownMs * multiplier,
 		lastStatus: status,
 		lastError: error,
+		failureCount: (prev.failureCount ?? 0) + 1,
+		last429At: status === 429 ? now : prev.last429At || undefined,
 	});
 }
 
