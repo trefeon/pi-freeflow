@@ -24,7 +24,7 @@ features:
   - title: "Master/Worker Proxy"
     details: Single-port 28180 shared across OMP subagents — 0ms startup for parallel workers, no port conflicts.
   - title: "Thin by Design"
-    details: No build step, no runtime deps, no payload normalizer — host pi-ai owns thinking and reasoning translation.
+    details: No build step, one runtime dep, no payload normalizer — host pi-ai owns thinking and reasoning translation.
   - title: "Observable Logging"
-    details: Auto-rotating 5MB file logger at ~/.pi/agent/pi-freeflow.log with request correlation IDs.
+    details: Auto-rotating 10MB file logger at ~/.pi/agent/pi-freeflow.log with request correlation IDs.
 ---

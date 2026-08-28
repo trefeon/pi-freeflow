@@ -27,7 +27,7 @@ Instead of VPN tunnels, pi-freeflow uses standard edge worker scripts across **C
 | :--- | :--- | :--- |
 | **HTTP 200 (OK)** | Success (sticky active) | Active relay is saved as sticky target |
 | **HTTP 429 (Rate Limit)** | Roll to next relay | IP quota exceeded; fresh egress IP per relay |
-| **HTTP 404 / 410** | Roll to next relay | Stale or deleted edge deployment |
+| **HTTP 404 / 410** | Keep response, set sticky | Terminal non-retriable; not rolled |
 | **HTTP 502 / 503** | Roll to next relay | Upstream edge transient error |
 | **HTTP 504** | Fast fallback to direct | Vercel Edge 25s execution timeout |
 | **HTTP 520-530** | Roll to next relay | Cloudflare network/origin drops |
@@ -52,10 +52,10 @@ Relay state is persisted in `~/.pi/agent/pi-freeflow-relay-state.json`:
 ## Deployment Options
 
 ### Cloudflare Worker (Recommended)
-Free tier: 100,000 requests/day, no 25-second execution limit. Deploy via `/pi-freeflow deploy cloudflare` or manually paste a 40-line edge worker script.
+Free tier: 100,000 requests/day, no 25-second execution limit. Deploy via `/freeflow deploy cloudflare` or manually paste a 40-line edge worker script.
 
 ### Vercel Edge Function
-Free tier: 1,000,000 requests/month. Deploy via `/pi-freeflow deploy vercel` (in-memory token, auto-adds to pool) or manual Git deploy with `api/relay.js` + `vercel.json`.
+Free tier: 1,000,000 requests/month. Deploy via `/freeflow deploy vercel` (in-memory token, auto-adds to pool) or manual Git deploy with `api/relay.js` + `vercel.json`.
 
 ### Deno Deploy
-Free tier: 100,000 requests/day. Deploy via `/pi-freeflow deploy deno` or manual playground paste.
+Free tier: 100,000 requests/day. Deploy via `/freeflow deploy deno` or manual playground paste.

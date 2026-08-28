@@ -27,20 +27,22 @@
 
 ```
 src/
-├── types.ts           # Core domain types, Pi/OMP ExtensionAPI and UI contracts
+├── catalog.ts         # 24h atomic disk caching + dynamic model enrichment
+├── commands.ts        # /freeflow CLI commands and status bar widget
 ├── config.ts          # Constants, whitelists, paths, and runtime settings
-├── logger.ts          # Structured, leveled, rotating file logger (5MB x 3)
-├── rate-limiter.ts    # In-memory sliding rate limiter
+├── deploy.ts          # Guided relay deploy (vercel/cloudflare/deno), in-memory tokens
+├── health.ts          # Loopback-only /health endpoint handler
+├── index.ts           # Extension bootstrap, provider registration, lifecycle hooks
+├── logger.ts          # Structured, leveled, rotating file logger (10MB x 10)
 ├── models.ts          # 21 curated free model definitions and upstream mappings
-├── catalog.ts         # 1-hour atomic disk caching + dynamic model enrichment
-├── relay-state.ts     # Persistent relay pool state and ordering logic
-├── relay.ts           # Multi-cloud relay fetch with failover and direct fallback
-├── deploy.ts          # In-memory Vercel Edge relay deployer (no persisted tokens)
-├── normalizer.ts      # Payload normalization, reasoning translation
-├── stream-pipe.ts     # Resilient SSE stream pass-through with thinking sniffing
+├── probe.ts           # Relay reachability probe (HTTP 200 + latency)
 ├── proxy.ts           # Loopback HTTP proxy server on 28180 with master/worker reuse
-├── commands.ts        # /pi-freeflow CLI commands and status bar widget
-└── index.ts           # Extension bootstrap, provider registration, lifecycle hooks
+├── rate-limiter.ts    # In-memory sliding rate limiter (200/day opencode, 200/hour kilo)
+├── relay.ts           # Multi-cloud relay fetch with failover and direct fallback
+├── relay-state.ts     # Persistent relay pool state and ordering logic
+├── stream-pipe.ts     # Resilient SSE stream pass-through with thinking sniffing
+├── types.ts           # Core domain types, Pi/OMP ExtensionAPI and UI contracts
+└── update-checker.ts  # Background version check + update notification
 ```
 
 ## Single-Port Master/Worker Architecture
@@ -58,7 +60,7 @@ When OMP dispatches parallel subagents, each spawns a child process. Rather than
 To prevent network burst storms when multiple subagents boot simultaneously, the model catalog is cached to disk:
 
 - **Location**: `~/.pi/agent/pi-freeflow-catalog-cache.json`
-- **TTL**: 1 hour (3,600,000 ms)
+- **TTL**: 24 hours (86,400,000 ms)
 - **Atomic Write**: Uses a temp file + `fs.renameSync` to prevent corruption under concurrent writes
 - **Boot Speed**: Subagents load all 21 models from disk cache in ~0.1ms
 

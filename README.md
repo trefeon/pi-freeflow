@@ -26,7 +26,7 @@ Join devs bypassing rate limits with their own relay pools. BYO, add as many as 
 | **Auto-Enabled on Session** | Relay stays enabled in `auto` mode on session start and model switch | Zero Friction | **$0** |
 | **Interactive CLI Management** | 10+ `/freeflow` subcommands (`status`, `list`, `use`, `add`, `label`, `remove`, `deploy`, `logs`, `debug`) | Full Control | **$0** |
 | **Dumb Proxy That Never Breaks** | `127.0.0.1:28180`, host-normalized, pathname-guarded `/v1/models` | 100% Uptime | **$0** |
-| **Observable Real Logs** | `~/.pi/agent/pi-freeflow.log`, 5MB auto-rotation, real-time debug toggle | Observable | **$0** |
+| **Observable Real Logs** | `~/.pi/agent/pi-freeflow.log`, 10MB auto-rotation, real-time debug toggle | Observable | **$0** |
 
 Philosophy: **Thin by design.** We only ship model list + relay proxy + log. Host owns thinking & normalization.
 
@@ -101,12 +101,17 @@ Manage your relay pool directly from the OMP / Pi terminal:
 /freeflow status                  # View active relay, pool status, and candidates
 /freeflow list                    # List all relays with real-time health badges (✓ / ⚠️ [cooling])
 /freeflow use <url|index|label>   # Switch active relay
+/freeflow url <url>               # Set the active relay URL directly
 /freeflow add <url> [label]       # Add new relay to the pool
 /freeflow label <index|url> <name># Assign a friendly label to a relay
 /freeflow remove <index|url|label># Remove a relay from the pool
+/freeflow test <index|url|label>  # Probe a relay for reachability (HTTP 200 + latency)
 /freeflow on | off | auto         # Toggle relay mode (auto = enabled for freeflow)
 /freeflow deploy <platform>       # Guided relay deploy: vercel|cloudflare|deno — token in-memory, auto-adds (Vercel 1M/mo recommended)
 /freeflow logs [lines]            # Inspect recent proxy logs
+/freeflow trace [req-id]          # Tail logs filtered by request correlation ID
+/freeflow refresh                 # Reload the model catalog from live upstreams
+/freeflow update                  # Check for and install a package update
 /freeflow debug on | off          # Toggle full HTTP lifecycle debug logging
 ```
 
@@ -150,26 +155,7 @@ Default ships direct. Add relays via `/freeflow add <url> [label]`.
 ```bash
 /freeflow deploy cloudflare  # prompts token in-memory, auto-adds to pool
 ```
-*Manual fallback:* `dash.cloudflare.com` → Workers → Create → Deploy → Edit code → paste snippet below → Deploy → `/freeflow add https://your.workers.dev cf-worker-1`
-
-```js
-// Only the 2 upstreams pi-freeflow talks to. Anything else = open proxy abuse.
-const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
-
-export default {
-  async fetch(req) {
-    const target = req.headers.get("x-relay-target");
-    const relayPath = req.headers.get("x-relay-path") || "/";
-    if (!target) return new Response(JSON.stringify({ error: "Missing x-relay-target header" }), { status: 400 });
-    const cleanTarget = target.replace(/\/$/, "");
-    if (!ALLOWED_TARGETS.includes(cleanTarget)) return new Response(JSON.stringify({ error: "Forbidden target" }), { status: 403 });
-    if (!relayPath.startsWith("/")) return new Response(JSON.stringify({ error: "Bad path" }), { status: 400 });
-    const headers = new Headers(req.headers);
-    headers.delete("x-relay-target"); headers.delete("x-relay-path"); headers.delete("host");
-    return fetch(cleanTarget + relayPath, { method: req.method, headers, body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined });
-  },
-};
-```
+*Manual fallback:* `dash.cloudflare.com` → Workers → Create → Deploy → Edit code → paste the canonical worker source (see "Canonical worker source" below) → Deploy → `/freeflow add https://your.workers.dev cf-worker-1`
 
 **Option B: Vercel Edge Relay (1M req/mo) — Auto Deploy**
 ```bash
@@ -178,30 +164,9 @@ export default {
 ```
 *Manual fallback:* Push 2 files (`api/relay.js` + `vercel.json`) to GitHub $\to$ Import on `vercel.com` $\to$ `/freeflow add https://your.vercel.app vercel-relay-1`
 
-```js
-// api/relay.js
-const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
-export const config = { runtime: "edge" };
-export default async function handler(req) {
-  const target = req.headers.get("x-relay-target");
-  const relayPath = req.headers.get("x-relay-path") || "/";
-  if (!target || !ALLOWED_TARGETS.includes(target.replace(/\/$/, ""))) {
-    return new Response(JSON.stringify({ error: "Forbidden target" }), { status: 403 });
-  }
-  const headers = new Headers(req.headers);
-  headers.delete("x-relay-target"); headers.delete("x-relay-path"); headers.delete("host");
-  const res = await fetch(target.replace(/\/$/, "") + relayPath, {
-    method: req.method,
-    headers,
-    body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
-    duplex: "half",
-  });
-  return new Response(res.body, { status: res.status, headers: res.headers });
-}
-```
+For `api/relay.js`, use the canonical worker source (see below); `vercel.json` stays:
 
 ```json
-// vercel.json
 { "rewrites": [{ "source": "/(.*)", "destination": "/api/relay" }] }
 ```
 
@@ -209,22 +174,29 @@ export default async function handler(req) {
 ```bash
 /freeflow deploy deno  # prompts token in-memory, auto-adds to pool
 ```
-*Manual fallback:* `dash.deno.com` → New Project → Playground → paste snippet below → Deploy → `/freeflow add https://your-project.deno.dev deno-relay-1`
+*Manual fallback:* `dash.deno.com` → New Project → Playground → paste the canonical worker source (see below) → Deploy → `/freeflow add https://your-project.deno.dev deno-relay-1`
 
-```ts
+**Canonical worker source (all platforms)**
+
+The relay worker template is generated per deployment by `/freeflow deploy` and lives in [`src/deploy.ts`](src/deploy.ts): one hardened core plus thin Vercel / Cloudflare / Deno wrappers. Every deployment embeds its own shared secret and enforces the target allowlist (`https://opencode.ai`, `https://api.kilo.ai`), SSRF/private-host guard, relay-path validation, and a header denylist — `x-relay-auth` is checked by the worker and never forwarded upstream.
+
+```js
+// Minimal Cloudflare illustration. Prefer /freeflow deploy: the generated
+// worker (src/deploy.ts) is the signed/hardened source for all three
+// platforms. This example omits the SSRF guard, path validation, and auth.
 const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
-
-Deno.serve(async (req) => {
-  const target = req.headers.get("x-relay-target");
-  const relayPath = req.headers.get("x-relay-path") || "/";
-  if (!target || !ALLOWED_TARGETS.includes(target.replace(/\/$/, ""))) {
-    return new Response(JSON.stringify({ error: "Forbidden target" }), { status: 403 });
-  }
-  const headers = new Headers(req.headers);
-  headers.delete("x-relay-target"); headers.delete("x-relay-path"); headers.delete("host");
-  const res = await fetch(target.replace(/\/$/, "") + relayPath, { method: req.method, headers, body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined });
-  return new Response(res.body, { status: res.status, headers: res.headers });
-});
+export default {
+  async fetch(req) {
+    const target = req.headers.get("x-relay-target");
+    const relayPath = req.headers.get("x-relay-path") || "/";
+    if (!target || !ALLOWED_TARGETS.includes(target.replace(/\/$/, ""))) {
+      return new Response(JSON.stringify({ error: "Forbidden target" }), { status: 403 });
+    }
+    const headers = new Headers(req.headers);
+    headers.delete("x-relay-target"); headers.delete("x-relay-path"); headers.delete("host");
+    return fetch(target.replace(/\/$/, "") + relayPath, { method: req.method, headers, body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined });
+  },
+};
 ```
 
 **Verify your pool:**
@@ -247,15 +219,15 @@ cat ~/.pi/agent/pi-freeflow.log | tail -n 50
 /freeflow debug on
 ```
 
-Log rotation at 5MB. Clean, parseable, real-time HTTP lifecycle tracking.
+Log rotation at 10MB. Clean, parseable, real-time HTTP lifecycle tracking.
 
 ---
 
 ### Design
 
-This package stays thin. It ships three things: a model catalog, a relay proxy, and a log. There is no build step and there are no runtime dependencies. Thinking and prompt normalization stay with the host (`pi-ai`).
+This package stays thin. It ships three things: a model catalog, a relay proxy, and a log. There is no build step. The only runtime dependency is `undici`, which powers the upstream fetch agent. Thinking and prompt normalization stay with the host (`pi-ai`).
 
-Current size: about 11.5k lines including tests. 206 tests pass, typecheck clean.
+Current size: about 11.3k lines including tests. 226 tests pass, typecheck clean.
 
 ---
 
@@ -284,7 +256,7 @@ Contributions welcome — bug fixes, new relay platforms, model additions, docs 
 
 #### Prerequisites
 
-- **Node.js ≥ 22.6.0** (uses `--experimental-strip-types`, no build step)
+- **Node.js ≥ 22.19.0** (uses `--experimental-strip-types`, no build step)
 - **pnpm** (package manager)
 
 #### Setup & Verify
@@ -295,7 +267,7 @@ cd pi-freeflow
 pnpm install
 
 # run all three before opening a PR
-pnpm test        # 206 tests across 30 test files
+pnpm test        # 226 tests across 30 test files
 pnpm typecheck   # tsc --noEmit, must pass clean
 pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
@@ -310,12 +282,12 @@ src/
 ├── proxy.ts          # local proxy server (127.0.0.1:28180)
 ├── relay.ts          # relay selection & round-robin
 ├── relay-state.ts    # relay pool state, health tracking
-├── rate-limiter.ts   # adaptive cooldown on 429/504/socket errors
+├── rate-limiter.ts   # in-memory sliding rate limiter (200/day, 200/hour)
 ├── stream-pipe.ts    # SSE stream piping & truncation resilience
 ├── commands.ts       # /freeflow CLI subcommands
 ├── deploy.ts         # guided relay deploy (vercel/cloudflare/deno)
-├── config.ts         # relay pool persistence
-├── logger.ts         # file logger with 5MB rotation
+├── config.ts         # constants, whitelists, paths, and runtime settings
+├── logger.ts         # file logger with 10MB rotation
 └── types.ts          # shared type definitions
 extensions/
 └── index.ts          # OMP/Pi extension manifest
@@ -325,7 +297,7 @@ test/
 
 #### Guidelines
 
-- **Stay thin.** No runtime dependencies. No build step. If it belongs in the host (`pi-ai`), don't add it here.
+- **Stay thin.** One runtime dependency (`undici`), no build step. If it belongs in the host (`pi-ai`), don't add it here.
 - **Test what you touch.** Every `src/*.ts` has a matching `test/*.test.ts`. Add or update tests for your change.
 - **Keep model IDs clean.** Slash-free, colon-free aliases for CLI compatibility. See existing patterns in `models.ts`.
 - **One concern per PR.** Bug fix? One PR. New relay platform? Separate PR. Easier to review, faster to merge.
