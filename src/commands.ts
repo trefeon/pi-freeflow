@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshCatalog, setAliveCatalog } from "./catalog.ts";
-import { DEBUG_STATE_FILE, DEFAULT_RELAY_URL, LOG_FILE } from "./config.ts";
+import { DEBUG_STATE_FILE, DEFAULT_RELAY_URL, LOG_FILE, RELAY_STATE_FILE } from "./config.ts";
 import {
 	compareVersions,
 	fetchLatestVersion,
@@ -133,7 +133,7 @@ export function createCommandSpec(
 ): Omit<RegisteredCommand, "name"> {
 	return {
 		description:
-			"Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno",
+			"Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test <target> | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno",
 		getArgumentCompletions: (prefix: string) =>
 			[
 				"auto",
@@ -150,6 +150,7 @@ export function createCommandSpec(
 				"label",
 				"rename",
 				"remove",
+				"test",
 				"url",
 				"deploy",
 				"deploy vercel",
@@ -266,6 +267,12 @@ export function createCommandSpec(
 				);
 			};
 
+			const DEPLOY_OPTIONS: Record<string, DeployPlatform> = {
+				"Vercel (1M req/mo — recommended)": "vercel",
+				"Cloudflare (100k req/day)": "cloudflare",
+				"Deno Deploy (100k req/day)": "deno",
+			};
+
 			const parseDeployPlatform = (raw?: string): DeployPlatform | null => {
 				const v = (raw || "").trim().toLowerCase();
 				if (!v || v === "vercel") return "vercel";
@@ -282,6 +289,13 @@ export function createCommandSpec(
 						: platform === "deno"
 							? "Deno Deploy"
 							: "Vercel";
+				const tokenHint =
+					platform === "cloudflare"
+						? "Cloudflare relay — token: dash.cloudflare.com → API Tokens (Workers Scripts: Edit)"
+						: platform === "deno"
+							? "Deno Deploy relay — token: dash.deno.com → Access Tokens"
+							: "Vercel relay — token: vercel.com/account/tokens";
+				ctx.ui.notify(tokenHint, "info");
 				const token = (
 					await ctx.ui.input(`${label} API token:`, "")
 				)?.trim();
@@ -296,6 +310,17 @@ export function createCommandSpec(
 							defaultName,
 						)
 					)?.trim() || defaultName;
+
+				if (typeof ctx.ui.confirm === "function") {
+					const ok = await ctx.ui.confirm(
+						"Deploy relay",
+						`Deploy ${label} relay '${name}' using token ending ${token.slice(-4)}?`,
+					);
+					if (!ok) {
+						ctx.ui.notify("Deploy cancelled", "warning");
+						return;
+					}
+				}
 
 				ctx.ui.setStatus("freeflow", `deploying ${platform} relay…`);
 				try {
@@ -363,7 +388,9 @@ export function createCommandSpec(
 					const remainingSec = isCooling ? Math.ceil((health.cooldownUntil - Date.now()) / 1000) : 0;
 					const healthBadge = isCooling
 						? ` ⚠️ [cooling ${remainingSec}s: ${health.lastStatus ? `HTTP ${health.lastStatus}` : "error"}]`
-						: " ✓";
+						: health?.lastLatencyMs != null && Number.isFinite(health.lastLatencyMs)
+							? ` ✓ [${health.lastLatencyMs}ms]`
+							: " ✓";
 					return `${star} [${idx + 1}] ${paddedName} → ${r.url}${healthBadge}`;
 				});
 				const activeLabel = shortRelayLabel(relayState.url, relayState.relays);
@@ -448,6 +475,20 @@ export function createCommandSpec(
 				} catch {
 					// swallow — status banner is best-effort
 				}
+
+				const modeLine =
+					relayState.mode === "off"
+						? "Mode: off (always direct)"
+						: relayState.mode === "on"
+							? "Mode: on (always relay)"
+							: "Mode: auto (enabled on session, auto-rolls on 429/5xx)";
+				const poolLine = `${relayState.relays.length} relay(s)${
+					relayState.relays.length > 0
+						? ` | active: ${shortRelayLabel(relayState.url, relayState.relays)}`
+						: ""
+				}`;
+				const stateFileLine = `State file: ${RELAY_STATE_FILE}`;
+				ctx.ui.notify(`${modeLine} | ${poolLine}\n${stateFileLine}`, "info");
 			} else if (sub === "update") {
 				if (isLinkedInstall()) {
 					ctx.ui.notify(
@@ -763,6 +804,20 @@ export function createCommandSpec(
 					persist();
 					ctx.ui.notify(`Removed: [${shortRelayLabel(matched.url, relayState.relays)}] ${matched.url}`, "info");
 				}
+			} else if (sub === "test") {
+				const target = rest.trim();
+				const matched = findRelay(relayState, target);
+				if (!matched) {
+					ctx.ui.notify(`Relay '${target}' not in saved list`, "warning");
+					return;
+				}
+				ctx.ui.notify(`Testing ${matched.url}…`, "info");
+				const probe = await probeRelay(matched.url);
+				if (probe.ok) {
+					ctx.ui.notify(`✓ ${shortRelayLabel(matched.url, relayState.relays)} ok (HTTP ${probe.status}, ${probe.latencyMs}ms)`, "info");
+				} else {
+					ctx.ui.notify(`✗ ${shortRelayLabel(matched.url, relayState.relays)} failed: ${probe.error || `HTTP ${probe.status}`}`, "error");
+				}
 			} else if (sub === "url") {
 				const input =
 					rest ||
@@ -779,14 +834,22 @@ export function createCommandSpec(
 				persist();
 				flash();
 			} else if (sub === "deploy") {
-				const pf = parseDeployPlatform(rest);
-				if (!pf) {
-					ctx.ui.notify(
-						"Unknown platform. Use: vercel | cloudflare | deno",
-						"warning",
+				if (!rest.trim()) {
+					const choice = await ctx.ui.select(
+						"Deploy relay on",
+						Object.keys(DEPLOY_OPTIONS),
 					);
+					if (choice) await doDeploy(DEPLOY_OPTIONS[choice]);
 				} else {
-					await doDeploy(pf);
+					const pf = parseDeployPlatform(rest);
+					if (!pf) {
+						ctx.ui.notify(
+							"Unknown platform. Use: vercel | cloudflare | deno",
+							"warning",
+						);
+					} else {
+						await doDeploy(pf);
+					}
 				}
 			} else {
 				const currentMode = (relayState.mode || "auto").toUpperCase();

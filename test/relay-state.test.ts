@@ -245,6 +245,45 @@ test("consecutive failures escalate cooldown up to 4x base", () => {
 	resetAllRelayHealth();
 });
 
+test("markRelaySuccess with latencyMs keeps record, records rounded latency, and resets failure fields", () => {
+	resetAllRelayHealth();
+	const r = "https://latency.example.com";
+
+	// Success with measured latency keeps the record and reports it.
+	markRelaySuccess(r, 250);
+	const health = getRelayHealth(r);
+	assert.ok(health, "record must be kept when a finite latency is provided");
+	assert.equal(health!.lastLatencyMs, 250);
+	assert.equal(health!.consecutiveFailures, 0);
+	assert.equal(health!.cooldownUntil, 0);
+	assert.equal(isRelayHealthy(r), true);
+
+	// Latency is rounded to whole ms.
+	markRelaySuccess(r, 150.6);
+	assert.equal(getRelayHealth(r)!.lastLatencyMs, 151);
+
+	resetAllRelayHealth();
+});
+
+test("markRelaySuccess after markRelayFailure clears failure state but keeps recorded latency", () => {
+	resetAllRelayHealth();
+	const r = "https://recovered.example.com";
+
+	markRelayFailure(r, 429);
+	assert.equal(isRelayHealthy(r), false);
+	assert.ok(getRelayHealth(r)!.cooldownUntil > 0);
+
+	markRelaySuccess(r, 150);
+	const health = getRelayHealth(r);
+	assert.ok(health);
+	assert.equal(health!.lastLatencyMs, 150);
+	assert.equal(health!.consecutiveFailures, 0);
+	assert.equal(health!.cooldownUntil, 0);
+	assert.equal(isRelayHealthy(r), true);
+
+	resetAllRelayHealth();
+});
+
 test("saveRelayState retries atomic rename once EPERM clears (Windows file lock)", () => {
 	withSavedDiskState(() => {
 		const realRenameSync = fs.renameSync.bind(fs);

@@ -277,6 +277,8 @@ export interface RelayHealth {
 	cooldownUntil: number;
 	lastStatus?: number;
 	lastError?: string;
+	/** most recent successful response latency in ms */
+	lastLatencyMs?: number;
 }
 
 const relayHealthMap = new Map<string, RelayHealth>();
@@ -284,10 +286,21 @@ let last429Warn = 0;
 
 /**
  * Mark a relay as healthy and active on successful response.
+ * With a finite latencyMs the health record is kept (failures reset, latency
+ * recorded); without one the record is deleted entirely.
  */
-export function markRelaySuccess(url: string): void {
+export function markRelaySuccess(url: string, latencyMs?: number): void {
 	if (!url) return;
-	relayHealthMap.delete(url.trim());
+	const clean = url.trim();
+	if (typeof latencyMs === "number" && Number.isFinite(latencyMs)) {
+		const prev = relayHealthMap.get(clean);
+		const record: RelayHealth = prev
+			? { ...prev, consecutiveFailures: 0, lastFailureTime: 0, cooldownUntil: 0, lastLatencyMs: Math.round(latencyMs) }
+			: { consecutiveFailures: 0, lastFailureTime: 0, cooldownUntil: 0, lastLatencyMs: Math.round(latencyMs) };
+		relayHealthMap.set(clean, record);
+		return;
+	}
+	relayHealthMap.delete(clean);
 }
 
 /**

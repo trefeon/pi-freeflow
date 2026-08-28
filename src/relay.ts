@@ -152,7 +152,7 @@ export async function relayFetch(
 				continue;
 			}
 
-			markRelaySuccess(targetUrl);
+			markRelaySuccess(targetUrl, Date.now() - attemptStart);
 
 			// SUCCESS or non-retriable client error (e.g. 200, 404):
 			// If we switched to a different relay because previous failed, update sticky active relay!
