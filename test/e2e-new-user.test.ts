@@ -20,8 +20,6 @@ import fs from "node:fs";
 
 import defaultExtension, { bindWidgetClick, buildProviderConfig } from "../src/index.ts";
 import {
-	DEFAULT_PORT,
-	LEGACY_PORT,
 	ALLOWED_PATH_PATTERN,
 	PATH_TRAVERSAL_PATTERN,
 	RELAY_STATE_FILE,
@@ -32,6 +30,7 @@ import {
 	isKiloModel,
 } from "../src/models.ts";
 import { isProxyAlive, startProxy } from "../src/proxy.ts";
+import { isSubstantial } from "../src/stream-pipe.ts";
 import {
 	resolveRelayState,
 	setActiveRelayState,
@@ -139,20 +138,16 @@ test("E2E [3/10] sibling process detects running daemon and reuses port with zer
 
 // ── 4. Legacy Migration & Dual-Probe Backward Compatibility ───────────────────
 
-test("E2E [4/10] dual-probe falls back to LEGACY_PORT 18080 when legacy daemon is active", async () => {
-	assert.equal(LEGACY_PORT, 18080);
-	assert.equal(DEFAULT_PORT, 28180);
-
-	// Simulate legacy daemon running on 18080
-	const legacyTestPort = 19185;
-	const legacyDaemon = await startProxy(legacyTestPort);
-	assert.ok(legacyDaemon.server);
+test("E2E [4/10] proxy daemon starts on requested port and serves /v1/models", async () => {
+	const testPort = 19185;
+	const daemon = await startProxy(testPort);
+	assert.ok(daemon.server);
 
 	try {
-		const isAlive = await isProxyAlive(legacyTestPort);
-		assert.equal(isAlive, true, "Legacy probe must succeed when daemon is up");
+		const isAlive = await isProxyAlive(testPort);
+		assert.equal(isAlive, true, "Probe must succeed when daemon is up");
 	} finally {
-		await new Promise<void>((r) => legacyDaemon.server!.close(() => r()));
+		await new Promise<void>((r) => daemon.server!.close(() => r()));
 	}
 });
 
@@ -304,15 +299,28 @@ test("E2E [8/10] all 3 relay worker scripts enforce 14-header denylist, anti-SSR
 
 test("E2E [9/10] stream truncation threshold marks substantial stream (>50 chunks, >100KB) as incomplete without fatal error", () => {
 	// Substantial stream threshold validation
-	const substantialChunks = 95;
-	const substantialBytes = 516 * 1024;
-	const isSubstantialA = substantialChunks > 50 && substantialBytes > 100 * 1024;
-	assert.equal(isSubstantialA, true, "500KB stream closed midway must be marked substantial -> incomplete");
+	assert.equal(
+		isSubstantial(95, 516 * 1024),
+		true,
+		"500KB stream closed midway must be marked substantial -> incomplete",
+	);
+	assert.equal(
+		isSubstantial(5, 2048),
+		false,
+		"Small connection drop (<50 chunks) must be marked failed",
+	);
 
-	const smallChunks = 5;
-	const smallBytes = 2048;
-	const isSubstantialB = smallChunks > 50 && smallBytes > 100 * 1024;
-	assert.equal(isSubstantialB, false, "Small connection drop (<50 chunks) must be marked failed");
+	// Boundary behavior: strictly greater than BOTH thresholds
+	assert.equal(
+		isSubstantial(50, 100 * 1024),
+		false,
+		"Exact boundary (50 chunks, 100KB) is not substantial",
+	);
+	assert.equal(
+		isSubstantial(51, 100 * 1024 + 1),
+		true,
+		"One chunk and one byte over boundary is substantial",
+	);
 });
 
 // ── 10. Security Whitelist & Path Traversal Guards ────────────────────────────

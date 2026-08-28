@@ -25,6 +25,8 @@ import {
 // one warning instead of a wall of identical toasts.
 let lastRollNotify = 0;
 const ROLL_NOTIFY_MS = 5 * 60 * 1_000;
+/** Test-only: reset roll-notify throttle */
+export function _resetRollNotifyForTest(): void { lastRollNotify = 0; }
 
 /**
  * Determine if an HTTP status code indicates a temporary relay or upstream error

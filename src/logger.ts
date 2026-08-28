@@ -273,21 +273,24 @@ export interface ReadRecentLogsResult {
  * @param filterReqId Optional request-ID substring filter.
  * @param count Max lines to return (clamped 1-200).
  * @param filterText Optional case-insensitive text substring filter.
+ * @param files Optional log files to read (newest-last order); defaults to
+ *   LOG_FILE and its rotated archives (.1-.3).
  */
 export function readRecentLogs(
 	filterLevel?: LogLevel | null,
 	filterReqId?: string | null,
 	count = 25,
 	filterText?: string | null,
+	files?: string[],
 ): ReadRecentLogsResult {
-	const files: string[] = [
+	const filesList: string[] = (files ?? [
 		LOG_FILE,
 		`${LOG_FILE}.1`,
 		`${LOG_FILE}.2`,
 		`${LOG_FILE}.3`,
-	].filter((f) => fs.existsSync(f));
+	]).filter((f) => fs.existsSync(f));
 
-	if (files.length === 0) {
+	if (filesList.length === 0) {
 		return {
 			lines: [],
 			totalMatched: 0,
@@ -297,7 +300,7 @@ export function readRecentLogs(
 	}
 
 	let allLines: string[] = [];
-	for (const f of files) {
+	for (const f of filesList) {
 		try {
 			const content = fs.readFileSync(f, "utf8");
 			const lines = content.trim().split("\n").filter(Boolean);

@@ -40,14 +40,32 @@ test("forbidden headers are stripped", () => {
 
 test("zero hardcoded API keys exist in source tree", () => {
 	const srcDir = path.join(import.meta.dirname, "..", "src");
-	const files = fs.readdirSync(srcDir);
+	const files = fs.readdirSync(srcDir).filter((f) => f.endsWith(".ts"));
+	const lines: Array<{ file: string; line: string; num: number }> = [];
 	for (const f of files) {
 		const content = fs.readFileSync(path.join(srcDir, f), "utf8");
-		// Check that no literal fallback assignments exist
-		assert.equal(
-			content.includes("process.env.FREEFLOW_API_KEY = \"freeflow\""),
-			false,
-			`file ${f} must not assign hardcoded key to FREEFLOW_API_KEY`,
+		content
+			.split(/\r?\n/)
+			.forEach((l, i) => lines.push({ file: f, line: l, num: i + 1 }));
+	}
+
+	// No assignment of a non-trivial literal to an api-key-like name.
+	// The literal "placeholder" (buildProviderConfig's OMP registration
+	// sentinel) is exempt — it is a marker, not a credential.
+	for (const { file, line, num } of lines) {
+		const match = /api[_-]?key\s*[=:]\s*["']([^"']{6,})["']/i.exec(line);
+		if (!match || match[1] === "placeholder") continue;
+		assert.fail(`${file}:${num} must not hardcode an API key literal`);
+	}
+
+	// Every Bearer credential line is either the known kilo-free free-tier
+	// token or a `${token}` interpolation — nothing else may hardcode a secret.
+	const bearerLines = lines.filter(({ line }) => /Bearer /.test(line));
+	assert.ok(bearerLines.length > 0, "expected Bearer credential lines in src");
+	for (const { file, line, num } of bearerLines) {
+		assert.ok(
+			line.includes("kilo-free") || line.includes("${token}"),
+			`${file}:${num} hardcodes an unexpected Bearer credential`,
 		);
 	}
 });
@@ -64,13 +82,28 @@ test("sanitizeHeaders never emits duplicate User-Agent headers", () => {
 	assert.equal(fwd[uaKeys[0]], "opencode/latest/1.14.50/cli");
 });
 
-test("resolvePort falls back to default 28180 without env overrides", () => {
-	const original = process.env.FREEFLOW_PORT;
-	delete process.env.FREEFLOW_PORT;
+test("resolvePort honors the source-derived env override and falls back to default 28180", () => {
+	// Derive the env key from source instead of hardcoding it
+	const configSrc = fs.readFileSync(
+		path.join(import.meta.dirname, "..", "src", "config.ts"),
+		"utf8",
+	);
+	const match = /process\.env\.([A-Z0-9_]+)_PORT/.exec(configSrc);
+	assert.ok(match, "src/config.ts must read a *_PORT env var");
+	const actualKey = match![1] + "_PORT";
+
+	const original = process.env[actualKey];
+	delete process.env[actualKey];
 	try {
-		assert.equal(resolvePort(), 28180);
+		assert.equal(resolvePort(), 28180, "default port without env override");
+		process.env[actualKey] = "3001";
+		assert.equal(resolvePort(), 3001, "env override wins");
 	} finally {
-		if (original) process.env.FREEFLOW_PORT = original;
+		if (original !== undefined) {
+			process.env[actualKey] = original;
+		} else {
+			delete process.env[actualKey];
+		}
 	}
 });
 

@@ -265,6 +265,9 @@ test("Error Matrix [7/10] all 3 relay workers enforce complete 14-header securit
 test("Error Matrix [8/10] saveRelayState recovers from Windows EPERM lock contention with bounded retry", () => {
 	const existed = fs.existsSync(RELAY_STATE_FILE);
 	const backup = existed ? fs.readFileSync(RELAY_STATE_FILE, "utf8") : "";
+	const bakFile = `${RELAY_STATE_FILE}.bak`;
+	const existedBak = fs.existsSync(bakFile);
+	const backupBak = existedBak ? fs.readFileSync(bakFile, "utf8") : "";
 
 	const realRenameSync = fs.renameSync.bind(fs);
 	const fsp = fs as unknown as { renameSync: (from: PathLike, to: PathLike) => void };
@@ -301,6 +304,11 @@ test("Error Matrix [8/10] saveRelayState recovers from Windows EPERM lock conten
 			fs.writeFileSync(RELAY_STATE_FILE, backup);
 		} else {
 			fs.rmSync(RELAY_STATE_FILE, { force: true });
+		}
+		if (existedBak) {
+			fs.writeFileSync(bakFile, backupBak);
+		} else {
+			try { fs.rmSync(bakFile, { force: true }); } catch {}
 		}
 	}
 });

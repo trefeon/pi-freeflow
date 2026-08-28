@@ -1,84 +1,162 @@
 /**
  * P0-2 429 Rate-Limit Guidance Hint Test Suite
  *
- * Validates that the direct-mode (no relay) 429 response includes a relay-egress
- * guidance hint, throttled to at most once per 10 minutes per process.
- * Deterministic by design: no proxy server is spun up — the throttle reset is
- * exercised through the exported hook and the branch wiring is guarded at the
- * source level, consistent with how error-matrix.test.ts validates relay workers.
+ * Behavioral coverage: spins up the real in-process proxy in direct mode
+ * (empty relay pool) and drives 201 sequential POSTs against it with the
+ * upstream fetch stubbed. The 201st request trips the local per-IP quota
+ * (RATE_LIMIT_MAX.opencode = 200) and must return a 429 whose JSON body
+ * carries the relay-egress guidance hint. The hint is throttled to at most
+ * once per 10 minutes per process and returns after _reset429HintForTest().
+ *
+ * One minimal source guard ([2/4]) keeps the hint text pinned to exactly one
+ * code path; all other source-string assertions were replaced by the
+ * behavioral test above.
  */
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-import { _reset429HintForTest } from "../src/proxy.ts";
+import { startProxy, _reset429HintForTest } from "../src/proxy.ts";
+import { resetRateLimits } from "../src/rate-limiter.ts";
+import {
+	getActiveRelayState,
+	resetAllRelayHealth,
+	setActiveRelayState,
+} from "../src/relay-state.ts";
+import { RELAY_STATE_FILE } from "../src/config.ts";
 
-const PROXY_SRC = fs.readFileSync(
-	new URL("../src/proxy.ts", import.meta.url),
-	"utf8",
-);
+const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
 
-// The exact hint string clients receive in a direct-mode 429 body.
+/** The exact hint string clients receive in a direct-mode 429 body. */
 const HINT_TEXT =
 	"Shared free-tier IP quota reached. Add your own relay egress: /freeflow deploy (Vercel 1M/mo recommended)";
 
-// ── 1. Exported Test Reset ──────────────────────────────────────────────────
+const TEST_PORT = 19183;
+const LOCAL_QUOTA = 200; // RATE_LIMIT_MAX.opencode: requests per UTC day per IP
+const MODEL = "muse-spark-1.2-contributor-free";
 
-test("Rate-Limit Hint [1/4] _reset429HintForTest is exported and idempotent", () => {
-	assert.equal(typeof _reset429HintForTest, "function");
-	// Safe to call when the throttle is cold — must not throw or corrupt state.
-	_reset429HintForTest();
-	_reset429HintForTest();
+/** Isolate both main and .bak disk files for the duration of an async test. */
+function withIsolatedRelayFiles(fn: () => Promise<void>): Promise<void> {
+	const read = (p: string): string | null =>
+		fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
+	const mainBefore = read(RELAY_STATE_FILE);
+	const bakBefore = read(BAK_FILE);
+	return (async () => {
+		try {
+			await fn();
+		} finally {
+			const restore = (p: string, before: string | null): void => {
+				if (before !== null) {
+					fs.writeFileSync(p, before, "utf8");
+				} else {
+					try {
+						fs.rmSync(p, { force: true });
+					} catch {}
+				}
+			};
+			restore(RELAY_STATE_FILE, mainBefore);
+			restore(BAK_FILE, bakBefore);
+		}
+	})();
+}
+
+/** Response-like stub for the upstream: a plain 200 JSON, no stream body. */
+function stubResponse(status: number): Response {
+	return {
+		status,
+		ok: status >= 200 && status < 300,
+		headers: new Headers(),
+		text: async () => "{}",
+		body: null,
+	} as unknown as Response;
+}
+
+// ── Behavioral: hint on direct-mode 429, throttled 10 min, resettable ────────
+
+test("429 hint: direct-mode 429 carries guidance, throttled 10 min, resettable", async (t) => {
+	await withIsolatedRelayFiles(async () => {
+		// Direct mode with an empty relay pool => willUseRelay false => hint branch live.
+		const priorState = getActiveRelayState();
+		setActiveRelayState({ enabled: true, url: "", relays: [] }, false);
+		resetAllRelayHealth();
+		resetRateLimits();
+		_reset429HintForTest();
+
+		const { server, port } = await startProxy(TEST_PORT);
+		const effectivePort = port ?? TEST_PORT;
+		const localPrefix = `http://127.0.0.1:${effectivePort}`;
+		const realFetch = globalThis.fetch.bind(globalThis);
+
+		try {
+			// Stub upstream: passthrough local proxy traffic, fabricate 200 elsewhere.
+			t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+				const u = String(url);
+				if (u.startsWith(localPrefix)) return realFetch(u, init);
+				return stubResponse(200);
+			});
+
+			const postChat = (): Promise<Response> =>
+				fetch(`${localPrefix}/v1/chat/completions`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ model: MODEL, stream: false }),
+				});
+
+			// 200 sequential requests consume the per-IP opencode quota; each is allowed.
+			for (let i = 0; i < LOCAL_QUOTA; i++) {
+				const res = await postChat();
+				assert.equal(res.status, 200, `request ${i + 1} within quota must be allowed`);
+				await res.arrayBuffer(); // drain so the pooled connection is reusable
+			}
+
+			// 201st request trips the local quota -> 429 WITH the guidance hint.
+			const limited = await postChat();
+			assert.equal(limited.status, 429, "201st request must exceed the local quota");
+			const limitedBody = (await limited.json()) as Record<string, unknown>;
+			assert.equal(limitedBody.error, "rate limit exceeded");
+			assert.equal(
+				typeof limitedBody.hint,
+				"string",
+				"first 429 must carry the guidance hint",
+			);
+			assert.ok(
+				(limitedBody.hint as string).includes("free-tier IP quota"),
+				"hint must point at the shared free-tier IP quota",
+			);
+
+			// Immediate follow-up is still 429 but the 10-minute throttle suppresses the hint.
+			const throttled = await postChat();
+			assert.equal(throttled.status, 429);
+			const throttledBody = (await throttled.json()) as Record<string, unknown>;
+			assert.equal(throttledBody.error, "rate limit exceeded");
+			assert.equal(throttledBody.hint, undefined, "hint must be throttled for 10 minutes");
+
+			// Test-only reset rewinds the throttle: the hint returns on the next 429.
+			_reset429HintForTest();
+			const resumed = await postChat();
+			assert.equal(resumed.status, 429);
+			const resumedBody = (await resumed.json()) as Record<string, unknown>;
+			assert.ok(
+				(resumedBody.hint as string).includes("free-tier IP quota"),
+				"hint must reappear after _reset429HintForTest()",
+			);
+		} finally {
+			_reset429HintForTest();
+			resetRateLimits();
+			setActiveRelayState(priorState, false);
+			if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
+	});
 });
 
-// ── 2. Hint Text Presence ────────────────────────────────────────────────────
+// ── Minimal source guard ────────────────────────────────────────────────────
 
 test("Rate-Limit Hint [2/4] hint text appears exactly once in proxy source", () => {
+	const PROXY_SRC = fs.readFileSync(
+		new URL("../src/proxy.ts", import.meta.url),
+		"utf8",
+	);
 	const occurrences = PROXY_SRC.split(HINT_TEXT).length - 1;
 	assert.equal(occurrences, 1, "hint must be emitted from exactly one code path");
-});
-
-// ── 3. Throttle Semantics (10-minute window, per-process) ────────────────────
-
-test("Rate-Limit Hint [3/4] source enforces a 10-minute per-process throttle", () => {
-	// Module-level state, mirroring the last429Warn pattern in relay-state.ts.
-	assert.ok(PROXY_SRC.includes("let last429HintAt = 0;"), "throttle state must start cold");
-	assert.ok(PROXY_SRC.includes("function shouldShow429Hint(): boolean {"), "throttle helper must exist");
-	// Guard: suppress the hint until the 10-minute window elapses.
-	assert.ok(
-		PROXY_SRC.includes("if (now - last429HintAt < 10 * 60 * 1000) return false;"),
-		"hint must be suppressed within the 10-minute window",
-	);
-	// On fire: stamp the current time so subsequent calls are suppressed.
-	assert.ok(PROXY_SRC.includes("last429HintAt = now;"), "fired hint must stamp the throttle");
-	// Reset hook rewinds the throttle for tests.
-	assert.ok(
-		PROXY_SRC.includes("export function _reset429HintForTest(): void { last429HintAt = 0; }"),
-		"test reset must rewind the throttle",
-	);
-});
-
-// ── 4. Hint Confined to the Direct-Mode Branch ───────────────────────────────
-
-test("Rate-Limit Hint [4/4] hint is wired only into the !willUseRelay 429 branch", () => {
-	const branchStart = PROXY_SRC.indexOf("if (!willUseRelay && !checkRateLimit(clientIP, upstream)) {");
-	assert.ok(branchStart >= 0, "direct-mode rate-limit branch must exist");
-
-	// The branch ends at the next top-level statement after its closing brace.
-	const tryStart = PROXY_SRC.indexOf("\n\t\t\ttry {", branchStart);
-	assert.ok(tryStart > branchStart, "expected the relay-fetch try block after the branch");
-	const branchSrc = PROXY_SRC.slice(branchStart, tryStart);
-
-	// The 429 body keeps the existing error contract and adds the hint.
-	assert.ok(branchSrc.includes('error: "rate limit exceeded"'), "429 body must keep the error field");
-	assert.ok(branchSrc.includes("if (shouldShow429Hint()) {"), "hint must be gated by the throttle");
-	assert.ok(branchSrc.includes(`body.hint = "${HINT_TEXT}";`), "hint must be attached to the 429 body");
-	// Whole-file count of 1 (asserted in test 2/4) already proves the hint
-	// appears nowhere else; this test pins it to this branch region.
-	assert.ok(
-		PROXY_SRC.slice(0, branchStart).includes(HINT_TEXT) === false &&
-			PROXY_SRC.slice(tryStart).includes(HINT_TEXT) === false,
-		"hint must not appear outside the direct-mode rate-limit branch",
-	);
 });

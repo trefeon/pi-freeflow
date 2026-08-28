@@ -77,6 +77,9 @@ test("removeRelay filters out specified relay", () => {
 });
 
 test("getOrderedRelayUrls rotates candidates starting from active relay", () => {
+	// Order-immune: clear health state carried over from other tests so no
+	// relay is demoted into cooldown and skews the rotation.
+	resetAllRelayHealth();
 	withSavedDiskState(() => {
 		const state: RelayState = {
 			enabled: true,
@@ -94,6 +97,7 @@ test("getOrderedRelayUrls rotates candidates starting from active relay", () => 
 		assert.equal(ordered[1], "https://relay3.example.com");
 		assert.equal(ordered[2], "https://relay1.example.com");
 	});
+	resetAllRelayHealth();
 });
 
 test("shortRelayLabel extracts readable host or custom label", () => {

@@ -4,8 +4,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { agent, relayFetch } from "../src/relay.ts";
-import { setActiveRelayState } from "../src/relay-state.ts";
+import { agent, relayFetch, _resetRollNotifyForTest } from "../src/relay.ts";
+import { setActiveRelayState, setStatusUi, resetAllRelayHealth } from "../src/relay-state.ts";
 import { startProxy } from "../src/proxy.ts";
 
 function getAgentTimeout(a: unknown): number | undefined {
@@ -100,5 +100,66 @@ test("TTFB with keepAlive is under 10ms on reused connection", async () => {
 	} finally {
 		await new Promise<void>((r) => server.close(() => r()));
 		try { setActiveRelayState({ enabled: true, url: "", relays: [], mode: "auto" } as unknown as Parameters<typeof setActiveRelayState>[0], false); } catch {}
+	}
+});
+
+/** Response-like stub with an inspectable cancel() on body. */
+function stubResponse(status: number, cancelled: number[]): Response {
+	return {
+		status,
+		ok: status >= 200 && status < 300,
+		headers: new Headers(),
+		body: {
+			cancel: async () => {
+				cancelled.push(status);
+			},
+		},
+	} as unknown as Response;
+}
+
+test("roll-notify throttle: one toast per 5min window, reset hook re-arms it", async (t) => {
+	_resetRollNotifyForTest();
+	resetAllRelayHealth();
+	const messages: string[] = [];
+	const notifySpy = (message: string, _type?: "info" | "warning" | "error") => {
+		messages.push(message);
+	};
+	setStatusUi({ notify: notifySpy, setStatus() {} } as unknown as Parameters<typeof setStatusUi>[0]);
+
+	const cancelled: number[] = [];
+	const fetchMock = t.mock.method(globalThis, "fetch", async () => stubResponse(503, cancelled));
+
+	try {
+		// 1 relay that always 503s → one relay attempt + one direct fallback per call
+		setActiveRelayState({
+			enabled: true,
+			url: "https://relay1.example.com",
+			relays: [{ url: "https://relay1.example.com" }],
+			mode: "auto",
+		} as unknown as Parameters<typeof setActiveRelayState>[0], false);
+
+		const out1 = await relayFetch("https://opencode.ai/zen/v1/chat/completions", { method: "POST" }, "rollnotify1");
+		assert.equal(out1.status, 503);
+		assert.equal(messages.length, 1, "first roll must notify");
+		assert.match(messages[0], /rolled|falling back/, "notify message must describe roll/failover");
+		assert.ok(messages[0].includes("relay"), "notify message must name the relay");
+
+		// Immediate second 503 → throttled, no duplicate toast
+		const out2 = await relayFetch("https://opencode.ai/zen/v1/chat/completions", { method: "POST" }, "rollnotify2");
+		assert.equal(out2.status, 503);
+		assert.equal(messages.length, 1, "second roll within 5min window must be throttled");
+
+		// Reset hook re-arms the throttle → fires again
+		_resetRollNotifyForTest();
+		const out3 = await relayFetch("https://opencode.ai/zen/v1/chat/completions", { method: "POST" }, "rollnotify3");
+		assert.equal(out3.status, 503);
+		assert.equal(messages.length, 2, "reset must re-arm the roll-notify throttle");
+
+		// Sanity: every call exercised the relay loop (1 relay attempt + 1 direct fallback)
+		assert.equal(fetchMock.mock.callCount(), 6);
+	} finally {
+		setStatusUi(null);
+		_resetRollNotifyForTest();
+		resetAllRelayHealth();
 	}
 });

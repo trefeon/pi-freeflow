@@ -4,6 +4,7 @@ import test from "node:test";
 import { ALL_MODELS, KILO_MODELS, OPENCODE_MODELS, MODEL_ALIASES, resolveCanonicalModelId, isKiloModel } from "../src/models.ts";
 import { LOG_MAX_BYTES, LOG_MAX_FILES } from "../src/config.ts";
 import { VERCEL_RELAY_WORKER, CLOUDFLARE_RELAY_WORKER, DENO_RELAY_SCRIPT } from "../src/deploy.ts";
+import { isSubstantial } from "../src/stream-pipe.ts";
 
 function extractIsPrivateHostname(worker: string): string {
   return worker;
@@ -95,7 +96,9 @@ test("relay no string concat for x-relay-path", () => {
 });
 
 test("stream premature handling - substantial vs small", () => {
-  const isSubstantial = (chunks: number, bytes: number) => chunks > 50 && bytes > 100 * 1024;
   assert.equal(isSubstantial(102, 514 * 1024), true);
   assert.equal(isSubstantial(10, 10 * 1024), false);
+  // Boundary: strictly greater than BOTH thresholds
+  assert.equal(isSubstantial(50, 100 * 1024), false);
+  assert.equal(isSubstantial(51, 100 * 1024 + 1), true);
 });

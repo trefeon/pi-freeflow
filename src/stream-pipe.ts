@@ -10,6 +10,18 @@ import type * as http from "node:http";
 import type { Readable } from "node:stream";
 import { isDebugEnabled, log } from "./logger.ts";
 import { markRelayFailure } from "./relay-state.ts";
+
+/**
+ * A premature stream end counts as "substantial" only when BOTH thresholds
+ * are strictly exceeded: more than 50 chunks AND more than 100KB. Substantial
+ * truncations are reported as incomplete; smaller drops stay failed.
+ */
+export const SUBSTANTIAL_MIN_CHUNKS = 50;
+export const SUBSTANTIAL_MIN_BYTES = 100 * 1024;
+
+export function isSubstantial(chunks: number, bytes: number): boolean {
+	return chunks > SUBSTANTIAL_MIN_CHUNKS && bytes > SUBSTANTIAL_MIN_BYTES;
+}
 /**
  * Pipes an upstream readable stream to a client HTTP response.
  *
@@ -175,8 +187,7 @@ export function pipeUpstreamStream(
 			if (!res.headersSent) {
 				res.writeHead(502, { "content-type": "application/json" });
 			} else {
-				const isSubstantial = totalChunks > 50 && totalBytes > 100 * 1024;
-				ensureTerminalEvent(!isSubstantial, errorMsg, true);
+				ensureTerminalEvent(!isSubstantial(totalChunks, totalBytes), errorMsg, true);
 			}
 			if (!res.writableEnded) {
 				res.end();
@@ -230,8 +241,7 @@ export function pipeUpstreamStream(
 					// provider token limit. Keep penalize=true to rotate failing relay,
 					// but inject incomplete (not failed) for substantial to avoid alarming
 					// stream_error. Small premature (<50 chunks) stays failed+penalize.
-					const isSubstantial = totalChunks > 50 && totalBytes > 100 * 1024;
-					ensureTerminalEvent(!isSubstantial, "stream closed prematurely", true);
+					ensureTerminalEvent(!isSubstantial(totalChunks, totalBytes), "stream closed prematurely", true);
 				}
 			}
 			if (!res.writableEnded) res.end();
