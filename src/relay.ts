@@ -6,7 +6,6 @@ import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { Agent } from "undici";
 import { isDebugEnabled, log } from "./logger.ts";
-import { getModelDef } from "./models.ts";
 
 export const agent = new Agent({ keepAliveTimeout: 30_000 });
 import {
@@ -15,10 +14,10 @@ import {
 	getStatusUi,
 	markRelayFailure,
 	markRelaySuccess,
-	saveRelayState,
-	setActiveRelayState,
 	shortRelayLabel,
 	updateRelayStatusUi,
+	withRelayState,
+	validateRelayUrl,
 } from "./relay-state.ts";
 
 // Throttle user-facing roll notifications so a burst of failures surfaces
@@ -42,20 +41,6 @@ export function isRetriableStatus(status: number): boolean {
 		(status >= 520 && status <= 530)
 	);
 }
-export function clampMaxTokens(modelId: string, requested: number): number {
-	const def = getModelDef(modelId);
-	const max = def ? def.maxTokens - 1024 : 32_000 - 1024;
-	// special case for big-pickle acceptance
-	const effectiveMax = modelId.includes("big-pickle") ? 32_000 : max;
-	const clamped = Math.min(requested, effectiveMax);
-	if (clamped !== requested) {
-		// logDebug
-		try { log("debug", `clamp maxTokens ${requested}->${clamped} for ${modelId}`); } catch {}
-	}
-	return clamped;
-}
-
-
 /**
  * Fetch a target URL through the active relay pool with rolling failover and direct fallback.
  *
@@ -119,6 +104,18 @@ export async function relayFetch(
 		const targetUrl = candidates[i];
 		const attemptStart = Date.now();
 		try {
+			// SSRF guard: reject private/loopback/non-https candidates the same
+			// way a deployed relay worker rejects an inbound x-relay-target.
+			const candidateCheck = validateRelayUrl(targetUrl);
+			if (!candidateCheck.ok) {
+				log(
+					"warn",
+					`relay ${targetUrl} skipped — ${candidateCheck.reason}`,
+					{ upstream: url },
+					rid,
+				);
+				continue;
+			}
 			let targetHost = "opencode.ai";
 			try {
 				if (targetUrl) targetHost = new URL(targetUrl).host;
@@ -129,6 +126,14 @@ export async function relayFetch(
 			headers.set("x-relay-path", relayPath);
 			headers.set("host", targetHost);
 			headers.set("x-request-id", rid);
+			// Per-relay shared secret set by /freeflow deploy. Legacy entries
+			// without auth keep working: no header at all.
+			const entry = getActiveRelayState().relays.find(
+				(r) => r.url === targetUrl.trim(),
+			);
+			if (entry?.auth) {
+				headers.set("x-relay-auth", entry.auth);
+			}
 
 			const signal = opts.signal || AbortSignal.timeout(300_000);
 			const res = await fetch(targetUrl, { ...opts, headers, signal, dispatcher: agent } as unknown as RequestInit);
@@ -184,9 +189,12 @@ export async function relayFetch(
 				log("info", `active relay auto-switched to ${targetUrl}`, {
 					previous: relayState.url,
 				}, rid);
-				relayState.url = targetUrl;
-				saveRelayState(relayState);
-				setActiveRelayState(relayState, false);
+				// CAS: re-apply the sticky-active switch to the freshest disk state at
+				// write time so a concurrent session's pool edit is never clobbered.
+				withRelayState((s) => {
+					s.url = targetUrl;
+					return s;
+				});
 			}
 
 			log("info", `relay ${targetUrl} succeeded (HTTP ${res.status} in ${elapsed}s)`, undefined, rid);

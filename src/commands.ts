@@ -5,16 +5,14 @@
  */
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { refreshCatalog, setAliveCatalog } from "./catalog.ts";
-import { DEBUG_STATE_FILE, DEFAULT_RELAY_URL, LOG_FILE, RELAY_STATE_FILE } from "./config.ts";
+import { DEBUG_STATE_FILE, LOG_FILE, RELAY_STATE_FILE } from "./config.ts";
 import {
 	compareVersions,
 	fetchLatestVersion,
 	getCachedUpdate,
 	isLinkedInstall,
+	getLocalVersion,
 } from "./update-checker.ts";
 import {
 	deployCloudflareWorker,
@@ -36,13 +34,15 @@ import {
 	findRelay,
 	getActiveRelayState,
 	getRelayHealth,
-	isRelayHealthy,
 	removeRelay,
-	saveRelayState,
 	setActiveRelayState,
 	setRelayLabel,
 	setStatusUi,
 	shortRelayLabel,
+	withRelayState,
+	formatRelayFlash,
+	formatRelayPickerItem,
+	formatRelayStatusLabel,
 } from "./relay-state.ts";
 import type {
 	ExtensionAPI,
@@ -60,40 +60,7 @@ import type {
  */
 export function updateStatusBar(ui?: ExtensionUIContext): void {
 	if (!ui) return;
-	const relayState = getActiveRelayState();
-	if (relayState.hideWidget) {
-		ui.setStatus("freeflow", undefined);
-		return;
-	}
-	if (relayState.enabled && relayState.relays.length > 0) {
-		const label = shortRelayLabel(relayState.url);
-		const idx = Math.max(
-			1,
-			relayState.relays.findIndex((r) => r.url === relayState.url) + 1,
-		);
-		const total = relayState.relays.length;
-		const modeLabel = relayState.mode === "on" ? "ON" : "AUTO (ON)";
-		ui.setStatus("freeflow", `relay: ${modeLabel} | ${label} ${idx}/${total}`);
-	} else if (relayState.mode === "off" || !relayState.enabled) {
-		ui.setStatus("freeflow", "relay: OFF (direct)");
-	} else {
-		ui.setStatus("freeflow", undefined);
-	}
-}
-
-function getLocalVersion(): string {
-	try {
-		const thisDir = path.dirname(fileURLToPath(import.meta.url));
-		const pkgPath = path.join(thisDir, "..", "package.json");
-		const raw = readFileSync(pkgPath, "utf8");
-		const pkg = JSON.parse(raw) as { version?: string };
-		if (typeof pkg.version === "string" && pkg.version.trim().length > 0) {
-			return pkg.version.trim();
-		}
-		return "0.0.0";
-	} catch {
-		return "0.0.0";
-	}
+	ui.setStatus("freeflow", formatRelayStatusLabel(getActiveRelayState()) ?? undefined);
 }
 
 function spawnWithProgress(
@@ -125,6 +92,48 @@ function spawnWithProgress(
 			resolve(1);
 		}
 	});
+}
+
+/**
+ * Follow-mode log poller: tracks the count of matched lines already printed
+ * and notifies only lines beyond it, so repeated ticks never re-notify the
+ * same tail. One poller at a time — a re-run clears the previous interval.
+ */
+let logsFollowTimer: NodeJS.Timeout | null = null;
+function startLogsFollow(
+	ctx: ExtensionContext,
+	filterLevel: LogLevel | null,
+	filterReqId: string | null,
+	count: number,
+	filterText: string | null,
+	baselineMatched: number,
+): void {
+	if (logsFollowTimer) {
+		clearInterval(logsFollowTimer);
+		logsFollowTimer = null;
+	}
+	let lastPrinted = baselineMatched;
+	logsFollowTimer = setInterval(() => {
+		try {
+			const tail = readRecentLogs(filterLevel, filterReqId, count, filterText);
+			if (tail.totalMatched < lastPrinted) {
+				// Log rotated/rewritten below the baseline — re-baseline silently.
+				lastPrinted = tail.totalMatched;
+				return;
+			}
+			const newCount = tail.totalMatched - lastPrinted;
+			if (newCount <= 0) return;
+			const newLines = tail.lines.slice(
+				tail.lines.length - Math.min(newCount, tail.lines.length),
+			);
+			if (newLines.length > 0) {
+				ctx.ui.notify(newLines.join("\n"), "info");
+			}
+			lastPrinted = tail.totalMatched;
+		} catch {}
+	}, 1000);
+	// @ts-ignore allow unref to not block process exit in CLI
+	logsFollowTimer.unref?.();
 }
 
 export function createCommandSpec(
@@ -170,39 +179,40 @@ export function createCommandSpec(
 				.split(/\s+/);
 			const sub = parts[0] || "";
 			const rest = parts.slice(1).join(" ");
-			const relayState = getActiveRelayState();
+			let relayState = getActiveRelayState();
 
 			const flash = () => {
-				const activeLabel = shortRelayLabel(relayState.url, relayState.relays);
-				const activeIdx = Math.max(
-					1,
-					relayState.relays.findIndex((r) => r.url === relayState.url) + 1,
-				);
-				const total = relayState.relays.length || 1;
-				const modeStr = (relayState.mode || "auto").toUpperCase();
-				ctx.ui.notify(
-					`Relay mode: ${modeStr} (${relayState.enabled ? "ON" : "OFF"})${relayState.enabled ? ` → ${activeLabel} (${activeIdx}/${total})` : " (direct)"} | saved=${relayState.relays.length} (auto-fallback rolling)`,
-					"info",
-				);
+				ctx.ui.notify(formatRelayFlash(relayState), "info");
 			};
 
+			// UI refresh only — every disk write flows through CAS
+			// (withRelayState) so the operation is re-applied to the freshest
+			// on-disk state at write time instead of a stale snapshot.
 			const persist = () => {
-				setActiveRelayState(relayState, true);
 				setStatusUi(ctx.ui);
 				updateStatusBar(ctx.ui);
+			};
+			/** Re-apply an operation to the freshest on-disk state and persist it. */
+			const applyRelayState = (
+				updater: (s: RelayState) => RelayState,
+			): RelayState => {
+				relayState = withRelayState(updater);
+				return relayState;
 			};
 			const setRelay = (
 				enabled: boolean,
 				url: string,
 				addLabel?: string,
 			) => {
-				relayState.enabled = enabled;
-				const cleanUrl = (url || "").trim() || DEFAULT_RELAY_URL;
-				relayState.url = cleanUrl;
-				if (cleanUrl) {
-					ensureRelay(relayState, cleanUrl, addLabel);
-				}
-				setActiveRelayState(relayState);
+				applyRelayState((s) => {
+					s.enabled = enabled;
+					const cleanUrl = (url || "").trim() || "";
+					s.url = cleanUrl;
+					if (cleanUrl) {
+						ensureRelay(s, cleanUrl, addLabel);
+					}
+					return s;
+				});
 			};
 
 			const addRelayInteractive = async () => {
@@ -224,12 +234,16 @@ export function createCommandSpec(
 					)
 				)?.trim() || defaultLabel;
 
-				const added = ensureRelay(relayState, inputUrl, inputLabel);
-				setRelay(true, added.url, added.label);
+				applyRelayState((s) => {
+					const added = ensureRelay(s, inputUrl, inputLabel);
+					s.enabled = true;
+					s.url = added.url;
+					return s;
+				});
 				persist();
 				flash();
 				ctx.ui.notify(
-					`✓ Added & activated relay [${added.label || shortRelayLabel(added.url)}]: ${added.url}`,
+					`✓ Added & activated relay [${shortRelayLabel(relayState.url, relayState.relays)}]: ${relayState.url}`,
 					"info",
 				);
 			};
@@ -258,7 +272,10 @@ export function createCommandSpec(
 					ctx.ui.notify("Cancelled — short name not changed", "warning");
 					return;
 				}
-				setRelayLabel(relayState, match.url, newLabel);
+				applyRelayState((s) => {
+					setRelayLabel(s, match.url, newLabel);
+					return s;
+				});
 				persist();
 				flash();
 				ctx.ui.notify(
@@ -330,14 +347,19 @@ export function createCommandSpec(
 							: platform === "deno"
 								? deployDenoRelay
 								: deployVercelRelay;
-					const url = await deployer(token, name, (m) =>
+					const { url, auth } = await deployer(token, name, (m) =>
 						ctx.ui.notify(m, "info"),
 					);
 					setRelay(true, url, `deployed ${name}`);
+					// Persist the per-deployment shared secret with the relay entry
+					// (setRelay wrote without it; this save must include it).
+					const deployed = relayState.relays.find((r) => r.url === url);
+					if (deployed) deployed.auth = auth;
+					setActiveRelayState(relayState);
 					persist();
 					let probeNote = "";
 					try {
-						const probe = await probeRelay(url);
+						const probe = await probeRelay(url, auth);
 						probeNote = probe.ok
 							? ` ✓ reachable (HTTP ${probe.status}, ${probe.latencyMs}ms)`
 							: ` ⚠ deployed but unreachable (${probe.error || `HTTP ${probe.status}`}) — verify with /freeflow test`;
@@ -359,17 +381,19 @@ export function createCommandSpec(
 					ctx.ui.notify("No saved relays yet", "warning");
 					return;
 				}
-				const fmt = (r: KnownRelay, idx: number) => {
-					const isAct = r.url === relayState.url ? "★ " : "  ";
-					const lbl = r.label ? `[${r.label}] ` : `[${shortRelayLabel(r.url, relayState.relays)}] `;
-					return `${isAct}[${idx + 1}] ${lbl}→ ${r.url}`;
-				};
+				const fmt = (r: KnownRelay, idx: number) => formatRelayPickerItem(r, idx, relayState.url);
 				const opts = relayState.relays.map(fmt);
 				const choice = await ctx.ui.select("Switch active relay", opts);
 				if (!choice) return;
 				const match = relayState.relays.find((r, idx) => fmt(r, idx) === choice);
 				if (!match) return;
-				setRelay(true, match.url, match.label);
+				applyRelayState((s) => {
+					const fresh = s.relays.find((r) => r.url === match.url);
+					if (!fresh) return s;
+					s.enabled = true;
+					s.url = fresh.url;
+					return s;
+				});
 				persist();
 				flash();
 			};
@@ -417,10 +441,7 @@ export function createCommandSpec(
 					);
 					return;
 				}
-				const fmt = (r: KnownRelay, idx: number) => {
-					const lbl = r.label ? `[${r.label}] ` : `[${shortRelayLabel(r.url, relayState.relays)}] `;
-					return `[${idx + 1}] ${lbl}→ ${r.url}`;
-				};
+				const fmt = (r: KnownRelay, idx: number) => formatRelayPickerItem(r, idx);
 				const choice = await ctx.ui.select(
 					"Remove relay",
 					removable.map(fmt),
@@ -428,35 +449,53 @@ export function createCommandSpec(
 				if (!choice) return;
 				const match = removable.find((r, idx) => fmt(r, idx) === choice);
 				if (!match) return;
-				removeRelay(relayState, match.url);
+				applyRelayState((s) => {
+					removeRelay(s, match.url);
+					return s;
+				});
 				persist();
 				ctx.ui.notify(`Removed: [${shortRelayLabel(match.url, relayState.relays)}] ${match.url}`, "info");
 			};
 
 			if (sub === "auto") {
-				relayState.mode = "auto";
-				relayState.enabled = true;
-				setRelay(true, relayState.url || DEFAULT_RELAY_URL);
+				applyRelayState((s) => {
+					s.mode = "auto";
+					s.enabled = true;
+					s.url = s.url || "";
+					if (s.url) {
+						ensureRelay(s, s.url);
+					}
+					return s;
+				});
 				persist();
 				flash();
 			} else if (sub === "on") {
-				relayState.mode = "on";
-				setRelay(true, relayState.url || DEFAULT_RELAY_URL);
+				applyRelayState((s) => {
+					s.mode = "on";
+					s.enabled = true;
+					s.url = s.url || "";
+					if (s.url) {
+						ensureRelay(s, s.url);
+					}
+					return s;
+				});
 				persist();
 				flash();
 			} else if (sub === "off") {
-				relayState.mode = "off";
-				relayState.enabled = false;
-				setActiveRelayState(relayState);
+				applyRelayState((s) => {
+					s.mode = "off";
+					s.enabled = false;
+					return s;
+				});
 				persist();
 				flash();
 			} else if (sub === "hide" || (sub === "widget" && rest === "hide")) {
-				relayState.hideWidget = true;
+				applyRelayState((s) => ({ ...s, hideWidget: true }));
 				persist();
 				updateStatusBar(ctx.ui);
 				ctx.ui.notify("Widget hidden — use /freeflow show or /freeflow widget show to restore", "info");
 			} else if (sub === "show" || (sub === "widget" && rest === "show")) {
-				relayState.hideWidget = false;
+				applyRelayState((s) => ({ ...s, hideWidget: false }));
 				persist();
 				flash();
 				ctx.ui.notify("Widget shown", "info");
@@ -495,7 +534,7 @@ export function createCommandSpec(
 			} else if (sub === "update") {
 				if (isLinkedInstall()) {
 					ctx.ui.notify(
-						"LINK install (D:/github_repo/pi-freeflow) is live - just omp restart, no npm update needed.",
+						"Linked install detected — restart your host app to pick up changes (no update needed).",
 						"info",
 					);
 				} else {
@@ -550,12 +589,16 @@ export function createCommandSpec(
 					const tokens = rest.trim().split(/\s+/);
 					const targetUrl = tokens[0];
 					const customLabel = tokens.slice(1).join(" ").trim() || undefined;
-					const added = ensureRelay(relayState, targetUrl, customLabel);
-					setRelay(true, added.url, added.label);
+					applyRelayState((s) => {
+						const added = ensureRelay(s, targetUrl, customLabel);
+						s.enabled = true;
+						s.url = added.url;
+						return s;
+					});
 					persist();
 					flash();
 					ctx.ui.notify(
-						`✓ Added & activated relay [${added.label || shortRelayLabel(added.url)}]: ${added.url}`,
+						`✓ Added & activated relay [${shortRelayLabel(relayState.url, relayState.relays)}]: ${relayState.url}`,
 						"info",
 					);
 				}
@@ -568,10 +611,16 @@ export function createCommandSpec(
 					const customLabel = tokens.slice(1).join(" ").trim() || undefined;
 					const matched = findRelay(relayState, targetToken);
 					if (matched) {
-						if (customLabel) {
-							matched.label = customLabel;
-						}
-						setRelay(true, matched.url, matched.label);
+						applyRelayState((s) => {
+							const fresh = s.relays.find((r) => r.url === matched.url);
+							if (!fresh) return s;
+							s.enabled = true;
+							s.url = fresh.url;
+							if (customLabel) {
+								fresh.label = customLabel;
+							}
+							return s;
+						});
 						persist();
 						flash();
 					} else {
@@ -583,8 +632,12 @@ export function createCommandSpec(
 						} catch {}
 						const looksLikeUrl = parsedUrl && (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:");
 						if (looksLikeUrl) {
-							const added = ensureRelay(relayState, targetToken, customLabel);
-							setRelay(true, added.url, added.label);
+							applyRelayState((s) => {
+								const added = ensureRelay(s, targetToken, customLabel);
+								s.enabled = true;
+								s.url = added.url;
+								return s;
+							});
 							persist();
 							flash();
 						} else {
@@ -613,7 +666,10 @@ export function createCommandSpec(
 							)
 						)?.trim() || "";
 					}
-					setRelayLabel(relayState, matched.url, finalLabel);
+					applyRelayState((s) => {
+						setRelayLabel(s, matched.url, finalLabel);
+						return s;
+					});
 					persist();
 					flash();
 					ctx.ui.notify(
@@ -744,16 +800,14 @@ export function createCommandSpec(
 							);
 						}
 						if (isFollow) {
-							const _t = setInterval(() => {
-								try {
-									const tail = readRecentLogs(filterLevel, filterReqId, count, filterText);
-									if (tail.lines.length > 0) {
-										ctx.ui.notify(tail.lines.join("\n"), "info");
-									}
-								} catch {}
-							}, 1000);
-							// @ts-ignore allow unref to not block process exit in CLI
-							_t.unref?.();
+							startLogsFollow(
+								ctx,
+								filterLevel,
+								filterReqId,
+								count,
+								filterText,
+								result.totalMatched,
+							);
 						}
 						return;
 					}
@@ -764,16 +818,14 @@ export function createCommandSpec(
 						"info",
 					);
 					if (isFollow) {
-						const _t2 = setInterval(() => {
-							try {
-								const tail = readRecentLogs(filterLevel, filterReqId, count, filterText);
-								if (tail.lines.length > 0) {
-									ctx.ui.notify(tail.lines.join("\n"), "info");
-								}
-							} catch {}
-						}, 1000);
-						// @ts-ignore allow unref to not block process exit in CLI
-						_t2.unref?.();
+						startLogsFollow(
+							ctx,
+							filterLevel,
+							filterReqId,
+							count,
+							filterText,
+							result.totalMatched,
+						);
 					}
 				} catch (e) {
 					ctx.ui.notify(
@@ -815,7 +867,10 @@ export function createCommandSpec(
 						);
 						return;
 					}
-					removeRelay(relayState, matched.url);
+					applyRelayState((s) => {
+						removeRelay(s, matched.url);
+						return s;
+					});
 					persist();
 					ctx.ui.notify(`Removed: [${shortRelayLabel(matched.url, relayState.relays)}] ${matched.url}`, "info");
 				}
@@ -827,7 +882,7 @@ export function createCommandSpec(
 					return;
 				}
 				ctx.ui.notify(`Testing ${matched.url}…`, "info");
-				const probe = await probeRelay(matched.url);
+				const probe = await probeRelay(matched.url, matched.auth);
 				if (probe.ok) {
 					ctx.ui.notify(`✓ ${shortRelayLabel(matched.url, relayState.relays)} ok (HTTP ${probe.status}, ${probe.latencyMs}ms)`, "info");
 				} else {
@@ -838,14 +893,16 @@ export function createCommandSpec(
 					rest ||
 					(await ctx.ui.input(
 						"Relay URL (empty = default):",
-						relayState.url || DEFAULT_RELAY_URL,
+						relayState.url || "",
 					));
-				const cleanInput = (input || "").trim() || DEFAULT_RELAY_URL;
-				setRelay(
-					relayState.enabled,
-					cleanInput,
-					shortRelayLabel(cleanInput, relayState.relays),
-				);
+				const cleanInput = (input || "").trim() || "";
+				applyRelayState((s) => {
+					s.url = cleanInput;
+					if (cleanInput) {
+						ensureRelay(s, cleanInput, shortRelayLabel(cleanInput, s.relays));
+					}
+					return s;
+				});
 				persist();
 				flash();
 			} else if (sub === "deploy") {
@@ -902,20 +959,35 @@ export function createCommandSpec(
 				} else if (choice === "Deploy Deno relay…") {
 					await doDeploy("deno");
 				} else if (choice === "Mode: AUTO (auto-detect on model select)") {
-					relayState.mode = "auto";
-					relayState.enabled = true;
-					setRelay(true, relayState.url || DEFAULT_RELAY_URL);
+					applyRelayState((s) => {
+						s.mode = "auto";
+						s.enabled = true;
+						s.url = s.url || "";
+						if (s.url) {
+							ensureRelay(s, s.url);
+						}
+						return s;
+					});
 					persist();
 					flash();
 				} else if (choice === "Mode: ON (always relay)") {
-					relayState.mode = "on";
-					setRelay(true, relayState.url || DEFAULT_RELAY_URL);
+					applyRelayState((s) => {
+						s.mode = "on";
+						s.enabled = true;
+						s.url = s.url || "";
+						if (s.url) {
+							ensureRelay(s, s.url);
+						}
+						return s;
+					});
 					persist();
 					flash();
 				} else if (choice === "Mode: OFF (always direct)") {
-					relayState.mode = "off";
-					relayState.enabled = false;
-					setActiveRelayState(relayState);
+					applyRelayState((s) => {
+						s.mode = "off";
+						s.enabled = false;
+						return s;
+					});
 					persist();
 					flash();
 				}

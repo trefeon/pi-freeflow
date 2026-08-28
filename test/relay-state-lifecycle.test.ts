@@ -22,7 +22,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { DEFAULT_RELAY_URL, RELAY_STATE_FILE } from "../src/config.ts";
+import { RELAY_STATE_FILE } from "../src/config.ts";
 import {
 	loadRelayState,
 	resolveRelayState,
@@ -88,7 +88,7 @@ test("new user: no state file and no backup yields the clean default state", () 
 		const s = loadRelayState();
 		assert.equal(s.mode, "auto");
 		assert.equal(s.enabled, true);
-		assert.equal(s.url, DEFAULT_RELAY_URL);
+		assert.equal(s.url, "");
 		assert.deepEqual(s.relays, []);
 	});
 });
@@ -115,7 +115,7 @@ test("new user: resolveRelayState returns a stable empty state (direct mode)", (
 		clearRelayFiles();
 		const s = resolveRelayState();
 		assert.deepEqual(s.relays, [], "empty pool means direct mode — no relay deployed yet");
-		assert.equal(s.url, DEFAULT_RELAY_URL);
+		assert.equal(s.url, "");
 		assert.equal(s.enabled, true);
 	});
 });
@@ -264,6 +264,26 @@ test("corrupt main with no usable backup starts fresh without crashing", () => {
 		assert.equal(s.relays.length, 0, "unrecoverable corruption falls back to default");
 		assert.equal(s.mode, "auto");
 		assert.equal(s.enabled, true);
+	});
+});
+
+test("old user: missing main file is healed from .bak", () => {
+	withIsolatedRelayFiles(() => {
+		clearRelayFiles();
+		fs.writeFileSync(BAK_FILE, JSON.stringify(BAK_STATE), "utf8");
+		const recovered = loadRelayState();
+		assert.equal(
+			recovered.relays.length,
+			1,
+			"a missing main must not wipe the pool when .bak still holds relays",
+		);
+		assert.equal(recovered.url, "https://bak.example.com");
+		assert.equal(recovered.mode, "on");
+		assert.equal(
+			JSON.parse(fs.readFileSync(RELAY_STATE_FILE, "utf8")).relays.length,
+			1,
+			"recovery must heal the main file so it is sticky",
+		);
 	});
 });
 

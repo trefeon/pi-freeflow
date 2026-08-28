@@ -22,8 +22,10 @@ export interface RelayProbeResult {
  * `x-relay-target` is the upstream origin and `x-relay-path` the full path
  * including the `/zen` prefix — the workers only allow the exact origins
  * `https://opencode.ai` / `https://api.kilo.ai` and forward `target + path`.
+ * @param auth Optional per-relay shared secret; sent as x-relay-auth so
+ *   deployed relays (which enforce it) answer the probe instead of 401.
  */
-export async function probeRelay(url: string): Promise<RelayProbeResult> {
+export async function probeRelay(url: string, auth?: string): Promise<RelayProbeResult> {
 	const cleanUrl = url.trim().replace(/\/+$/, "");
 	const start = Date.now();
 	try {
@@ -31,6 +33,7 @@ export async function probeRelay(url: string): Promise<RelayProbeResult> {
 			headers: {
 				"x-relay-target": "https://opencode.ai",
 				"x-relay-path": "/zen/v1/models",
+				...(auth ? { "x-relay-auth": auth } : {}),
 			},
 			signal: AbortSignal.timeout(5_000),
 		});

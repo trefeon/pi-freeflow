@@ -4,7 +4,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-	clampMaxTokens,
 	isRetriableStatus,
 	relayFetch,
 } from "../src/relay.ts";
@@ -167,36 +166,6 @@ test("edges-relay: client abort must NOT mark relay failed", async (t) => {
 	);
 });
 
-// ── (4) clampMaxTokens model-not-found → default 32k-1024 ────────────
-
-test("edges-relay: clampMaxTokens model-not-found defaults to 32768 - 1024 = 30976", () => {
-	assert.equal(
-		clampMaxTokens("nonexistent-model", 50_000),
-		32_000 - 1024,
-		"model-not-found must clamp to 30976",
-	);
-	assert.equal(
-		clampMaxTokens("nonexistent-model", 1_000),
-		1_000,
-		"model-not-found with request < max must pass through",
-	);
-});
-
-// ── (5) clampMaxTokens requested 0 → returns 0 ──────────────────────
-
-test("edges-relay: clampMaxTokens requested 0 returns 0", () => {
-	assert.equal(
-		clampMaxTokens("nonexistent-model", 0),
-		0,
-		"requested 0 with model-not-found must return 0",
-	);
-	assert.equal(
-		clampMaxTokens("big-pickle", 0),
-		0,
-		"requested 0 with known model must return 0",
-	);
-});
-
 // ── (6) isRetriableStatus boundaries ─────────────────────────────────
 // Canonical boundary coverage lives in error-matrix [1/10]; this is a
 // single regression lock for the Cloudflare 52x band.
@@ -208,36 +177,41 @@ test("edges-relay: isRetriableStatus 52x band regression lock", () => {
 
 // ── (7) targetUrl invalid → relayFetch still works (URL parse fallback) ──
 
-test("edges-relay: invalid relay URL falls back to opencode.ai host header", async (t) => {
-	setActiveRelayState(
-		makeRelayState({
-			enabled: true,
-			url: "://invalid",
-			relays: [{ url: "://invalid" }],
-		}),
-		false,
-	);
-	resetAllRelayHealth();
+	test("edges-relay: invalid relay URL falls back to opencode.ai host header", async (t) => {
+		setActiveRelayState(
+			makeRelayState({
+				enabled: true,
+				url: "://invalid",
+				relays: [{ url: "://invalid" }],
+			}),
+			false,
+		);
+		resetAllRelayHealth();
 
-	let capturedInit: RequestInit | undefined;
+		let capturedUrl = "";
+		let capturedInit: RequestInit | undefined;
 
-	t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
-		capturedInit = init;
-		return new Response("ok", { status: 200 });
+		t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+			capturedUrl = url;
+			capturedInit = init;
+			return new Response("ok", { status: 200 });
+		});
+
+		const res = await relayFetch(UPSTREAM_URL, { method: "POST" }, "edge7");
+
+		assert.equal(res.status, 200, "relayFetch must succeed with invalid relay URL");
+		// The invalid candidate is skipped by validateRelayUrl before any fetch, so
+		// the only network call is the direct fallback to the upstream.
+		assert.equal(capturedUrl, UPSTREAM_URL, "invalid relay URL must fall back to direct upstream");
+		const headers = capturedInit!.headers as Headers;
+		assert.equal(
+			headers.get("host"),
+			"opencode.ai",
+			"direct fallback must use upstream host",
+		);
+		assert.equal(
+			headers.get("x-relay-target"),
+			null,
+			"x-relay-target must be stripped on direct fallback",
+		);
 	});
-
-	const res = await relayFetch(UPSTREAM_URL, { method: "POST" }, "edge7");
-
-	assert.equal(res.status, 200, "relayFetch must succeed with invalid relay URL");
-	const headers = capturedInit!.headers as Headers;
-	assert.equal(
-		headers.get("host"),
-		"opencode.ai",
-		"invalid relay URL must fall back to opencode.ai host",
-	);
-	assert.equal(
-		headers.get("x-relay-target"),
-		"https://opencode.ai",
-		"x-relay-target must be set from upstream host despite invalid relay URL",
-	);
-});

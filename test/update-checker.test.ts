@@ -97,6 +97,30 @@ test("getCachedUpdate & setCachedUpdate edge matrix with disk isolation", () => 
 	}
 });
 
+test("setCachedUpdate ignores malformed versions", () => {
+	const existed = fs.existsSync(UPDATE_CACHE_FILE);
+	const backup = existed ? fs.readFileSync(UPDATE_CACHE_FILE, "utf8") : "";
+	try {
+		fs.rmSync(UPDATE_CACHE_FILE, { force: true });
+		setCachedUpdate("garbage");
+		assert.equal(
+			fs.existsSync(UPDATE_CACHE_FILE),
+			false,
+			"malformed version must not be written to the cache",
+		);
+		setCachedUpdate("1.4");
+		assert.equal(fs.existsSync(UPDATE_CACHE_FILE), false, "partial version must not be cached");
+		setCachedUpdate("1.2.3");
+		assert.ok(fs.existsSync(UPDATE_CACHE_FILE), "valid semver must be cached");
+	} finally {
+		if (existed) {
+			fs.writeFileSync(UPDATE_CACHE_FILE, backup);
+		} else {
+			fs.rmSync(UPDATE_CACHE_FILE, { force: true });
+		}
+	}
+});
+
 // ── 3. Mocked Registry Fetcher (Zero Real Network Dependency) ─────────────────
 
 test("fetchLatestVersion handles valid response, non-200 status, and network rejections", async () => {
@@ -129,6 +153,24 @@ test("fetchLatestVersion handles valid response, non-200 status, and network rej
 			});
 		const verC = await fetchLatestVersion();
 		assert.equal(verC, null);
+
+		// Scenario C2: Registry returns 200 OK with a malformed (non-semver) version
+		globalThis.fetch = async () =>
+			new Response(JSON.stringify({ version: "not-a-version" }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		const verC2 = await fetchLatestVersion();
+		assert.equal(verC2, null, "malformed version must be treated as no-update");
+
+		// Scenario C3: Registry returns 200 OK with a partial (major.minor only) version
+		globalThis.fetch = async () =>
+			new Response(JSON.stringify({ version: "1.4" }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		const verC3 = await fetchLatestVersion();
+		assert.equal(verC3, null, "partial version must be treated as no-update");
 
 		// Scenario D: Network failure or timeout (fetch rejects)
 		globalThis.fetch = async () => {

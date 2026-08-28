@@ -6,6 +6,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+	buildCloudflareRelayWorker,
+	buildDenoRelayScript,
+	buildVercelRelayWorker,
 	CLOUDFLARE_RELAY_WORKER,
 	DENO_RELAY_SCRIPT,
 	VERCEL_RELAY_WORKER,
@@ -60,9 +63,10 @@ function instantTimers(t: test.TestContext): void {
 }
 
 test("relay worker sources keep the whitelist contract on every platform", () => {
+	const TEST_AUTH = "test-secret-w-0123456789abcdef0123456789";
 	for (const [label, src] of [
-		["cloudflare", CLOUDFLARE_RELAY_WORKER],
-		["deno", DENO_RELAY_SCRIPT],
+		["cloudflare", buildCloudflareRelayWorker(TEST_AUTH)],
+		["deno", buildDenoRelayScript(TEST_AUTH)],
 	] as const) {
 		assert.match(src, /\["https:\/\/opencode\.ai", "https:\/\/api\.kilo\.ai"\]/);
 		assert.match(src, /x-relay-target/);
@@ -74,12 +78,21 @@ test("relay worker sources keep the whitelist contract on every platform", () =>
 		assert.ok(src.includes('"host"'), `${label}: host in denylist`);
 		assert.equal(src.includes("export const config"), false, `${label}: no Vercel config`);
 		assert.ok(src.includes('duplex'), `${label}: duplex half for streaming`);
+		// Per-deployment auth: secret embedded, enforced constant-time, never forwarded upstream.
+		assert.ok(src.includes(`const RELAY_AUTH = ${JSON.stringify(TEST_AUTH)};`), `${label}: embedded auth secret`);
+		assert.match(src, /timingSafeEqualStr/, `${label}: constant-time compare`);
+		assert.match(src, /status: 401/, `${label}: unauthorized rejected`);
+		assert.ok(src.includes('headers.delete("x-relay-auth")'), `${label}: auth stripped before forwarding`);
 	}
-	assert.match(CLOUDFLARE_RELAY_WORKER, /export default\s*\{[\s\S]*async fetch/);
-	assert.doesNotMatch(CLOUDFLARE_RELAY_WORKER, /^export (const|async function)/m);
-	assert.match(DENO_RELAY_SCRIPT, /\nDeno\.serve\(async \(request\) => \{/);
-	// Existing Vercel source untouched: still an edge-runtime module handler.
-	assert.match(VERCEL_RELAY_WORKER, /export const config/);
+	assert.match(buildCloudflareRelayWorker(TEST_AUTH), /export default\s*\{[\s\S]*async fetch/);
+	assert.doesNotMatch(buildCloudflareRelayWorker(TEST_AUTH), /^export (const|async function)/m);
+	assert.match(buildDenoRelayScript(TEST_AUTH), /\nDeno\.serve\(async \(request\) => \{/);
+	// Vercel wrapper keeps the edge-runtime module handler.
+	assert.match(buildVercelRelayWorker(TEST_AUTH), /export const config/);
+	// Static constants: canonical core without a secret (auth gate disabled).
+	assert.ok(VERCEL_RELAY_WORKER.includes('const RELAY_AUTH = "";'), "static constant must ship no secret");
+	assert.ok(CLOUDFLARE_RELAY_WORKER.includes('const RELAY_AUTH = "";'), "static constant must ship no secret");
+	assert.ok(DENO_RELAY_SCRIPT.includes('const RELAY_AUTH = "";'), "static constant must ship no secret");
 });
 
 test("DeployPlatform union exposes all three platforms", () => {
@@ -107,9 +120,11 @@ test("deployCloudflareWorker uploads module worker and returns workers.dev URL",
 	});
 	const progress: string[] = [];
 
-	const url = await deployCloudflareWorker(TOKEN, "My Relay", (m) => progress.push(m));
+	const deployed = await deployCloudflareWorker(TOKEN, "My Relay", (m) => progress.push(m));
 
-	assert.equal(url, "https://my-relay.mysub.workers.dev");
+	assert.equal(deployed.url, "https://my-relay.mysub.workers.dev");
+	assert.match(deployed.auth, /^[A-Za-z0-9_-]{32}$/, "relay auth must be a 32-char base64url secret");
+	assert.equal(deployed.auth.includes(TOKEN), false, "relay auth must never leak the API token");
 
 	// Multipart upload carries metadata + main module part
 	const upload = calls.find((c) => c.init?.method === "PUT");
@@ -123,7 +138,10 @@ test("deployCloudflareWorker uploads module worker and returns workers.dev URL",
 	assert.ok(meta.compatibility_date);
 	const mainPart = fd.get("index.js") as Blob;
 	assert.equal(mainPart.type, "application/javascript+module");
-	assert.match(await mainPart.text(), /ALLOWED_TARGETS/);
+	const mainSource = await mainPart.text();
+	assert.match(mainSource, /ALLOWED_TARGETS/);
+	assert.match(mainSource, /timingSafeEqualStr/);
+	assert.ok(mainSource.includes(`const RELAY_AUTH = ${JSON.stringify(deployed.auth)};`), "uploaded worker must embed the returned auth secret");
 
 	// workers.dev routing was enabled explicitly
 	assert.ok(
@@ -194,9 +212,10 @@ test("deployDenoRelay creates app, pushes script, polls revision, resolves route
 	});
 	const progress: string[] = [];
 
-	const url = await deployDenoRelay(TOKEN, "My App", (m) => progress.push(m));
+	const deployed = await deployDenoRelay(TOKEN, "My App", (m) => progress.push(m));
 
-	assert.equal(url, "https://my-app.my-org.deno.net");
+	assert.equal(deployed.url, "https://my-app.my-org.deno.net");
+	assert.match(deployed.auth, /^[A-Za-z0-9_-]{32}$/, "deno relay auth must be base64url");
 
 	// App creation requests a dynamic runtime with main.ts entrypoint
 	const createCall = calls.find((c) => c.url.endsWith("/v2/apps") && c.init?.method === "POST");
@@ -210,6 +229,7 @@ test("deployDenoRelay creates app, pushes script, polls revision, resolves route
 	assert.equal(sent.assets["main.ts"].kind, "file");
 	assert.match(sent.assets["main.ts"].content, /ALLOWED_TARGETS/);
 	assert.match(sent.assets["main.ts"].content, /Deno\.serve\(/);
+	assert.ok(sent.assets["main.ts"].content.includes(`const RELAY_AUTH = ${JSON.stringify(deployed.auth)};`), "deno script must embed the returned auth secret");
 
 	// Happy path never tears the app down; token never leaks into progress
 	assert.equal(calls.some((c) => c.init?.method === "DELETE"), false);
@@ -228,8 +248,9 @@ test("deployDenoRelay falls back to managed *.deno.net domain when timelines are
 		return { status: 500, body: { error: { message: `unexpected ${init?.method} ${url}` } } };
 	});
 
-	const url = await deployDenoRelay("ddo-tok", "my-app");
-	assert.equal(url, "https://my-app.my-org.deno.net");
+	const deployed = await deployDenoRelay("ddo-tok", "my-app");
+	assert.equal(deployed.url, "https://my-app.my-org.deno.net");
+	assert.match(deployed.auth, /^[A-Za-z0-9_-]{32}$/, "deno relay auth must be base64url");
 });
 
 test("deployDenoRelay throws actionable auth error on 401 before creating anything", async (t) => {
@@ -338,8 +359,8 @@ test("deployVercelRelay keeps its existing contract (regression guard)", async (
 		return { status: 500, body: { error: { message: `unexpected ${init?.method} ${url}` } } };
 	});
 
-	const url = await deployVercelRelay("vercel-tok", "relay-name");
-	assert.equal(url, "https://relay-test.vercel.app");
+	const deployed = await deployVercelRelay("vercel-tok", "relay-name");
+	assert.equal(deployed.url, "https://relay-test.vercel.app");
 	assert.ok(calls.some((c) => c.init?.body && String(c.init.body).includes("api/relay.js")));
 });
 
@@ -359,7 +380,7 @@ test("deployVercelRelay survives a transient status-poll network failure", async
 		return { status: 500, body: {} };
 	});
 
-	const url = await deployVercelRelay("vercel-tok", "relay-name");
-	assert.equal(url, "https://relay-test.vercel.app");
+	const deployed = await deployVercelRelay("vercel-tok", "relay-name");
+	assert.equal(deployed.url, "https://relay-test.vercel.app");
 	assert.ok(calls.length >= 4); // create + sso patch + failed poll + successful poll
 });

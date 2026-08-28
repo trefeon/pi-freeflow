@@ -10,6 +10,7 @@ import path from "node:path";
 import {
 	CATALOG_CACHE_FILE,
 	CATALOG_CACHE_TTL_MS,
+	CATALOG_REFRESH_TIMEOUT_MS,
 	KILO_CHAT_URL,
 	OPENCODE_API_URL,
 	opencodeHeaders,
@@ -17,12 +18,8 @@ import {
 import { log, logDebug, logWarn } from "./logger.ts";
 import {
 	ALL_MODELS,
-	KILO_MODELS,
 	KILO_MODEL_IDS,
-	KNOWN_MODELS,
 	MODEL_MAP,
-	OPENCODE_MODELS,
-	getAllRegisteredModels,
 } from "./models.ts";
 import type {
 	CatalogCacheData,
@@ -250,7 +247,12 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 			if (cachedEtag) {
 				headers["If-None-Match"] = cachedEtag;
 			}
-			const res = await fetch(`${OPENCODE_API_URL}/models`, { headers });
+			const res = await fetch(`${OPENCODE_API_URL}/models`, {
+				headers,
+				// A hung upstream must not freeze /freeflow refresh: abort after
+				// CATALOG_REFRESH_TIMEOUT_MS and fall back to cache below.
+				signal: AbortSignal.timeout(CATALOG_REFRESH_TIMEOUT_MS),
+			});
 			if (res.status === 304) {
 				// Not modified — skip merge, extend timestamp to avoid tight loop
 				if (staleForEtag && Array.isArray(staleForEtag.models)) {
@@ -292,14 +294,20 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 				return aliveCatalog;
 			}
 		} catch (err) {
-			logDebug("Conditional catalog fetch failed, falling back to cache", { error: String(err) });
+			if ((err as Error)?.name === "AbortError") {
+				logWarn("Catalog refresh timed out — using cached/static fallback", {
+					timeoutMs: CATALOG_REFRESH_TIMEOUT_MS,
+				});
+			} else {
+				logDebug("Conditional catalog fetch failed, falling back to cache", { error: String(err) });
+			}
 		}
 	}
 
 	// Stale cache still better than empty — return it without network (filtered)
 	if (disk && Array.isArray(disk.models) && disk.models.length > 0) {
 		const filtered = disk.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
-		if (filtered.length >= 21) {
+		if (filtered.length >= ALL_MODELS.length) {
 			aliveCatalog = filtered;
 			return aliveCatalog;
 		}
@@ -311,7 +319,7 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 			const stale = JSON.parse(raw) as CatalogCacheData;
 			if (Array.isArray(stale.models) && stale.models.length > 0) {
 				const filtered = stale.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
-				if (filtered.length >= 21) {
+				if (filtered.length >= ALL_MODELS.length) {
 					aliveCatalog = filtered;
 					return aliveCatalog;
 				}

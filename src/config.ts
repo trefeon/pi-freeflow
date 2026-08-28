@@ -17,7 +17,6 @@ export const OPENCODE_API_URL = `${UPSTREAM_OPENCODE}/v1`;
 export const DEFAULT_PORT = 28180;
 export const LEGACY_PORT = 18080;
 export const HOST = "127.0.0.1";
-export const DEFAULT_HOST = "127.0.0.1";
 
 export function resolvePort(): number {
 	const envPort = process.env.FREEFLOW_PORT;
@@ -49,7 +48,6 @@ export function opencodeHeaders(): Record<string, string> {
 }
 
 // ── Relay and Deployment constants ──────────────────────────────────
-export const DEFAULT_RELAY_URL = "";
 export const VERCEL_API = "https://api.vercel.com";
 
 // ── Catalog & Logging constants ─────────────────────────────────────
@@ -170,3 +168,14 @@ export const DEBUG_STATE_FILE = resolveDebugStatePath();
 export const UPDATE_CACHE_FILE = resolveUpdateCachePath();
 export const ONBOARDED_FLAG_FILE = resolveOnboardedFlagPath();
 export const UPDATE_CHECK_TTL_MS = 86_400_000;
+// ── Security & Relay Validation ─────────────────────────────────────
+/** Opt-out for tests/dev: when set to "1", relay URLs on http:// and private hosts are allowed. */
+export const ALLOW_UNSAFE_RELAY_ENV = "PI_FREEFLOW_ALLOW_UNSAFE_RELAY";
+/** Max request body the proxy buffers before responding 413. */
+export const MAX_BODY_BYTES = 32 * 1024 * 1024;
+/** Default timeout for upstream headers while proxying a request. */
+export const UPSTREAM_HEADER_TIMEOUT_MS = 300_000;
+/** Timeout for refreshing the catalog (host fetchDynamicModels). */
+export const CATALOG_REFRESH_TIMEOUT_MS = 10_000;
+/** Timeout for probing a relay with a light /v1/models request. */
+export const PROBE_TIMEOUT_MS = 5_000;

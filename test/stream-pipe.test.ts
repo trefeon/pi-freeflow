@@ -334,3 +334,101 @@ test("response.completed split across chunks suppresses synthetic response.incom
 		"a genuinely completed stream must not be rewritten as cancelled",
 	);
 });
+
+test("internal abort (FF_INTERNAL_ABORT) leaves relay health untouched and injects a terminal", async () => {
+	resetAllRelayHealth();
+	const stream = new PassThrough();
+	const { res } = pipe(stream, "/v1/responses", RELAY_URL);
+
+	const drained = once(stream, "data");
+	stream.push(Buffer.from('event: response.output_text.delta\ndata: {}\n\n', "utf8"));
+	await drained;
+
+	// The proxy's header-wait timeout aborts with an AbortError tagged
+	// FF_INTERNAL_ABORT (never a relay fault — the relay is not at fault).
+	const abortErr = new Error("upstream header timeout") as Error & { code?: string };
+	abortErr.name = "AbortError";
+	abortErr.code = "FF_INTERNAL_ABORT";
+	const errored = once(stream, "error");
+	stream.destroy(abortErr);
+	await errored;
+
+	assert.equal(
+		isRelayHealthy(RELAY_URL),
+		true,
+		"an internal abort must not put the relay into cooldown",
+	);
+	assert.equal(getRelayHealth(RELAY_URL), undefined);
+	assert.ok(
+		res.body().includes('"type":"response.incomplete"'),
+		"the host must still get a terminal event",
+	);
+	assert.ok(
+		!res.body().includes("response.failed"),
+		"an internal abort is not an upstream failure",
+	);
+});
+
+test("plain AbortError mid-stream is treated as our abort, not a relay fault", async () => {
+	resetAllRelayHealth();
+	const stream = new PassThrough();
+	const { res } = pipe(stream, "/v1/chat/completions", RELAY_URL);
+
+	const drained = once(stream, "data");
+	stream.push(Buffer.from("data: part\n\n", "utf8"));
+	await drained;
+
+	const abortErr = new Error("The operation was aborted");
+	abortErr.name = "AbortError";
+	const errored = once(stream, "error");
+	stream.destroy(abortErr);
+	await errored;
+
+	assert.equal(isRelayHealthy(RELAY_URL), true);
+	assert.equal(getRelayHealth(RELAY_URL), undefined);
+	assert.equal(count(res.body(), "[DONE]"), 1);
+});
+
+/** FakeResponse whose write() returns callee-controlled backpressure. */
+class DrainingResponse extends FakeResponse {
+	drained = true;
+	write(chunk: Buffer | string): boolean {
+		return super.write(chunk) && this.drained;
+	}
+}
+
+test("backpressure: upstream pauses when res.write returns false and resumes on drain", async () => {
+	resetAllRelayHealth();
+	const stream = new PassThrough();
+	const res = new DrainingResponse();
+	const req = new FakeRequest("/v1/chat/completions");
+	pipeUpstreamStream(
+		stream,
+		res as unknown as http.ServerResponse,
+		req as unknown as http.IncomingMessage,
+		"test",
+		RELAY_URL,
+	);
+
+	res.drained = false; // next write() reports backpressure
+	const dataP = once(stream, "data");
+	stream.push(Buffer.from("data: part\n\n", "utf8"));
+	await dataP;
+	assert.equal(
+		stream.isPaused(),
+		true,
+		"upstream source must pause while the client socket is backed up",
+	);
+
+	res.drained = true;
+	res.emit("drain");
+	assert.equal(
+		stream.isPaused(),
+		false,
+		"upstream source must resume once the client drains",
+	);
+
+	stream.end();
+	await once(stream, "close");
+	assert.equal(isRelayHealthy(RELAY_URL), true);
+});

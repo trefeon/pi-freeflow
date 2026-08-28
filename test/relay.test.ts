@@ -163,3 +163,78 @@ test("roll-notify throttle: one toast per 5min window, reset hook re-arms it", a
 		resetAllRelayHealth();
 	}
 });
+
+test("relayFetch sends x-relay-auth when the relay entry has auth", async (t) => {
+	try {
+		setActiveRelayState({
+			enabled: true,
+			url: "https://auth-relay.example.com",
+			relays: [
+				{ url: "https://auth-relay.example.com", auth: "shared-secret-1" },
+			],
+			mode: "auto",
+		} as unknown as Parameters<typeof setActiveRelayState>[0], false);
+		resetAllRelayHealth();
+
+		const seen: Array<{ url: string; init?: RequestInit }> = [];
+		t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+			seen.push({ url, init });
+			return new Response("ok", { status: 200 });
+		});
+
+		const res = await relayFetch(
+			"https://opencode.ai/zen/v1/chat/completions",
+			{ method: "POST" },
+			"auth1",
+		);
+		assert.equal(res.status, 200);
+		assert.equal(seen.length, 1, "relay path must be exercised once (then direct fallback unused)");
+		const headers = new Headers(seen[0].init?.headers);
+		assert.equal(
+			headers.get("x-relay-auth"),
+			"shared-secret-1",
+			"x-relay-auth must be sent for authed relay entries",
+		);
+	} finally {
+		try {
+			setActiveRelayState({ enabled: true, url: "", relays: [], mode: "auto" } as unknown as Parameters<typeof setActiveRelayState>[0], false);
+		} catch {}
+		resetAllRelayHealth();
+	}
+});
+
+test("relayFetch omits x-relay-auth for legacy relay entries without auth", async (t) => {
+	try {
+		setActiveRelayState({
+			enabled: true,
+			url: "https://legacy-relay.example.com",
+			relays: [{ url: "https://legacy-relay.example.com" }],
+			mode: "auto",
+		} as unknown as Parameters<typeof setActiveRelayState>[0], false);
+		resetAllRelayHealth();
+
+		const seen: Array<{ url: string; init?: RequestInit }> = [];
+		t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+			seen.push({ url, init });
+			return new Response("ok", { status: 200 });
+		});
+
+		const res = await relayFetch(
+			"https://opencode.ai/zen/v1/chat/completions",
+			{ method: "POST" },
+			"auth2",
+		);
+		assert.equal(res.status, 200);
+		const headers = new Headers(seen[0].init?.headers);
+		assert.equal(
+			headers.get("x-relay-auth"),
+			null,
+			"no auth header must be sent for legacy entries",
+		);
+	} finally {
+		try {
+			setActiveRelayState({ enabled: true, url: "", relays: [], mode: "auto" } as unknown as Parameters<typeof setActiveRelayState>[0], false);
+		} catch {}
+		resetAllRelayHealth();
+	}
+});

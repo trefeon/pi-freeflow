@@ -7,6 +7,7 @@ import type * as http from "node:http";
 import { ALL_MODELS } from "./models.ts";
 import { getActiveRelayState, getRelayHealth, isRelayHealthy } from "./relay-state.ts";
 import { PORT } from "./config.ts";
+import { getClientIP } from "./proxy.ts";
 
 export interface HealthRelayInfo {
 	url: string;
@@ -58,12 +59,6 @@ function isLoopbackIP(ip: string): boolean {
 	return clean === "127.0.0.1" || clean === "::1" || clean === "localhost";
 }
 
-function getClientIPFromReq(req: http.IncomingMessage): string {
-	const addr = (req.socket as unknown as { remoteAddress?: string })?.remoteAddress;
-	if (!addr) return "unknown";
-	return addr.startsWith("::ffff:") ? addr.slice(7) : addr;
-}
-
 /**
  * Handle loopback health requests.
  * Returns true if request was a health endpoint (handled, response already sent).
@@ -87,7 +82,7 @@ export function handleHealthRequest(
 		return false;
 	}
 
-	const clientIP = getClientIPFromReq(req);
+	const clientIP = getClientIP(req);
 	if (!isLoopbackIP(clientIP)) {
 		const body = JSON.stringify({ error: "forbidden" });
 		res.writeHead(403, { "content-type": "application/json", "content-length": Buffer.byteLength(body) });

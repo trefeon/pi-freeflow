@@ -18,9 +18,9 @@ import {
 	setAliveCatalog,
 } from "./catalog.ts";
 import { createCommandSpec, updateStatusBar } from "./commands.ts";
-import { DEFAULT_HOST, HOST, LEGACY_PORT, ONBOARDED_FLAG_FILE, PORT } from "./config.ts";
+import { HOST, LEGACY_PORT, ONBOARDED_FLAG_FILE, PORT } from "./config.ts";
 import { log, logInfo, logWarn } from "./logger.ts";
-import { ALL_MODELS, KILO_MODEL_IDS, MODEL_MAP, getAllRegisteredModels, resolveCanonicalModelId } from "./models.ts";
+import { ALL_MODELS, KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
 import { isProxyAlive, startProxy } from "./proxy.ts";
 import { resetRateLimits } from "./rate-limiter.ts";
 import { checkForUpdateInBackground } from "./update-checker.ts";

@@ -129,11 +129,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
 ];
 
 /**
- * Backward compatibility alias for OPENCODE_MODELS
- */
-export const KNOWN_MODELS = OPENCODE_MODELS;
-
-/**
  * KiloCode Gateway free models (keyless — https://kilo.ai/docs/gateway).
  * Endpoint: https://api.kilo.ai/api/gateway/chat/completions
  */

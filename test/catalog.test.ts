@@ -63,3 +63,28 @@ test("refreshCatalog uses If-None-Match ETag and skips merge on 304", async () =
 		globalThis.fetch = realFetch;
 	}
 });
+
+test("refreshCatalog passes an abortable timeout signal and falls back instead of hanging", async () => {
+	const realFetch = globalThis.fetch;
+	try {
+		let captured: RequestInit | undefined;
+		const { promise: fetchCalled, resolve: markCalled } = Promise.withResolvers<void>();
+		globalThis.fetch = async (_url, init) => {
+			captured = init;
+			markCalled();
+			// Simulate a hung upstream: never settles on its own; the abort
+			// signal is the only way out (the CATALOG_REFRESH_TIMEOUT_MS timer).
+			const { promise, reject } = Promise.withResolvers<Response>();
+			init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+			return promise;
+		};
+		const resultP = refreshCatalog(true);
+		await fetchCalled; // the fetch is executing now
+		assert.ok(captured?.signal, "the upstream fetch must receive an abortable signal");
+		captured?.signal?.dispatchEvent(new Event("abort"));
+		const result = await resultP;
+		assert.ok(Array.isArray(result), "a hung upstream must fall back to cache/static, not hang");
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});

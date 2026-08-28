@@ -3,8 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { UPDATE_CACHE_FILE, UPDATE_CHECK_TTL_MS } from "./config.ts";
 import { logInfo } from "./logger.ts";
+import { logWarn } from "./logger.ts";
+import { getStatusUi } from "./relay-state.ts";
 import type { ExtensionUIContext } from "./types.ts";
 const REGISTRY_URL = "https://registry.npmjs.org/pi-freeflow/latest";
+/** Strict semver shape: major.minor.patch with optional -prerelease or +build suffix. */
+const SEMVER_PATTERN = /^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$/;
 export interface UpdateCacheData {
 	latest: string;
 	checkedAt: number;
@@ -40,6 +44,10 @@ export function getCachedUpdate(): UpdateCacheData | null {
 }
 
 export function setCachedUpdate(latest: string): void {
+	if (!SEMVER_PATTERN.test(latest)) {
+		logWarn(`ignoring invalid latest version for cache: ${latest}`);
+		return;
+	}
 	try {
 		const dir = path.dirname(UPDATE_CACHE_FILE);
 		mkdirSync(dir, { recursive: true });
@@ -59,7 +67,12 @@ export async function fetchLatestVersion(): Promise<string | null> {
 		if (!res.ok) return null;
 		const json = (await res.json()) as { version?: string };
 		const v = json?.version;
-		if (typeof v === "string" && v.trim().length > 0) return v.trim();
+		if (typeof v === "string" && v.trim().length > 0) {
+			const version = v.trim();
+			if (SEMVER_PATTERN.test(version)) return version;
+			logWarn(`registry returned invalid latest version: ${version}`);
+			return null;
+		}
 		return null;
 	} catch {
 		return null;
@@ -86,7 +99,11 @@ export function compareVersions(a: string, b: string): number {
 	}
 }
 
-function getLocalVersion(): string | null {
+/**
+ * Read the local package version from package.json.
+ * Shared by the background update check and the /freeflow update|status commands.
+ */
+export function getLocalVersion(): string {
 	try {
 		const thisDir = path.dirname(fileURLToPath(import.meta.url));
 		const pkgPath = path.join(thisDir, "..", "package.json");
@@ -95,9 +112,9 @@ function getLocalVersion(): string | null {
 		if (typeof pkg.version === "string" && pkg.version.trim().length > 0) {
 			return pkg.version.trim();
 		}
-		return null;
+		return "0.0.0";
 	} catch {
-		return null;
+		return "0.0.0";
 	}
 }
 
@@ -131,7 +148,6 @@ export function checkForUpdateInBackground(ui?: ExtensionUIContext | null): void
 							try { targetUi.setStatus("freeflow", `update: ${local} → ${latest}`); } catch {}
 						} else {
 							try {
-								const { getStatusUi } = require("./relay-state.ts") as { getStatusUi: () => ExtensionUIContext | null };
 								const fallback = getStatusUi();
 								if (fallback?.setStatus) fallback.setStatus("freeflow", `update: ${local} → ${latest}`);
 							} catch {}

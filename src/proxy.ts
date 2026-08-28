@@ -18,8 +18,9 @@ import {
 	HOST,
 	KILO_CHAT_URL,
 	PATH_TRAVERSAL_PATTERN,
+	MAX_BODY_BYTES,
 	PORT,
-	STRIP_HEADERS,
+	UPSTREAM_HEADER_TIMEOUT_MS,
 	UPSTREAM_OPENCODE,
 	opencodeHeaders,
 } from "./config.ts";
@@ -84,10 +85,20 @@ export function sanitizeHeaders(
 	incoming: http.IncomingHttpHeaders,
 	targetHost: string,
 ): Record<string, string> {
+	// Positive allowlist: only headers the proxy is meant to relay. Everything
+	// else (host, cookie, x-forwarded-*, client x-relay-*) is dropped so a
+	// browser/extension cannot smuggle headers into the upstream request.
+	const allowed: Record<string, true> = {
+		"content-type": true,
+		accept: true,
+		authorization: true,
+		"x-request-id": true,
+	};
 	const sanitized: Record<string, string> = {};
 	for (const [key, value] of Object.entries(incoming)) {
 		const lower = key.toLowerCase();
-		if (STRIP_HEADERS.has(lower) || lower.startsWith(":")) continue;
+		if (lower.startsWith(":")) continue;
+		if (!allowed[lower] && !lower.startsWith("x-opencode-")) continue;
 		if (typeof value === "string") sanitized[lower] = value;
 		else if (Array.isArray(value)) sanitized[lower] = value.join(", ");
 	}
@@ -101,17 +112,6 @@ export function sanitizeHeaders(
 	sanitized.connection = "keep-alive";
 	return sanitized;
 }
-
-/**
- * Reasoning normalization is owned by host pi-ai; proxy passes through reasoning fields unchanged.
- * Kept as no-op for compatibility — no per-model clamping.
- */
-function sanitizeReasoningForModel(_bodyObj: Record<string, unknown>): void {
-	// no-op
-}
-/**
- * Probe whether an existing pi-freeflow proxy daemon is running and responsive on a given port.
- */
 export async function isProxyAlive(port: number): Promise<boolean> {
 	try {
 		const res = await fetch(`http://${HOST}:${port}/v1/models`, {
@@ -122,6 +122,21 @@ export async function isProxyAlive(port: number): Promise<boolean> {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Tagged abort reason for the proxy-internal header-wait timeout.
+ * relayFetch rethrows AbortErrors untouched, and stream-pipe recognizes
+ * code FF_INTERNAL_ABORT as "our abort, not a relay fault" — so neither
+ * rolls nor penalizes a healthy relay when the request merely ran slow.
+ */
+function upstreamTimeoutError(): Error & { code: string } {
+	const err = new Error(
+		`upstream header timeout (${UPSTREAM_HEADER_TIMEOUT_MS}ms)`,
+	) as Error & { code: string };
+	err.name = "AbortError";
+	err.code = "FF_INTERNAL_ABORT";
+	return err;
 }
 
 /**
@@ -153,11 +168,9 @@ export function startProxy(
 		}
 
 		if (req.method === "OPTIONS") {
-			res.writeHead(204, {
-				"access-control-allow-origin": "*",
-				"access-control-allow-methods": "GET, POST, OPTIONS",
-				"access-control-max-age": "86400",
-			});
+			// No CORS headers: loopback proxy is not a cross-origin resource.
+			// Keep a bare 204 so OPTIONS never reaches validatePath/upstream.
+			res.writeHead(204);
 			res.end();
 			return;
 		}
@@ -205,6 +218,15 @@ export function startProxy(
 		}
 		// Buffer request body to inspect model ID for upstream routing
 		const bodyChunks: Buffer[] = [];
+		// Reject oversized bodies before buffering starts: the client declares
+		// the size in content-length, so no transfer cost is wasted.
+		const declaredLength = Number(req.headers["content-length"] ?? 0);
+		if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+			res.writeHead(413, { "content-type": "application/json" });
+			res.end(JSON.stringify({ error: "payload too large" }));
+			return;
+		}
+		let bufferedBytes = 0;
 		req.on("error", (err) => {
 			log(
 				"warn",
@@ -218,7 +240,20 @@ export function startProxy(
 			res.end(JSON.stringify({ error: "bad request" }));
 		});
 
-		req.on("data", (chunk: Buffer) => bodyChunks.push(chunk));
+		// Running cap for chunked/undeclared bodies: stop buffering the instant
+		// the limit is crossed instead of holding the whole payload in memory.
+		req.on("data", (chunk: Buffer) => {
+			bufferedBytes += chunk.length;
+			if (bufferedBytes > MAX_BODY_BYTES) {
+				req.destroy();
+				if (!res.headersSent) {
+					res.writeHead(413, { "content-type": "application/json" });
+					res.end(JSON.stringify({ error: "payload too large" }));
+				}
+				return;
+			}
+			bodyChunks.push(chunk);
+		});
 
 		req.on("end", async () => {
 			const bodyStr = Buffer.concat(bodyChunks).toString();
@@ -258,20 +293,40 @@ export function startProxy(
 
 			try {
 				if (isKilo && parsedBody) {
-					const kiloBodyObj = structuredClone(parsedBody);
-					const response = await relayFetch(
-						KILO_CHAT_URL,
-						{
-							method: "POST",
-							headers: {
-								"Content-Type": "application/json",
-								Authorization: "Bearer kilo-free",
-							},
-							body: JSON.stringify(kiloBodyObj),
-							signal: AbortSignal.timeout(300_000),
-						},
-						reqId,
+					// Header-wait timeout + client-disconnect abort: once headers
+					// arrive the timer is cleared so a long stream is not killed at
+					// the timeout ceiling; the stream phase is owned by
+					// pipeUpstreamStream and its close handling.
+					const kiloController = new AbortController();
+					const kiloTimeoutId = setTimeout(
+						() => kiloController.abort(upstreamTimeoutError()),
+						UPSTREAM_HEADER_TIMEOUT_MS,
 					);
+					const abortKiloOnClientGone = () => {
+						if (!res.writableEnded) kiloController.abort();
+					};
+					res.once("close", abortKiloOnClientGone);
+					req.once("error", abortKiloOnClientGone);
+					let response: Response;
+					try {
+						response = await relayFetch(
+							KILO_CHAT_URL,
+							{
+								method: "POST",
+								headers: {
+									"Content-Type": "application/json",
+									Authorization: "Bearer kilo-free",
+								},
+								body: JSON.stringify(parsedBody),
+								signal: kiloController.signal,
+							},
+							reqId,
+						);
+					} finally {
+						clearTimeout(kiloTimeoutId);
+						res.off("close", abortKiloOnClientGone);
+						req.off("error", abortKiloOnClientGone);
+					}
 
 					if (isStream && response.ok && response.body) {
 						const ct =
@@ -317,19 +372,39 @@ export function startProxy(
 
 						try {
 							if (parsedBody) {
-								const relayBodyObj = structuredClone(parsedBody);
-								sanitizeReasoningForModel(relayBodyObj as Record<string, unknown>);
-								const relayBody = Buffer.from(JSON.stringify(relayBodyObj));
-								const response = await relayFetch(
-									fullUrl,
-									{
-										method: req.method || "POST",
-										headers: relayHeaders,
-										body: relayBody,
-										signal: AbortSignal.timeout(300_000),
-									},
-									reqId,
+								const relayBody = Buffer.concat(bodyChunks);
+								// Header-wait timeout + client-disconnect abort; the
+								// timer is cleared once headers arrive so streams are
+								// not killed at the timeout ceiling. Aborts caused by
+								// our own timeout are tagged FF_INTERNAL_ABORT so
+								// stream-pipe never penalizes the relay for them.
+								const relayController = new AbortController();
+								const relayTimeoutId = setTimeout(
+									() => relayController.abort(upstreamTimeoutError()),
+									UPSTREAM_HEADER_TIMEOUT_MS,
 								);
+								const abortRelayOnClientGone = () => {
+									if (!res.writableEnded) relayController.abort();
+								};
+								res.once("close", abortRelayOnClientGone);
+								req.once("error", abortRelayOnClientGone);
+								let response: Response;
+								try {
+									response = await relayFetch(
+										fullUrl,
+										{
+											method: req.method || "POST",
+											headers: relayHeaders,
+											body: relayBody,
+											signal: relayController.signal,
+										},
+										reqId,
+									);
+								} finally {
+									clearTimeout(relayTimeoutId);
+									res.off("close", abortRelayOnClientGone);
+									req.off("error", abortRelayOnClientGone);
+								}
 
 								if (isStream && response.ok && response.body) {
 									const ct =
@@ -371,13 +446,8 @@ export function startProxy(
 						}
 					}
 
-					// Direct path — with debug trace and thinking-aware normalization
-					let directBody = Buffer.concat(bodyChunks);
-					if (parsedBody) {
-						const directBodyObj = structuredClone(parsedBody);
-						sanitizeReasoningForModel(directBodyObj as Record<string, unknown>);
-						directBody = Buffer.from(JSON.stringify(directBodyObj));
-					}
+					// Direct path — the relay already parsed/forwarded raw; send the buffered bytes unchanged
+					const directBody = Buffer.concat(bodyChunks);
 
 					if (isDebugEnabled()) {
 						log(

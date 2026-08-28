@@ -33,6 +33,7 @@ import {
 	VERCEL_RELAY_WORKER,
 	DENO_RELAY_SCRIPT,
 } from "../src/deploy.ts";
+import { isSubstantial } from "../src/stream-pipe.ts";
 import { readCatalogCache, mergeCatalog, DEAD_MODEL_IDS } from "../src/catalog.ts";
 import type { RegisteredModel, RelayState } from "../src/types.ts";
 
@@ -320,9 +321,7 @@ test("Error Matrix [8/10] saveRelayState recovers from Windows EPERM lock conten
 // ── 9. Stream Truncation Threshold Boundary Invariants ───────────────────────
 
 test("Error Matrix [9/10] stream truncation thresholds enforce >50 chunks AND >100KB boundary logic", () => {
-	const isSubstantial = (chunks: number, bytes: number) => chunks > 50 && bytes > 100 * 1024;
-
-	// Boundary Matrix:
+	// Boundary Matrix against the real exported implementation:
 	// 1. Both met: >50 chunks and >100KB -> SUBSTANTIAL (incomplete)
 	assert.equal(isSubstantial(51, 100 * 1024 + 1), true);
 	assert.equal(isSubstantial(100, 500 * 1024), true);

@@ -21,6 +21,18 @@ export const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
 	audit: 4,
 };
 
+/**
+ * Levels that actually have emitters. 'audit' exists in LOG_LEVEL_ORDER as a
+ * sink for logAudit() callers but nothing decides the threshold by it — a
+ * persisted or env-provided 'audit' level would silently suppress everything
+ * below it (the audit-level freeze). Treat it as unknown everywhere.
+ */
+const EMITTED_LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
+
+export function isEmittedLogLevel(level: string): level is LogLevel {
+	return (EMITTED_LEVELS as readonly string[]).includes(level);
+}
+
 let cachedDebugState: DebugState | null | undefined = undefined;
 let cachedDebugMtime = 0;
 let cachedDebugAt = 0;
@@ -50,10 +62,16 @@ export function loadDebugState(): DebugState | null {
 		const raw = fs.readFileSync(DEBUG_STATE_FILE, "utf8");
 		const parsed = JSON.parse(raw) as DebugState;
 		if (typeof parsed?.debug === "boolean") {
-			cachedDebugState = parsed;
+			// A stray 'audit' level (or any unknown level) must not suppress the
+			// whole log — keep the debug boolean, drop the unusable level.
+			const clean: DebugState = { debug: parsed.debug };
+			if (typeof parsed.level === "string" && isEmittedLogLevel(parsed.level)) {
+				clean.level = parsed.level;
+			}
+			cachedDebugState = clean;
 			cachedDebugMtime = stat.mtimeMs;
 			cachedDebugAt = now;
-			return parsed;
+			return clean;
 		}
 	} catch {
 		// Non-fatal if parsing or reading fails
@@ -91,6 +109,13 @@ export function saveDebugState(s: DebugState): void {
 	}
 }
 
+/** Test-only: drop the in-memory debug-state cache so a test's disk write is re-read. */
+export function _resetDebugStateCacheForTest(): void {
+	cachedDebugState = undefined;
+	cachedDebugMtime = 0;
+	cachedDebugAt = 0;
+}
+
 /**
  * Calculate the active minimum log level threshold based on state and env.
  */
@@ -99,13 +124,13 @@ export function getMinLogLevel(): number {
 	if (dbg?.debug) {
 		return LOG_LEVEL_ORDER.debug;
 	}
-	if (dbg?.level && dbg.level in LOG_LEVEL_ORDER) {
+	if (dbg?.level && isEmittedLogLevel(dbg.level)) {
 		return LOG_LEVEL_ORDER[dbg.level];
 	}
 
 	const raw = (process.env.FREEFLOW_LOG_LEVEL || "info").toLowerCase();
 
-	if (raw in LOG_LEVEL_ORDER) {
+	if (isEmittedLogLevel(raw)) {
 		return LOG_LEVEL_ORDER[raw as LogLevel];
 	}
 
@@ -143,9 +168,7 @@ export function rotateLogsIfNeeded(targetFile: string = LOG_FILE): void {
 			const dst = `${targetFile}.${i}`;
 			try {
 				if (fs.existsSync(src)) {
-					if (i === LOG_MAX_FILES && fs.existsSync(dst)) {
-						fs.unlinkSync(dst);
-					} else if (fs.existsSync(dst)) {
+					if (fs.existsSync(dst)) {
 						fs.unlinkSync(dst);
 					}
 					fs.renameSync(src, dst);
@@ -252,14 +275,6 @@ export function logError(
 	log("error", message, meta, reqId);
 }
 
-export function logAudit(
-	message: string,
-	meta?: Record<string, unknown>,
-	reqId?: string,
-): void {
-	log("audit", message, meta, reqId);
-}
-
 export interface ReadRecentLogsResult {
 	lines: string[];
 	totalMatched: number;
@@ -274,7 +289,7 @@ export interface ReadRecentLogsResult {
  * @param count Max lines to return (clamped 1-200).
  * @param filterText Optional case-insensitive text substring filter.
  * @param files Optional log files to read (newest-last order); defaults to
- *   LOG_FILE and its rotated archives (.1-.3).
+ *   LOG_FILE and its rotated archives (.1-<LOG_MAX_FILES>).
  */
 export function readRecentLogs(
 	filterLevel?: LogLevel | null,
@@ -283,12 +298,12 @@ export function readRecentLogs(
 	filterText?: string | null,
 	files?: string[],
 ): ReadRecentLogsResult {
-	const filesList: string[] = (files ?? [
-		LOG_FILE,
-		`${LOG_FILE}.1`,
-		`${LOG_FILE}.2`,
-		`${LOG_FILE}.3`,
-	]).filter((f) => fs.existsSync(f));
+	const filesList: string[] = (
+		files ?? [
+			LOG_FILE,
+			...Array.from({ length: LOG_MAX_FILES }, (_, i) => `${LOG_FILE}.${i + 1}`),
+		]
+	).filter((f) => fs.existsSync(f));
 
 	if (filesList.length === 0) {
 		return {

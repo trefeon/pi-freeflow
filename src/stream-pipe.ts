@@ -167,7 +167,20 @@ export function pipeUpstreamStream(
 			}
 			terminalScanCarry = Buffer.from(scanBuf.subarray(Math.max(0, scanBuf.length - 32)));
 
-			res.write(chunk);
+			const canContinue = res.write(chunk);
+			if (canContinue === false && !nodeStream.destroyed) {
+				// Backpressure: pause the upstream source until the client
+				// socket drains, instead of buffering an unbounded amount into
+				// the response. 'drain' might never fire if the client closes —
+				// the close handlers below destroy the stream regardless of
+				// its paused state.
+				nodeStream.pause();
+				const onDrain = () => {
+					res.off("drain", onDrain);
+					if (!nodeStream.destroyed) nodeStream.resume();
+				};
+				res.once("drain", onDrain);
+			}
 			const maybeFlush = res as unknown as { flush?: () => void };
 			if (typeof maybeFlush.flush === "function") {
 				maybeFlush.flush();
@@ -177,15 +190,28 @@ export function pipeUpstreamStream(
 
 	nodeStream.on("error", (e: unknown) => {
 		const errorMsg = (e as Error)?.message || String(e);
+		// An abort (client disconnect or a proxy-internal header timeout marked
+		// FF_INTERNAL_ABORT) is not a relay fault — never penalize relay health,
+		// and behave like a client abort for the terminal marker. Only genuine
+		// upstream-side failures (socket errors, truncation) penalize.
+		// Stream errors are always Error subclasses (node/undici).
+		const streamErr = e as Error & { code?: string };
+		const isInternalAbort =
+			streamErr?.name === "AbortError" || streamErr?.code === "FF_INTERNAL_ABORT";
 		log(
-			"error",
-			"upstream stream error",
+			isInternalAbort ? "warn" : "error",
+			isInternalAbort
+				? "upstream stream aborted (internal cancel/timeout)"
+				: "upstream stream error",
 			{ error: errorMsg, totalChunks, thinkingChunks, hasTerminalEvent },
 			rid,
 		);
 		try {
 			if (!res.headersSent) {
 				res.writeHead(502, { "content-type": "application/json" });
+			} else if (isInternalAbort) {
+				clientAborted = true;
+				ensureTerminalEvent(false, errorMsg || "stream interrupted", false);
 			} else {
 				ensureTerminalEvent(!isSubstantial(totalChunks, totalBytes), errorMsg, true);
 			}

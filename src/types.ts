@@ -38,6 +38,8 @@ export interface KnownRelay {
 	url: string;
 	label?: string;
 	addedAt?: string;
+	/** Shared secret set by /freeflow deploy; proxy sends x-relay-auth only when present. */
+	auth?: string;
 }
 export type RelayMode = "auto" | "on" | "off";
 

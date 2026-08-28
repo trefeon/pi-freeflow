@@ -9,6 +9,7 @@ import { RELAY_STATE_FILE } from "../src/config.ts";
 import {
 	ensureRelay,
 	findRelay,
+	getActiveRelayState,
 	getOrderedRelayUrls,
 	getRelayHealth,
 	isRelayHealthy,
@@ -20,8 +21,11 @@ import {
 	saveRelayState,
 	setRelayLabel,
 	shortRelayLabel,
+	withRelayState,
+	validateRelayUrl,
 } from "../src/relay-state.ts";
 import type { RelayState } from "../src/types.ts";
+import { ALLOW_UNSAFE_RELAY_ENV } from "../src/config.ts";
 
 /** Backup real state file so user data is untouched by these tests. */
 function withSavedDiskState(fn: () => void): void {
@@ -379,4 +383,116 @@ test("saveRelayState fails fast on non-transient rename errors without retrying"
 			fsp.renameSync = realRenameSync;
 		}
 	});
+});
+
+test("withRelayState applies the updater to the freshest disk state and persists it", () => {
+	withSavedDiskState(() => {
+		saveRelayState({
+			mode: "auto",
+			enabled: true,
+			url: "https://cas1.example.com",
+			relays: [{ url: "https://cas1.example.com" }],
+		});
+		const next = withRelayState((s) => {
+			s.mode = "off";
+			s.enabled = false;
+			return s;
+		});
+		assert.equal(next.mode, "off");
+		assert.equal(next.enabled, false);
+		const onDisk = JSON.parse(fs.readFileSync(RELAY_STATE_FILE, "utf8")) as RelayState;
+		assert.equal(onDisk.mode, "off", "the mutation must land on disk");
+		assert.equal(onDisk.relays.length, 1, "unrelated pool data must survive the CAS write");
+		assert.equal(getActiveRelayState().mode, "off", "in-memory state must follow the write");
+		assert.equal(fs.existsSync(`${RELAY_STATE_FILE}.lock`), false, "lock must be released");
+	});
+});
+
+test("withRelayState takes over a stale lock (crashed holder) without waiting", () => {
+	withSavedDiskState(() => {
+		const lock = `${RELAY_STATE_FILE}.lock`;
+		fs.writeFileSync(lock, "999999", "utf8");
+		const stale = new Date(Date.now() - 60_000);
+		fs.utimesSync(lock, stale, stale);
+		const next = withRelayState((s) => {
+			s.enabled = true;
+			return s;
+		});
+		assert.ok(next, "CAS must complete despite a stale lock");
+		assert.equal(fs.existsSync(lock), false, "stale lock must be taken over and removed");
+	});
+});
+
+test("withRelayState proceeds unlocked after a busy-lock timeout and never touches the foreign lock", () => {
+	withSavedDiskState(() => {
+		const lock = `${RELAY_STATE_FILE}.lock`;
+		fs.writeFileSync(lock, String(process.pid), "utf8"); // fresh lock = held by another process
+		try {
+			const next = withRelayState((s) => {
+				s.url = "https://cas-timeout.example.com";
+				return s;
+			});
+			assert.equal(next.url, "https://cas-timeout.example.com", "write still applies past the lock timeout");
+		} finally {
+			// Simulate the foreign holder releasing its lock.
+			fs.rmSync(lock, { force: true });
+		}
+	});
+});
+
+// ── Relay URL validation ──────────────────────────────────────────────
+
+test("validateRelayUrl: accepts public https relay URLs", () => {
+	const ok = validateRelayUrl("https://good.example.com");
+	assert.equal(ok.ok, true);
+	assert.ok(ok.ok && ok.url instanceof URL, "must return a parsed URL");
+	assert.equal(validateRelayUrl("https://good.example.com:443").ok, true, "explicit default port is allowed");
+	assert.equal(validateRelayUrl("https://sg-edge.workers.dev").ok, true);
+});
+
+test("validateRelayUrl: rejects http, credentials, private/loopback hosts, .local, and non-default ports", () => {
+	assert.equal(validateRelayUrl("http://relay.example.com").ok, false, "http must be rejected");
+	assert.equal(
+		validateRelayUrl("https://user:pass@relay.example.com").ok,
+		false,
+		"embedded credentials must be rejected",
+	);
+	assert.equal(validateRelayUrl("https://127.0.0.1").ok, false, "loopback must be rejected");
+	assert.equal(validateRelayUrl("https://192.168.1.5").ok, false, "RFC1918 must be rejected");
+	assert.equal(validateRelayUrl("https://169.254.10.2").ok, false, "link-local must be rejected");
+	assert.equal(validateRelayUrl("https://relay.local").ok, false, ".local must be rejected");
+	assert.equal(validateRelayUrl("https://10.0.0.7").ok, false, "10/8 must be rejected");
+	assert.equal(validateRelayUrl("https://172.31.4.8").ok, false, "172.16/12 must be rejected");
+	assert.equal(validateRelayUrl("https://good.example.com:8443").ok, false, "non-default port must be rejected");
+	assert.equal(validateRelayUrl("://invalid").ok, false, "unparseable URL must be rejected");
+	assert.equal(validateRelayUrl("").ok, false, "empty must be rejected");
+});
+
+test("validateRelayUrl: unsafe env allows http and private hosts", () => {
+	const previous = process.env[ALLOW_UNSAFE_RELAY_ENV];
+	process.env[ALLOW_UNSAFE_RELAY_ENV] = "1";
+	try {
+		assert.equal(validateRelayUrl("http://127.0.0.1:28180").ok, true, "unsafe env allows http loopback");
+		assert.equal(validateRelayUrl("http://192.168.1.5:8080").ok, true, "unsafe env allows private hosts");
+		assert.equal(validateRelayUrl("https://relay.example.com:8443").ok, true, "unsafe env allows non-default ports");
+		assert.equal(
+			validateRelayUrl("https://user:pass@relay.example.com").ok,
+			false,
+			"credentials stay rejected even in unsafe env",
+		);
+	} finally {
+		if (previous === undefined) {
+			delete process.env[ALLOW_UNSAFE_RELAY_ENV];
+		} else {
+			process.env[ALLOW_UNSAFE_RELAY_ENV] = previous;
+		}
+	}
+});
+
+test("ensureRelay rejects invalid relay URLs", () => {
+	const state: RelayState = { enabled: true, url: "", relays: [], mode: "auto" };
+	assert.throws(() => ensureRelay(state, "http://127.0.0.1:8080"), /Relay URL rejected/);
+	assert.throws(() => ensureRelay(state, "https://relay.local"), /Relay URL rejected/);
+	assert.throws(() => ensureRelay(state, "https://good.example.com:9999"), /Relay URL rejected/);
+	assert.equal(state.relays.length, 0, "rejected URLs must not enter the pool");
 });
