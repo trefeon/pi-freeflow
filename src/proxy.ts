@@ -28,7 +28,7 @@ import { isDebugEnabled, log } from "./logger.ts";
 import { KILO_MODEL_IDS, resolveCanonicalModelId } from "./models.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
 import { checkRateLimit } from "./rate-limiter.ts";
-import { agent, relayFetch } from "./relay.ts";
+import { agent, canUseCustomDispatcher, relayFetch } from "./relay.ts";
 import { getActiveRelayState } from "./relay-state.ts";
 import { pipeUpstreamStream } from "./stream-pipe.ts";
 import type { Upstream } from "./types.ts";
@@ -479,7 +479,7 @@ export function startProxy(
 							headers: fwd,
 							body: directBody.length > 0 ? directBody : undefined,
 							signal: controller.signal,
-							dispatcher: agent,
+							...(canUseCustomDispatcher ? { dispatcher: agent } : {}),
 						} as unknown as RequestInit);
 						clearTimeout(timeoutId);
 						res.off("close", onClientClose);
