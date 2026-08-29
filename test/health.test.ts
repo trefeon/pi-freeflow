@@ -37,12 +37,14 @@ test("health returns 200 with active, mode, relays and catalog 28", async () => 
 	try {
 		const res = await fetch(`http://127.0.0.1:${port}/_health`);
 		assert.equal(res.status, 200);
-		const json = await res.json() as { port: number; active: string; mode: string; enabled: boolean; relays: Array<{ url: string; label?: string; healthy: boolean; cooldownUntil: number; consecutiveFailures: number }>; catalog: number };
+		const json = await res.json() as { port: number; active: string; mode: string; enabled: boolean; relays: Array<{ url: string; label?: string; healthy: boolean; cooldownUntil: number; consecutiveFailures: number }>; catalog: number; version: string };
 		assert.equal(json.port, port);
 		assert.equal(json.active, "https://relay.example.com");
 		assert.equal(json.mode, "auto");
 		assert.equal(json.enabled, true);
 		assert.equal(json.catalog, 28);
+		assert.equal(typeof json.version, "string");
+		assert.ok(json.version.length > 0, "health must report daemon version for stale-detection");
 		assert.ok(Array.isArray(json.relays));
 		assert.equal(json.relays.length, 1);
 		assert.equal(json.relays[0].url, "https://relay.example.com");

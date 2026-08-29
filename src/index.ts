@@ -18,10 +18,10 @@ import {
 	setAliveCatalog,
 } from "./catalog.ts";
 import { createCommandSpec, updateStatusBar } from "./commands.ts";
-import { HOST, LEGACY_PORT, ONBOARDED_FLAG_FILE, PORT } from "./config.ts";
+import { HOST, LEGACY_PORT, ONBOARDED_FLAG_FILE, PKG_VERSION, PORT } from "./config.ts";
 import { log, logInfo, logWarn } from "./logger.ts";
 import { ALL_MODELS, KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
-import { isProxyAlive, startProxy } from "./proxy.ts";
+import { getDaemonVersion, isProxyAlive, killPortHolder, startProxy } from "./proxy.ts";
 import { resetRateLimits } from "./rate-limiter.ts";
 import { checkForUpdateInBackground } from "./update-checker.ts";
 import {
@@ -174,18 +174,81 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// 2. Single-Port Shared Pattern: Check if daemon is already running (e.g. parent session)
 	// Dual-probe: probe current PORT first; if missing, check LEGACY_PORT so existing v1.4.9
 	// sessions on 18080 are seamlessly reused without split-brain or duplicate daemons.
+	// Stale-daemon heal: if the alive daemon reports a different version (e.g. 1.7.1 vs 1.8.0
+	// after an upgrade), the auth fix never loads for the new session. Detect via /_health
+	// and best-effort replace the stale holder so old users are auto-healed.
 	let alreadyRunning = await isProxyAlive(PORT);
 	if (alreadyRunning) {
-		logInfo(
-			`Reusing existing pi-freeflow proxy daemon on http://${HOST}:${PORT}`,
-		);
-		actualPort = PORT;
+		const remoteVer = await getDaemonVersion(PORT);
+		if (remoteVer !== null && remoteVer !== PKG_VERSION) {
+			logWarn(`stale proxy daemon v${remoteVer} on :${PORT} (need v${PKG_VERSION}) — replacing`, {
+				remoteVer,
+				expected: PKG_VERSION,
+			});
+			const killed = await killPortHolder(PORT);
+			if (killed) {
+				for (let i = 0; i < 10; i++) {
+					await new Promise<void>((r) => setTimeout(r, 200));
+					if (!(await isProxyAlive(PORT))) break;
+				}
+			}
+			if (!(await isProxyAlive(PORT))) {
+				try {
+					const r = await startProxy();
+					server = r.server;
+					actualPort = r.port;
+					alreadyRunning = false;
+				} catch (e) {
+					log("error", "stale daemon replaced but fresh bind failed — reusing stale as fallback", {
+						error: String(e),
+					});
+					actualPort = PORT;
+				}
+			} else {
+				logInfo(`Reusing existing pi-freeflow proxy daemon on http://${HOST}:${PORT} (stale kill did not free port)`);
+				actualPort = PORT;
+			}
+		} else {
+			logInfo(`Reusing existing pi-freeflow proxy daemon on http://${HOST}:${PORT}`);
+			actualPort = PORT;
+		}
 	} else if (PORT !== LEGACY_PORT && (await isProxyAlive(LEGACY_PORT))) {
-		logInfo(
-			`Reusing existing legacy pi-freeflow proxy daemon on http://${HOST}:${LEGACY_PORT}`,
-		);
-		alreadyRunning = true;
-		actualPort = LEGACY_PORT;
+		const remoteVer = await getDaemonVersion(LEGACY_PORT);
+		if (remoteVer !== null && remoteVer !== PKG_VERSION) {
+			logWarn(`stale legacy daemon v${remoteVer} on :${LEGACY_PORT} (need v${PKG_VERSION}) — replacing`, {
+				remoteVer,
+				expected: PKG_VERSION,
+			});
+			const killed = await killPortHolder(LEGACY_PORT);
+			if (killed) {
+				for (let i = 0; i < 10; i++) {
+					await new Promise<void>((r) => setTimeout(r, 200));
+					if (!(await isProxyAlive(LEGACY_PORT))) break;
+				}
+			}
+			if (!(await isProxyAlive(LEGACY_PORT)) && !(await isProxyAlive(PORT))) {
+				try {
+					const r = await startProxy();
+					server = r.server;
+					actualPort = r.port;
+					alreadyRunning = false;
+				} catch (e) {
+					log("error", "stale legacy daemon replaced but fresh bind failed — reusing as fallback", {
+						error: String(e),
+					});
+					alreadyRunning = true;
+					actualPort = LEGACY_PORT;
+				}
+			} else {
+				logInfo(`Reusing existing legacy pi-freeflow proxy daemon on http://${HOST}:${LEGACY_PORT}`);
+				alreadyRunning = true;
+				actualPort = LEGACY_PORT;
+			}
+		} else {
+			logInfo(`Reusing existing legacy pi-freeflow proxy daemon on http://${HOST}:${LEGACY_PORT}`);
+			alreadyRunning = true;
+			actualPort = LEGACY_PORT;
+		}
 	} else {
 		try {
 			const r = await startProxy();
@@ -200,8 +263,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			return;
 		}
 	}
-
-	// 3. Instant 0ms Static Catalog Registration
 	// Register static models immediately on boot so Pi/OMP picker is populated with zero latency!
 	const registeredCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
 		...m,
@@ -215,27 +276,80 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			buildProviderConfig(models, actualPort),
 		);
 	};
-	registerCatalog(registeredCatalog);
-	// Self-heal: if this session attached to an external daemon that later died,
-	// re-bind on the next lifecycle event so model calls recover without a restart.
 	let ensuringDaemon = false;
 	const ensureDaemon = async (): Promise<void> => {
 		if (ensuringDaemon) return;
 		ensuringDaemon = true;
 		try {
-			if (await isProxyAlive(actualPort)) return;
-			// If actualPort died, check if another daemon is alive on PORT or LEGACY_PORT before binding
+			if (await isProxyAlive(actualPort)) {
+				const v = await getDaemonVersion(actualPort);
+				if (v === null || v === PKG_VERSION) return;
+				logWarn(`proxy on :${actualPort} is stale v${v} (need v${PKG_VERSION}) — replacing`, {
+					remoteVer: v,
+					expected: PKG_VERSION,
+				});
+				const killed = await killPortHolder(actualPort);
+				if (killed) {
+					for (let i = 0; i < 10; i++) {
+						await new Promise<void>((r) => setTimeout(r, 200));
+						if (!(await isProxyAlive(actualPort))) break;
+					}
+				}
+				if (await isProxyAlive(actualPort)) return;
+			}
 			if (await isProxyAlive(PORT)) {
-				actualPort = PORT;
-				registerCatalog(getAliveCatalog());
-				logInfo(`Re-attached to proxy daemon on http://${HOST}:${PORT}`);
-				return;
+				const v = await getDaemonVersion(PORT);
+				if (v !== null && v !== PKG_VERSION) {
+					logWarn(`proxy on :${PORT} is stale v${v} (need v${PKG_VERSION}) — replacing`, {
+						remoteVer: v,
+						expected: PKG_VERSION,
+					});
+					const killed = await killPortHolder(PORT);
+					if (killed) {
+						for (let i = 0; i < 10; i++) {
+							await new Promise<void>((r) => setTimeout(r, 200));
+							if (!(await isProxyAlive(PORT))) break;
+						}
+					}
+					if (await isProxyAlive(PORT)) {
+						actualPort = PORT;
+						registerCatalog(getAliveCatalog());
+						logInfo(`Re-attached to proxy daemon on http://${HOST}:${PORT} (stale kill did not free port)`);
+						return;
+					}
+				} else {
+					actualPort = PORT;
+					registerCatalog(getAliveCatalog());
+					logInfo(`Re-attached to proxy daemon on http://${HOST}:${PORT}`);
+					return;
+				}
 			}
 			if (PORT !== LEGACY_PORT && (await isProxyAlive(LEGACY_PORT))) {
-				actualPort = LEGACY_PORT;
-				registerCatalog(getAliveCatalog());
-				logInfo(`Re-attached to legacy proxy daemon on http://${HOST}:${LEGACY_PORT}`);
-				return;
+				const v = await getDaemonVersion(LEGACY_PORT);
+				if (v !== null && v !== PKG_VERSION) {
+					logWarn(`legacy proxy on :${LEGACY_PORT} is stale v${v} (need v${PKG_VERSION}) — replacing`, {
+						remoteVer: v,
+						expected: PKG_VERSION,
+					});
+					const killed = await killPortHolder(LEGACY_PORT);
+					if (killed) {
+						for (let i = 0; i < 10; i++) {
+							await new Promise<void>((r) => setTimeout(r, 200));
+							if (!(await isProxyAlive(LEGACY_PORT))) break;
+						}
+					}
+					if (await isProxyAlive(LEGACY_PORT)) {
+						actualPort = LEGACY_PORT;
+						registerCatalog(getAliveCatalog());
+						logInfo(`Re-attached to legacy proxy daemon on http://${HOST}:${LEGACY_PORT} (stale kill did not free port)`);
+						return;
+					}
+				} else {
+					actualPort = LEGACY_PORT;
+					registerCatalog(getAliveCatalog());
+					logInfo(`Re-attached to legacy proxy daemon on http://${HOST}:${LEGACY_PORT}`);
+					return;
+				}
 			}
 			const r = await startProxy();
 			if (r.server) server = r.server;

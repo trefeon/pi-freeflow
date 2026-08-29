@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { execSync } from "node:child_process";
 import * as http from "node:http";
 import * as https from "node:https";
 import { handleHealthRequest } from "./health.ts";
@@ -112,12 +113,69 @@ export function sanitizeHeaders(
 	return sanitized;
 }
 export async function isProxyAlive(port: number): Promise<boolean> {
+	if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
 	try {
 		const res = await fetch(`http://${HOST}:${port}/v1/models`, {
 			signal: AbortSignal.timeout(500),
 		});
 		const ct = res.headers.get("content-type") || "";
 		return res.ok && ct.includes("application/json");
+	} catch {
+		return false;
+	}
+}
+
+export async function getDaemonVersion(port: number): Promise<string | null> {
+	if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+	try {
+		const res = await fetch(`http://${HOST}:${port}/_health`, {
+			signal: AbortSignal.timeout(800),
+		});
+		if (!res.ok) return null;
+		const data: unknown = await res.json();
+		if (data && typeof data === "object" && "version" in data) {
+			const v = data.version;
+			if (typeof v === "string" && v) return v;
+		}
+		// Alive but no version field = pre-1.8.0 daemon (never embedded it) — stale.
+		return "";
+	} catch {
+		return null;
+	}
+}
+
+export async function killPortHolder(port: number): Promise<boolean> {
+	if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+	try {
+		if (process.platform === "win32") {
+			try {
+				const out = execSync(`netstat -ano | findstr :${port}`, { encoding: "utf8", timeout: 3000 }) as string;
+				for (const line of out.split("\n")) {
+					if (!line.includes("LISTENING")) continue;
+					if (!line.includes(`:${port}`)) continue;
+					const parts = line.trim().split(/\s+/);
+					const pid = parts[parts.length - 1];
+					if (!pid || !/^\d+$/.test(pid)) continue;
+					// Windows netstat report: 127.0.0.1:38180 ... LISTENING/PID
+					if (Number(pid) === process.pid) continue; // never self-kill
+					execSync(`taskkill /F /PID ${pid}`, { timeout: 3000, stdio: "ignore" });
+					return true;
+				}
+			} catch {}
+			return false;
+		}
+		try {
+			const out = execSync(`lsof -ti tcp:${port} 2>/dev/null || fuser -n tcp ${port} 2>/dev/null`, {
+				encoding: "utf8",
+				timeout: 3000,
+			}) as string;
+			const pid = out.trim().split(/\s+/)[0];
+			if (!pid || !/^\d+$/.test(pid)) return false;
+			execSync(`kill -9 ${pid}`, { timeout: 3000, stdio: "ignore" });
+			return true;
+		} catch {
+			return false;
+		}
 	} catch {
 		return false;
 	}
@@ -179,7 +237,7 @@ export function startProxy(
 			reqPathname = new URL(req.url ?? "/", `http://${HOST}`).pathname;
 		} catch {}
 		// Loopback-only health endpoint — always accessible even when widget hidden
-		if (req.method === "GET" && reqPathname !== null && (reqPathname === "/_health" || reqPathname === "/health" || reqPathname.endsWith("/health"))) {
+		if (req.method === "GET" && reqPathname !== null && (reqPathname === "/_health" || reqPathname === "/health")) {
 			const addr = server.address();
 			const realPort = addr && typeof addr === "object" ? (addr as { port: number }).port : basePort;
 			if (handleHealthRequest(req, res, realPort)) return;

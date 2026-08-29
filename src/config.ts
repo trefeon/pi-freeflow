@@ -6,7 +6,20 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import type { Upstream } from "./types.ts";
+
+// Package version — stale-daemon detection in the shared-port reuse path.
+let PKG_VERSION = "0.0.0";
+try {
+	const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "../package.json");
+	const raw: unknown = JSON.parse(readFileSync(pkgPath, "utf8"));
+	if (raw && typeof raw === "object" && "version" in raw) {
+		const v = raw.version;
+		if (typeof v === "string" && v) PKG_VERSION = v;
+	}
+} catch {}
+export { PKG_VERSION };
 
 // ── Upstream endpoints ──────────────────────────────────────────────
 export const UPSTREAM_OPENCODE = "https://opencode.ai/zen";

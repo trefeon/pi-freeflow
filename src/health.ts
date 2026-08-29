@@ -6,8 +6,7 @@
 import type * as http from "node:http";
 import { ALL_MODELS } from "./models.ts";
 import { getActiveRelayState, getRelayHealth, isRelayHealthy } from "./relay-state.ts";
-import { PORT } from "./config.ts";
-import { getClientIP } from "./proxy.ts";
+import { PKG_VERSION, PORT } from "./config.ts";
 
 export interface HealthRelayInfo {
 	url: string;
@@ -24,8 +23,8 @@ export interface HealthData {
 	enabled: boolean;
 	relays: HealthRelayInfo[];
 	catalog: number;
+	version: string;
 }
-
 /**
  * Collect current health snapshot.
  * @param portOverride - actual listening port (defaults to config PORT)
@@ -50,6 +49,7 @@ export function getHealthData(portOverride?: number): HealthData {
 		enabled: Boolean(state.enabled),
 		relays,
 		catalog: ALL_MODELS.length,
+		version: PKG_VERSION,
 	};
 }
 
@@ -76,13 +76,18 @@ export function handleHealthRequest(
 		return false;
 	}
 
-	const isHealthPath =
-		pathname === "/_health" || pathname === "/health" || pathname.endsWith("/health");
+	const isHealthPath = pathname === "/_health" || pathname === "/health";
 	if (req.method !== "GET" || !isHealthPath) {
 		return false;
 	}
 
-	const clientIP = getClientIP(req);
+	const sock: unknown = req.socket;
+	let rawIp = "";
+	if (sock && typeof sock === "object" && "remoteAddress" in sock) {
+		const v = sock.remoteAddress;
+		if (typeof v === "string") rawIp = v;
+	}
+	const clientIP = rawIp.startsWith("::ffff:") ? rawIp.slice(7) : rawIp;
 	if (!isLoopbackIP(clientIP)) {
 		const body = JSON.stringify({ error: "forbidden" });
 		res.writeHead(403, { "content-type": "application/json", "content-length": Buffer.byteLength(body) });
