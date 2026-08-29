@@ -39,6 +39,7 @@ pi-freeflow-relay-state.json
 devdocs/
 reference/
 HANDOFF.md
+IMPROVEMENTS-PLAN.md
 live-validate.mjs
 live-validation.md
 reproduce-*.js
