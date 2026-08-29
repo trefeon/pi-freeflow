@@ -85,13 +85,12 @@ export function sanitizeHeaders(
 	incoming: http.IncomingHttpHeaders,
 	targetHost: string,
 ): Record<string, string> {
-	// Positive allowlist: only headers the proxy is meant to relay. Everything
-	// else (host, cookie, x-forwarded-*, client x-relay-*) is dropped so a
-	// browser/extension cannot smuggle headers into the upstream request.
+	// authorization is deliberately NOT forwarded: the host provider registers
+	// with a dummy key (placeholder), and zen free models are keyless — sending
+	// that fake key upstream gets 401 Invalid API key. Kilo injects its own key.
 	const allowed: Record<string, true> = {
 		"content-type": true,
 		accept: true,
-		authorization: true,
 		"x-request-id": true,
 	};
 	const sanitized: Record<string, string> = {};

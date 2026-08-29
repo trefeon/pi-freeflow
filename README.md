@@ -1,6 +1,6 @@
 # pi-freeflow 🌊
 
-> **25 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.**
+> **28 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.**
 
 Thin by design: model list + dumb relay + log. Host `pi-ai` owns thinking, normalization & provider magic. We just make it free, fast, and unbreakable.
 
@@ -18,7 +18,7 @@ Join devs bypassing rate limits with their own relay pools. BYO, add as many as 
 
 | Feature | Description | Value | Cost |
 | :--- | :--- | :--- | :--- |
-| **25 Curated Free Models** | 7 OpenCode Zen + 18 KiloCode Gateway models, up to 1M context & 512K output | Ceiling Unlocked | **$0** |
+| **28 Curated Free Models** | 8 OpenCode Zen + 20 KiloCode Gateway models, up to 1M context & 512K output | Ceiling Unlocked | **$0** |
 | **BYO Relay Pool** | Round-robin load balancing across your Cloudflare Workers & Vercel Edges | Zero Rate Limits | **$0** (your free tiers) |
 | **Adaptive Health & Error Detection** | Auto-cooldown on 429 rate limits, 504 timeouts, and socket drops | 0ms Wasted Latency | **$0** |
 | **Stream Truncation Resilience** | Stateful SSE terminal tracking (`response.failed` / `response.incomplete` injection) | Zero Host Crashes | **$0** |
@@ -32,7 +32,7 @@ Philosophy: **Thin by design.** We only ship model list + relay proxy + log. Hos
 
 ---
 
-### 25 Curated Models, One Command
+### 28 Curated Models, One Command
 
 ```bash
 /model → freeflow → pick
@@ -324,7 +324,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
 src/
 ├── index.ts          # extension entry, lifecycle hooks
-├── models.ts         # 25-model catalog definitions
+├── models.ts         # 28-model catalog definitions
 ├── catalog.ts        # model catalog cache (24h disk)
 ├── proxy.ts          # local proxy server (127.0.0.1:28180)
 ├── relay.ts          # relay selection & round-robin

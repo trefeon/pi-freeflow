@@ -1,9 +1,9 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 25 verified free models:
- * - 7 OpenCode Zen models (1 Responses API + 6 Chat Completions)
- * - 18 KiloCode Keyless Gateway models (17 OpenRouter format + 1 Standard format)
+ * Defines the 28 verified free models:
+ * - 8 OpenCode Zen models (1 Responses API + 7 Chat Completions)
+ * - 20 KiloCode Keyless Gateway models (19 OpenRouter format + 1 Standard format)
  */
 
 import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
@@ -116,6 +116,22 @@ export const OPENCODE_MODELS: ModelDef[] = [
 		reasoning: true,
 		contextWindow: 262_144,
 		maxTokens: 32_768,
+		input: ["text"],
+		thinkingLevelMap: {
+			off: null,
+			minimal: "minimal",
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: null,},
+	},
+	{
+		id: "ling-3.0-flash-fin-free",
+		name: "Ling 3.0 Flash Fin (256K)",
+		reasoning: true,
+		contextWindow: 262_144,
+		maxTokens: 131_072,
 		input: ["text"],
 		thinkingLevelMap: {
 			off: null,
@@ -328,6 +344,26 @@ export const KILO_MODELS: ModelDef[] = [
 	thinkingFormat: "openrouter",
 	thinkingLevelMap: KILO_REASONING_MAP,
 },
+{
+	id: "thinkingmachines/inkling:free",
+	name: "Inkling (1M)",
+	reasoning: true,
+	contextWindow: 1_048_576,
+	maxTokens: 262_144,
+	input: ["text", "image"],
+	thinkingFormat: "openrouter",
+	thinkingLevelMap: KILO_REASONING_MAP,
+},
+{
+	id: "thinkingmachines/inkling-small:free",
+	name: "Inkling Small (1M)",
+	reasoning: true,
+	contextWindow: 1_048_576,
+	maxTokens: 262_144,
+	input: ["text", "image"],
+	thinkingFormat: "openrouter",
+	thinkingLevelMap: KILO_REASONING_MAP,
+},
 ];
 
 /**
@@ -352,6 +388,8 @@ export const MODEL_ALIASES: Record<string, string> = {
 	"minimax-m2.7": "minimax/minimax-m2.7:free",
 	"minimax-m3": "minimax/minimax-m3:free",
 	"ling-3.0-flash-fin": "inclusionai/ling-3.0-flash-fin:free",
+	"inkling": "thinkingmachines/inkling:free",
+	"inkling-small": "thinkingmachines/inkling-small:free",
 	// provider-prefixed short aliases (slash-normalized)
 	"hy3:free": "tencent/hy3:free",
 	"laguna-s-2.1:free": "poolside/laguna-s-2.1:free",
@@ -379,7 +417,7 @@ export const KILO_MODEL_IDS = new Set<string>([
 ]);
 
 /**
- * Combined list of all 25 static free models (canonical)
+ * Combined list of all 28 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS];
 

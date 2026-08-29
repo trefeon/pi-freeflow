@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **25 curated free models** across two upstream providers: **OpenCode Zen** and **KiloCode Gateway**.
+pi-freeflow provides unified access to **28 curated free models** across two upstream providers: **OpenCode Zen** and **KiloCode Gateway**.
 
 ## Upstream Protocol Distinction
 
@@ -11,17 +11,17 @@ pi-freeflow provides unified access to **25 curated free models** across two ups
 
 ### OpenCode Zen — Chat Completions (`/v1/chat/completions`)
 - **Endpoint**: `https://opencode.ai/zen/v1/chat/completions`
-- **Models**: 6 models (MiMo, Nemotron, Hy3, Laguna, Big Pickle, etc.)
+- **Models**: 7 models (MiMo, Nemotron, Hy3, Laguna, Big Pickle, Ling, etc.)
 - **Config**: `api: "openai-completions"`, supports reasoning effort
 
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: `Authorization: Bearer kilo-free` (keyless, 200 req/hr per IP)
-- **Models**: 18 models with OpenRouter-style thinking format
+- **Models**: 20 models with OpenRouter-style thinking format
 
-## 25 Model Specifications
+## 28 Model Specifications
 
-### OpenCode Zen (7 models)
+### OpenCode Zen (8 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -32,8 +32,9 @@ pi-freeflow provides unified access to **25 curated free models** across two ups
 | `nemotron-3-ultra-free` | 1,000,000 | 128,000 | minimal..xhigh | ❌ |
 | `hy3-free` | 262,144 | 128,000 | minimal..xhigh | ❌ |
 | `big-pickle` | 200,000 | 32,000 | high, max | ❌ |
+| `ling-3.0-flash-fin-free` | 262,144 | 131,072 | minimal..xhigh | ❌ |
 
-### KiloCode Gateway (18 models)
+### KiloCode Gateway (20 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -55,6 +56,8 @@ pi-freeflow provides unified access to **25 curated free models** across two ups
 | `minimax-m2.7` | 196,608 | 196,608 | OpenRouter | ❌ |
 | `minimax-m3` | 1,048,576 | 524,288 | OpenRouter | ❌ |
 | `ling-3.0-flash-fin` | 262,144 | 32,768 | OpenRouter | ❌ |
+| `inkling` | 1,048,576 | 262,144 | OpenRouter | ✅ |
+| `inkling-small` | 1,048,576 | 262,144 | OpenRouter | ✅ |
 
 \* MiMo collapses `minimal→low` and `xhigh→high` upstream — 5 labels, 3 effective effort values (low/medium/high).
 
@@ -62,5 +65,5 @@ pi-freeflow provides unified access to **25 curated free models** across two ups
 
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :--- | :--- | :--- | :--- |
-| **OpenCode Zen** | 7 | `opencode.ai` | `/zen/v1/responses` (1) + `/zen/v1/chat/completions` (6) | Browser fingerprinting |
-| **KiloCode Gateway** | 18 | `api.kilo.ai` | `/api/gateway/chat/completions` | `Bearer kilo-free` |
+| **OpenCode Zen** | 8 | `opencode.ai` | `/zen/v1/responses` (1) + `/zen/v1/chat/completions` (7) | Browser fingerprinting |
+| **KiloCode Gateway** | 20 | `api.kilo.ai` | `/api/gateway/chat/completions` | `Bearer kilo-free` |

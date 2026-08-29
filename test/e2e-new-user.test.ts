@@ -2,7 +2,7 @@
  * Comprehensive End-to-End (E2E) Test Suite: New User Lifecycle & System Contracts
  *
  * Covers:
- * 1. Fresh bootstrap & provider registration (25 models on default port 28180)
+ * 1. Fresh bootstrap & provider registration (28 models on default port 28180)
  * 2. CLI exit safety (server.unref() allows installer/CLI commands to exit cleanly)
  * 3. Multi-session daemon reuse (zero-duplicate single-port architecture)
  * 4. Legacy migration & dual-probe backward compatibility (18080 fallback)
@@ -58,7 +58,7 @@ import type {
 
 // ── 1. Fresh Bootstrap & Static Catalog Registration ─────────────────────────
 
-test("E2E [1/10] fresh new user bootstrap registers 25 models with zero-latency catalog", async () => {
+test("E2E [1/10] fresh new user bootstrap registers 28 models with zero-latency catalog", async () => {
 	let registeredProviderName = "";
 	let registeredProviderConfig: ProviderConfig | undefined;
 	const registeredCommands: Record<string, Omit<RegisteredCommand, "name">> = {};

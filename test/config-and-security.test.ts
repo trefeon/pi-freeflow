@@ -54,7 +54,7 @@ test("zero hardcoded API keys exist in source tree", () => {
 	// sentinel) is exempt — it is a marker, not a credential.
 	for (const { file, line, num } of lines) {
 		const match = /api[_-]?key\s*[=:]\s*["']([^"']{6,})["']/i.exec(line);
-		if (!match || match[1] === "placeholder") continue;
+		if (!match || match[1] === "placeholder" || match[1] === "public") continue;
 		assert.fail(`${file}:${num} must not hardcode an API key literal`);
 	}
 

@@ -116,7 +116,7 @@ test("sanitizeHeaders forwards only allowlisted headers", () => {
 	);
 	assert.equal(fwd["content-type"], "application/json");
 	assert.equal(fwd.accept, "application/json");
-	assert.equal(fwd.authorization, "Bearer client-token");
+	assert.equal(fwd.authorization, undefined, "client authorization must be stripped (zen free models are keyless)");
 	assert.equal(fwd["x-request-id"], "req-123");
 	// Client x-opencode-* headers pass the allowlist but are replaced by the
 	// proxy's own generated headers (opencodeHeaders wins, no duplicates).
