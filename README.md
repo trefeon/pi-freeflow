@@ -43,12 +43,12 @@ Optimized for deep reasoning, long-horizon coding & autonomous agentic workflows
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `muse-spark-1.2-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal / low / medium / high / xhigh / max` | ✅ |
-| `mimo-v2.5-free` | Xiaomi MiMo | **1M** (1.048.576) | **131K** (131.072) | `low / medium / high` | ✅ |
-| `laguna-s-2.1-free` | Poolside | **1M** (1.048.576) | **131K** (131.072) | `low / high / max` | ❌ |
-| `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `low / high / max` | ❌ |
-| `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `low / high / max` | ❌ |
-| `hy3-free` | Tencent Hunyuan | **262K** (262.144) | **262K** (262.144) | `low / high / max` | ❌ |
+| `muse-spark-1.2-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
+| `mimo-v2.5-free` | Xiaomi MiMo | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh`\* | ✅ |
+| `laguna-s-2.1-free` | Poolside | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ❌ |
+| `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `minimal … xhigh` | ❌ |
+| `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `minimal … xhigh` | ❌ |
+| `hy3-free` | Tencent Hunyuan | **262K** (262.144) | **262K** (262.144) | `minimal … xhigh` | ❌ |
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 
 #### KiloCode Gateway (14 Models), OpenRouter Compatible
@@ -60,9 +60,9 @@ Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI alia
 | `step-3.7-flash` (`stepfun/...:free`) | StepFun | **262K** (262.144) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
 | `nemotron-3-nano-omni` (`nvidia/...:free`) | NVIDIA | **256K** (256.000) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
 | `nemotron-3-ultra-550b` (`nvidia/...:free`) | NVIDIA | **1M** (1.000.000) | **65K** (65.536) | `minimal…xhigh`\* | ❌ |
-| `nvidia/nemotron-3.5-lightning:free` | NVIDIA | **1M** (1.000.000) | **131K** (131.072) | `minimal…xhigh`\* | ❌ |
+| `nvidia/nemotron-3.5-lightning:free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `minimal…xhigh`\* | ❌ |
 | `nemotron-3-super` (`nvidia/...:free`) | NVIDIA | **262K** (262.144) | **262K** (262.144) | `minimal…xhigh`\* | ❌ |
-| `hy3:free` (`tencent/hy3:free`) | Tencent Hunyuan | **262K** (262.144) | **262K** (262.144) | ❌ *(none sent)* | ❌ |
+| `hy3:free` (`tencent/hy3:free`) | Tencent Hunyuan | **262K** (262.144) | **262K** (262.144) | `minimal…xhigh`\* | ❌ |
 | `north-mini-code` (`cohere/...:free`) | Cohere | **256K** (256.000) | **64K** (64.000) | `minimal…xhigh`\* | ❌ |
 | `laguna-s-2.1:free` (`poolside/...:free`) | Poolside | **1M** (1.048.576) | **131K** (131.072) | `minimal…xhigh`\* | ❌ |
 | `laguna-xs-2.1:free` (`poolside/...:free`) | Poolside | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
@@ -71,7 +71,7 @@ Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI alia
 | `openrouter` (`openrouter/free`) | OpenRouter Free | **200K** (200.000) | **65K** (65.536) | ❌ *(non-thinking)* | ✅ |
 | `content-safety` (`nvidia/...:free`) | NVIDIA | **128K** (128.000) | **8K** (8.192) | ❌ *(non-thinking)* | ✅ |
 
-\* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. hy3 accepts no reasoning parameter today.
+\* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. (Verified live 2026-08-29: hy3 accepts flat `reasoning_effort`/nested `reasoning` and returns thinking — README previously said otherwise.) MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.
 
 ---
 

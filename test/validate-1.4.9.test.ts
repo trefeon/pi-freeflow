@@ -27,8 +27,9 @@ test("aliases deduplicated and wrong removed", () => {
   assert.equal(resolveCanonicalModelId("qwen3-coder-480b-free"), "qwen3-coder-480b-free");
   assert.equal(resolveCanonicalModelId("dots-3-note-preview:free"), "dots-3-note-preview:free");
   assert.equal(resolveCanonicalModelId("dots-3-note-preview"), "dots-studio/dots-3-note-preview:free");
+  assert.equal(resolveCanonicalModelId("nemotron-3.5-lightning"), "nvidia/nemotron-3.5-lightning:free");
   assert.equal(isKiloModel("dots-3-note-preview"), true);
-  assert.equal(Object.keys(MODEL_ALIASES).length, 13);
+  assert.equal(Object.keys(MODEL_ALIASES).length, 14);
 });
 
 test("log rotation 10MB x10", () => {

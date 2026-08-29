@@ -87,6 +87,8 @@ test("model aliases resolve correctly to canonical IDs", () => {
 	assert.equal(resolveCanonicalModelId("step-3.7-flash"), "stepfun/step-3.7-flash:free");
 	assert.equal(resolveCanonicalModelId("dots-3-note-preview"), "dots-studio/dots-3-note-preview:free");
 	assert.equal(resolveCanonicalModelId("north-mini-code"), "cohere/north-mini-code:free");
+	assert.equal(resolveCanonicalModelId("nemotron-3.5-lightning"), "nvidia/nemotron-3.5-lightning:free");
+	assert.equal(resolveCanonicalModelId("nemotron-3.5-lightning:free"), "nemotron-3.5-lightning:free");
 	// removed wrong cross-lab aliases must no longer resolve
 	assert.equal(resolveCanonicalModelId("claude-sonnet-4.5-contributor-free"), "claude-sonnet-4.5-contributor-free");
 	assert.equal(resolveCanonicalModelId("minimax-m2.1-free"), "minimax-m2.1-free");
@@ -102,4 +104,32 @@ test("model aliases resolve correctly to canonical IDs", () => {
 
 	const allRegistered = getAllRegisteredModels();
 	assert.equal(allRegistered.length, ALL_MODELS.length);
+});
+
+test("every reasoning model declares a thinkingLevelMap so the picker is lockable", () => {
+	// Without a map the host falls back to guessing effort labels. Each
+	// reasoning model must declare its own map (or share the Kilo map).
+	for (const m of ALL_MODELS) {
+		if (!m.reasoning) continue;
+		assert.ok(
+			m.thinkingLevelMap,
+			`${m.id} reasoning:true must declare thinkingLevelMap`,
+		);
+		// off must hide (null), and at least one real level must be visible
+		assert.equal(m.thinkingLevelMap!.off, null, `${m.id}: off must hide`);
+		const visible = Object.entries(m.thinkingLevelMap!).filter(
+			([k, v]) => v !== null && k !== "off",
+		);
+		assert.ok(visible.length > 0, `${m.id} must expose at least one level`);
+		for (const [label, value] of visible) {
+			assert.equal(typeof value, "string", `${m.id}.${label} must map to a string`);
+		}
+	}
+});
+
+test("every non-reasoning model stays plain (no thinkingLevelMap)", () => {
+	for (const m of ALL_MODELS) {
+		if (m.reasoning) continue;
+		assert.equal(m.thinkingLevelMap, undefined, `${m.id} non-reasoning must not declare a map`);
+	}
 });

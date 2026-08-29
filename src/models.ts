@@ -6,7 +6,7 @@
  * - 14 KiloCode Keyless Gateway models (10 OpenRouter format + 4 Standard format)
  */
 
-import type { ModelDef, Upstream } from "./types.ts";
+import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
 
 /**
  * OpenCode Zen free models verified against the live catalog and inference APIs.
@@ -129,6 +129,23 @@ export const OPENCODE_MODELS: ModelDef[] = [
 ];
 
 /**
+ * Shared effort map for Kilo reasoning models — verified live 2026-08-29:
+ * gateway accepts flat reasoning_effort minimal..xhigh for every reasoning
+ * model; stepfun/step-3.7-flash measured monotonic 77→313 thinking chars
+ * across minimal→xhigh. Declaring the map locks the picker (instead of
+ * host guessing) and matches the OpenCode-model pattern.
+ */
+const KILO_REASONING_MAP: ThinkingLevelMap = {
+	off: null,
+	minimal: "minimal",
+	low: "low",
+	medium: "medium",
+	high: "high",
+	xhigh: "xhigh",
+	max: null,
+};
+
+/**
  * KiloCode Gateway free models (keyless — https://kilo.ai/docs/gateway).
  * Endpoint: https://api.kilo.ai/api/gateway/chat/completions
  */
@@ -141,6 +158,7 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 512_000,
 		input: ["text", "image"],
 		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "stepfun/step-3.7-flash:free",
@@ -150,6 +168,7 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 262_144,
 		input: ["text", "image"],
 		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
@@ -159,6 +178,7 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 65_536,
 		input: ["text", "image"],
 		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "nvidia/nemotron-3-ultra-550b-a55b:free",
@@ -168,6 +188,7 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 65_536,
 		input: ["text"],
 		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "nvidia/nemotron-3.5-lightning:free",
@@ -177,6 +198,7 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 262_144,
 		input: ["text"],
 		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "nvidia/nemotron-3-super-120b-a12b:free",
@@ -186,6 +208,7 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 262_144,
 		input: ["text"],
 		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "tencent/hy3:free",
@@ -195,6 +218,7 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 262_144,
 		input: ["text"],
 		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "cohere/north-mini-code:free",
@@ -204,6 +228,7 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 64_000,
 		input: ["text"],
 		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "poolside/laguna-s-2.1:free",
@@ -213,6 +238,7 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 131_072,
 		input: ["text"],
 		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "poolside/laguna-xs-2.1:free",
@@ -222,6 +248,7 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 32_768,
 		input: ["text"],
 		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "liquid/lfm-2.5-2.6b:free",
@@ -231,6 +258,7 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 32_768,
 		input: ["text"],
 		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "kilo-auto/free",
@@ -271,6 +299,7 @@ export const MODEL_ALIASES: Record<string, string> = {
 	"step-3.7-flash": "stepfun/step-3.7-flash:free",
 	"nemotron-3-nano-omni": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
 	"nemotron-3-ultra-550b": "nvidia/nemotron-3-ultra-550b-a55b:free",
+	"nemotron-3.5-lightning": "nvidia/nemotron-3.5-lightning:free",
 	"nemotron-3-super": "nvidia/nemotron-3-super-120b-a12b:free",
 	"north-mini-code": "cohere/north-mini-code:free",
 	"lfm-2.5": "liquid/lfm-2.5-2.6b:free",
