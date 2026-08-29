@@ -123,33 +123,64 @@ Manage your relay pool directly from the OMP / Pi terminal:
 
 ### Quick Start in 30 Seconds
 
-#### 1. Install
-
-**Oh My Pi (Recommended):**
+**On Oh My Pi (OMP):**
 ```bash
 omp plugin install pi-freeflow
-# or local dev
+# or local dev (repo checkout)
 omp plugin link /path/to/pi-freeflow
 ```
 
-**Pi:**
+**On Pi:**
 ```bash
 pi install npm:pi-freeflow
 ```
 
+> Both commands fetch the **same npm package** from the registry — pi-freeflow
+> is an extension loaded by the host, not a standalone CLI. It works on **OMP
+> and Pi only** (they share the extension API).
+
 #### 2. Pick a Model
 
+**OMP — interactive:**
 ```bash
 omp
 /model → freeflow → muse-spark-1.2-contributor-free (1M) → max
-
-# or CLI
-omp -p --model freeflow/muse-spark-1.2-contributor-free "build me a SaaS"
-# or with short alias & thinking level
-omp -p --model freeflow/step-3.7-flash:high "solve this bug"
 ```
 
-#### 3. Add Your Free Relays (Scale Infinitely)
+**OMP — one-shot CLI:**
+```bash
+omp -p --model freeflow/muse-spark-1.2-contributor-free "build me a SaaS"
+omp -p --model freeflow/step-3.7-flash:high "solve this bug"   # alias + thinking level
+```
+
+**Pi — interactive:**
+```bash
+pi
+/model → freeflow → pick
+```
+
+**Pi — one-shot CLI:**
+```bash
+pi -p --model freeflow/step-3.7-flash:high "solve this bug"
+```
+
+> Model IDs accept a full canonical ID, a short alias (see the tables above),
+> and an optional `:effort` suffix (`:minimal` … `:xhigh`, `:max` where
+> supported). The host resolves the rest — you only type `freeflow/<name>`.
+
+#### 3. Manage Your Relay Pool (OMP & Pi both)
+
+```bash
+/freeflow status     # active relay, pool status, candidates
+/freeflow list       # relays with health badges
+/freeflow add <url> [label]
+/freeflow deploy     # guided deploy: vercel|cloudflare|deno
+/freeflow logs [n]   # tail proxy logs
+```
+
+These slash commands work **identically in OMP and Pi** — the extension
+registers the same `/freeflow` command set in both hosts.
+#### 4. Add Your Free Relays (Scale Infinitely)
 
 Default ships direct. Add relays via `/freeflow add <url> [label]`.
 
