@@ -231,7 +231,7 @@ Log rotation at 10MB. Clean, parseable, real-time HTTP lifecycle tracking.
 
 This package stays thin. It ships three things: a model catalog, a relay proxy, and a log. There is no build step. The only runtime dependency is `undici`, which powers the upstream fetch agent. Thinking and prompt normalization stay with the host (`pi-ai`).
 
-Current size: about 11.3k lines including tests. 228 tests pass, typecheck clean.
+Current size: about 11.3k lines including tests. 230 tests pass, typecheck clean.
 
 ---
 
@@ -251,6 +251,18 @@ Deleted in 1.3.0. If zai/qwen/deepseek thinking broke before, it's fixed now bec
 
 **Why is context free?**
 We use OpenCode Zen & Kilo free tiers. You pay only with your own Cloudflare/Vercel free tiers for egress.
+**Why is it installed via npm?**
+The npm package is the **distribution channel** only — both hosts resolve it internally:
+`omp plugin install pi-freeflow` and `pi install npm:pi-freeflow` install the same
+package from the npm registry. pi-freeflow is an **extension, not a standalone CLI** —
+the host (OMP or Pi) loads and runs it. A plain `npm install` just downloads the
+files; it is not a supported way to run the extension.
+
+**Which hosts can use it?**
+Oh My Pi (OMP) and Pi only. They share the same extension API
+(`extensions/index.ts` declares both `omp` and `pi` extension entries), so one
+package serves both. Other AI agents (OpenCode, KiloCode, Cursor, ...) have their
+own plugin systems and do not load this extension.
 
 ---
 
