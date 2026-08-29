@@ -269,13 +269,19 @@ Current size: about 11.3k lines including tests. 230 tests pass, typecheck clean
 ### FAQ
 
 **Do I need API keys?**
-No. Kilo uses `Bearer kilo-free`, OpenCode uses `opencodeHeaders()`.
+No. Kilo uses `Bearer kilo-free`, OpenCode free models are anonymous (no header needed).
 
 **What if all relays are 429?**
 Proxy tries direct. If that is also 429, Pi shows the rate limit. That number is the global upstream cap; without relays you would hit the same wall.
 
 **Can I use without relays?**
 Yes. `/freeflow off` → direct. Add relays later to scale.
+
+**What happens when I update to a new version?**
+The local proxy daemon is shared across sessions on port 28180. On upgrade, the new extension
+detects a stale daemon (mismatched internal version) and replaces it automatically — no manual
+kill, no restart of other sessions required. If an old daemon cannot be replaced (e.g. port held
+by an unrelated process), it falls back to reusing it with a warning.
 
 **Where's the normalizer?**
 Deleted in 1.3.0. If zai/qwen/deepseek thinking broke before, it's fixed now because host handles it.

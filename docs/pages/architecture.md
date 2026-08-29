@@ -53,7 +53,8 @@ When OMP dispatches parallel subagents, each spawns a child process. Rather than
 2. **Worker Reuse**: If the probe succeeds, the process reuses the existing master daemon — 0ms startup overhead.
 3. **Master Daemon**: If the probe fails, the process binds port 28180 and becomes the master proxy.
 4. **Race Guard**: Concurrent bind attempts on 28180 are handled gracefully — the loser re-probes and attaches to the winner.
-5. **Teardown**: Only the master process closes the HTTP listener on `session_shutdown`; workers exit cleanly.
+5. **Stale-Daemon Heal**: On upgrade, an existing daemon may run older code (e.g. before an auth or routing fix). The health endpoint reports the daemon's internal version; if it mismatches the running package, the new session replaces the stale holder and binds fresh code — no manual kill or full host restart needed.
+6. **Teardown**: Only the master process closes the HTTP listener on `session_shutdown`; workers exit cleanly.
 
 ## Atomic Disk Catalog Cache
 
