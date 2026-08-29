@@ -11,11 +11,11 @@ import { resetAllRelayHealth, setActiveRelayState } from "../src/relay-state.ts"
 import type { RelayState } from "../src/types.ts";
 import { ALL_MODELS } from "../src/models.ts";
 
-test("thin-provider lock: 21 models catalog intact", () => {
+test("thin-provider lock: 25 models catalog intact", () => {
 	const alive = getAliveCatalog();
-	assert.equal(alive.length, 21, "catalog must be 21 (7 opencode + 14 kilo)");
-	assert.equal(new Set(alive.map((m) => m.id)).size, 21);
-	assert.equal(ALL_MODELS.length, 21);
+	assert.equal(alive.length, 25, "catalog must be 25 (7 opencode + 18 kilo)");
+	assert.equal(new Set(alive.map((m) => m.id)).size, 25);
+	assert.equal(ALL_MODELS.length, 25);
 });
 
 test("thin-provider lock: isRetriableStatus regression lock (429 rolls, 400/500 do not)", () => {
@@ -34,12 +34,12 @@ test("thin-provider lock: proxy /v1/models pathname guard (no ?query leak)", asy
 		const res = await fetch(`http://127.0.0.1:${effectivePort}/v1/models`);
 		assert.equal(res.status, 200);
 		const json = (await res.json()) as { data: Array<{ id: string }> };
-		assert.equal(json.data.length, 21);
+		assert.equal(json.data.length, 25);
 
 		const qRes = await fetch(`http://127.0.0.1:${effectivePort}/v1/models?foo=bar`);
-		assert.equal(qRes.status, 200, "query variant must be guarded to 200 with 21");
+		assert.equal(qRes.status, 200, "query variant must be guarded to 200 with 25");
 		const qJson = (await qRes.json()) as { data: Array<{ id: string }> };
-		assert.equal(qJson.data.length, 21, "query variant must not leak paid models");
+		assert.equal(qJson.data.length, 25, "query variant must not leak paid models");
 	} finally {
 		if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
 	}

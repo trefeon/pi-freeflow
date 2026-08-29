@@ -50,12 +50,12 @@ test("1M context window models are properly configured", () => {
 	const oneMillionModels = [
 		"muse-spark-1.2-contributor-free",
 		"mimo-v2.5-free",
-		"laguna-s-2.1-free",
-		"poolside/laguna-s-2.1:free",
 		"nemotron-3.5-lightning-free",
 		"nemotron-3-ultra-free",
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
+		"meituan/longcat-2.0-free",
+		"minimax/minimax-m3:free",
 	];
 
 	for (const id of oneMillionModels) {

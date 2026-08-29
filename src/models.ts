@@ -1,9 +1,9 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 21 verified free models:
+ * Defines the 25 verified free models:
  * - 7 OpenCode Zen models (1 Responses API + 6 Chat Completions)
- * - 14 KiloCode Keyless Gateway models (10 OpenRouter format + 4 Standard format)
+ * - 18 KiloCode Keyless Gateway models (17 OpenRouter format + 1 Standard format)
  */
 
 import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
@@ -51,7 +51,7 @@ export const OPENCODE_MODELS: ModelDef[] = [
 		name: "Hy3 (262K)",
 		reasoning: true,
 		contextWindow: 262_144,
-		maxTokens: 262_144,
+		maxTokens: 128_000,
 		input: ["text"],
 		thinkingLevelMap: {
 			off: null,
@@ -112,10 +112,10 @@ export const OPENCODE_MODELS: ModelDef[] = [
 	},
 	{
 		id: "laguna-s-2.1-free",
-		name: "Laguna S 2.1 (1M)",
+		name: "Laguna S 2.1 (256K)",
 		reasoning: true,
-		contextWindow: 1_048_576,
-		maxTokens: 131_072,
+		contextWindow: 262_144,
+		maxTokens: 32_768,
 		input: ["text"],
 		thinkingLevelMap: {
 			off: null,
@@ -175,7 +175,7 @@ export const KILO_MODELS: ModelDef[] = [
 		name: "Nemotron 3 Nano Omni",
 		reasoning: true,
 		contextWindow: 256_000,
-		maxTokens: 65_536,
+		maxTokens: 131_072,
 		input: ["text", "image"],
 		thinkingFormat: "openrouter",
 		thinkingLevelMap: KILO_REASONING_MAP,
@@ -185,7 +185,7 @@ export const KILO_MODELS: ModelDef[] = [
 		name: "Nemotron 3 Ultra 550B (1M)",
 		reasoning: true,
 		contextWindow: 1_000_000,
-		maxTokens: 65_536,
+		maxTokens: 128_000,
 		input: ["text"],
 		thinkingFormat: "openrouter",
 		thinkingLevelMap: KILO_REASONING_MAP,
@@ -215,7 +215,7 @@ export const KILO_MODELS: ModelDef[] = [
 		name: "Tencent Hy3 (Kilo)",
 		reasoning: true,
 		contextWindow: 262_144,
-		maxTokens: 262_144,
+		maxTokens: 128_000,
 		input: ["text"],
 		thinkingFormat: "openrouter",
 		thinkingLevelMap: KILO_REASONING_MAP,
@@ -234,8 +234,8 @@ export const KILO_MODELS: ModelDef[] = [
 		id: "poolside/laguna-s-2.1:free",
 		name: "Laguna S 2.1 (Kilo)",
 		reasoning: true,
-		contextWindow: 1_048_576,
-		maxTokens: 131_072,
+		contextWindow: 262_144,
+		maxTokens: 32_768,
 		input: ["text"],
 		thinkingFormat: "openrouter",
 		thinkingLevelMap: KILO_REASONING_MAP,
@@ -254,7 +254,7 @@ export const KILO_MODELS: ModelDef[] = [
 		id: "liquid/lfm-2.5-2.6b:free",
 		name: "Liquid LFM 2.5",
 		reasoning: true,
-		contextWindow: 128_000,
+		contextWindow: 65_536,
 		maxTokens: 32_768,
 		input: ["text"],
 		thinkingFormat: "openrouter",
@@ -263,18 +263,22 @@ export const KILO_MODELS: ModelDef[] = [
 	{
 		id: "kilo-auto/free",
 		name: "Kilo Auto",
-		reasoning: false,
+		reasoning: true,
 		contextWindow: 256_000,
 		maxTokens: 10_000,
 		input: ["text"],
+		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "openrouter/free",
 		name: "OpenRouter Auto",
-		reasoning: false,
+		reasoning: true,
 		contextWindow: 200_000,
 		maxTokens: 65_536,
 		input: ["text", "image"],
+		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
 		id: "nvidia/nemotron-3.5-content-safety:free",
@@ -284,6 +288,46 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 8_192,
 		input: ["text", "image"],
 	},
+{
+	id: "meituan/longcat-2.0-free",
+	name: "LongCat 2.0 (1M)",
+	reasoning: true,
+	contextWindow: 1_048_756,
+	maxTokens: 262_144,
+	input: ["text"],
+	thinkingFormat: "openrouter",
+	thinkingLevelMap: KILO_REASONING_MAP,
+},
+{
+	id: "minimax/minimax-m2.7:free",
+	name: "MiniMax M2.7 (free)",
+	reasoning: true,
+	contextWindow: 196_608,
+	maxTokens: 196_608,
+	input: ["text"],
+	thinkingFormat: "openrouter",
+	thinkingLevelMap: KILO_REASONING_MAP,
+},
+{
+	id: "minimax/minimax-m3:free",
+	name: "MiniMax M3 (free)",
+	reasoning: true,
+	contextWindow: 1_048_576,
+	maxTokens: 524_288,
+	input: ["text"],
+	thinkingFormat: "openrouter",
+	thinkingLevelMap: KILO_REASONING_MAP,
+},
+{
+	id: "inclusionai/ling-3.0-flash-fin:free",
+	name: "Ling 3.0 Flash Fin",
+	reasoning: true,
+	contextWindow: 262_144,
+	maxTokens: 32_768,
+	input: ["text"],
+	thinkingFormat: "openrouter",
+	thinkingLevelMap: KILO_REASONING_MAP,
+},
 ];
 
 /**
@@ -304,6 +348,10 @@ export const MODEL_ALIASES: Record<string, string> = {
 	"north-mini-code": "cohere/north-mini-code:free",
 	"lfm-2.5": "liquid/lfm-2.5-2.6b:free",
 	"content-safety": "nvidia/nemotron-3.5-content-safety:free",
+	"longcat-2.0": "meituan/longcat-2.0-free",
+	"minimax-m2.7": "minimax/minimax-m2.7:free",
+	"minimax-m3": "minimax/minimax-m3:free",
+	"ling-3.0-flash-fin": "inclusionai/ling-3.0-flash-fin:free",
 	// provider-prefixed short aliases (slash-normalized)
 	"hy3:free": "tencent/hy3:free",
 	"laguna-s-2.1:free": "poolside/laguna-s-2.1:free",
@@ -331,7 +379,7 @@ export const KILO_MODEL_IDS = new Set<string>([
 ]);
 
 /**
- * Combined list of all 21 static free models (canonical)
+ * Combined list of all 25 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS];
 

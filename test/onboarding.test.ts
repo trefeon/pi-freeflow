@@ -103,7 +103,7 @@ test("first run notifies once and persists the flag; later sessions stay silent"
 		);
 		assert.match(
 			notifyMessages[0],
-			/^freeflow ready: 21 free models via local proxy 127\.0\.0\.1:28180\. /,
+			/^freeflow ready: 25 free models via local proxy 127\.0\.0\.1:28180\. /,
 			"welcome must announce the local proxy",
 		);
 		assert.match(

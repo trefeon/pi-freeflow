@@ -34,7 +34,7 @@ import type {
 export const DEAD_MODEL_IDS = new Set<string>(["deepseek-v4-flash-free", "x-preview-f-free"]);
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 21 verified models for 0ms instant availability.
+ * Initialized with all 25 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
 	...m,
@@ -328,6 +328,6 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 	} catch (err) {
 		logDebug("Failed reading stale catalog cache", { error: String(err) });
 	}
-	// No valid cache — return in-memory static 21 (host will refresh if needed)
+	// No valid cache — return in-memory static 25 (host will refresh if needed)
 	return aliveCatalog;
 }
