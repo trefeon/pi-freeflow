@@ -34,17 +34,21 @@ interface RunResult {
 }
 
 const home = mkdtempSync(path.join(tmpdir(), "ff-cmd-"));
-mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
+mkdirSync(home, { recursive: true });
 process.env.USERPROFILE = home;
 process.env.HOME = home;
 
-// Dynamic import is mandatory here despite the no-dynamic-import rule: static
-// ESM imports hoist and evaluate src/ BEFORE the USERPROFILE override above,
-// leaking every path constant to the real ~/.pi/agent. This driver exists
-// precisely to exercise that module-loading boundary in isolation.
+// Re-root every data path into this temp home BEFORE importing src/ (paths are
+// resolved at module evaluation). Dynamic import is mandatory here despite the
+// no-dynamic-import rule: static ESM imports hoist and evaluate src/ BEFORE the
+// override above, leaking every path constant to the real ~/.pi/agent. This
+// driver exists precisely to exercise that module-loading boundary in
+// isolation.
+const config = await import("../src/config.ts");
+process.env[config.DATA_DIR_ENV] = home;
 const { createCommandSpec } = await import("../src/commands.ts");
 
-const stateFile = path.join(home, ".pi", "agent", "pi-freeflow-relay-state.json");
+const stateFile = config.RELAY_STATE_FILE;
 
 function makeCtx(script: Script = {}) {
 	const msgs: Array<{ level: string; text: string }> = [];

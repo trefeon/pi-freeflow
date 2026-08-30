@@ -262,7 +262,7 @@ Log rotation at 10MB. Clean, parseable, real-time HTTP lifecycle tracking.
 
 This package stays thin. It ships three things: a model catalog, a relay proxy, and a log. There is no build step. The only runtime dependency is `undici`, which powers the upstream fetch agent. Thinking and prompt normalization stay with the host (`pi-ai`).
 
-Current size: about 11.3k lines including tests. 230 tests pass, typecheck clean.
+Current size: about 11.3k lines including tests. The full suite (sandboxed, mocked network) and typecheck pass before every release — see CHANGELOG.md.
 
 ---
 
@@ -320,7 +320,7 @@ cd pi-freeflow
 pnpm install
 
 # run all three before opening a PR
-pnpm test        # 228 tests across 30 test files
+pnpm test        # full suite; sandboxed + network-mocked
 pnpm typecheck   # tsc --noEmit, must pass clean
 pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```

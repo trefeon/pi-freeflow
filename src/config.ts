@@ -95,10 +95,19 @@ export const STRIP_HEADERS = new Set([
 	"proxy-authorization",
 ]);
 
-// ── File Path Resolvers ─────────────────────────────────────────────
+/** Env override that re-roots ALL pi-freeflow data files (tests/CI sandbox).
+ *  Unset → ~/.pi/agent. */
+export const DATA_DIR_ENV = "PI_FREEFLOW_DATA_DIR";
+
+function dataDirOverride(): string | null {
+	const d = process.env[DATA_DIR_ENV];
+	return typeof d === "string" && d.trim() !== "" ? d : null;
+}
 
 export function resolveRelayStatePath(): string {
 	try {
+		const override = dataDirOverride();
+		if (override) return path.join(override, "pi-freeflow-relay-state.json");
 		return path.join(homedir(), ".pi", "agent", "pi-freeflow-relay-state.json");
 	} catch {
 		return path.join(
@@ -111,6 +120,8 @@ export function resolveRelayStatePath(): string {
 
 export function resolveLogFilePath(): string {
 	try {
+		const override = dataDirOverride();
+		if (override) return path.join(override, "pi-freeflow.log");
 		return path.join(homedir(), ".pi", "agent", "pi-freeflow.log");
 	} catch {
 		return path.join(
@@ -123,6 +134,8 @@ export function resolveLogFilePath(): string {
 
 export function resolveCatalogCachePath(): string {
 	try {
+		const override = dataDirOverride();
+		if (override) return path.join(override, "pi-freeflow-catalog-cache.json");
 		return path.join(
 			homedir(),
 			".pi",
@@ -140,6 +153,8 @@ export function resolveCatalogCachePath(): string {
 
 export function resolveDebugStatePath(): string {
 	try {
+		const override = dataDirOverride();
+		if (override) return path.join(override, "pi-freeflow-debug.json");
 		return path.join(homedir(), ".pi", "agent", "pi-freeflow-debug.json");
 	} catch {
 		return path.join(
@@ -152,6 +167,8 @@ export function resolveDebugStatePath(): string {
 
 export function resolveUpdateCachePath(): string {
 	try {
+		const override = dataDirOverride();
+		if (override) return path.join(override, "pi-freeflow-update.json");
 		return path.join(homedir(), ".pi", "agent", "pi-freeflow-update.json");
 	} catch {
 		return path.join(
@@ -164,6 +181,8 @@ export function resolveUpdateCachePath(): string {
 
 export function resolveOnboardedFlagPath(): string {
 	try {
+		const override = dataDirOverride();
+		if (override) return path.join(override, "pi-freeflow-onboarded");
 		return path.join(homedir(), ".pi", "agent", "pi-freeflow-onboarded");
 	} catch {
 		return path.join(

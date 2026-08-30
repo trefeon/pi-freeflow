@@ -1,0 +1,59 @@
+# Changelog
+
+All notable changes to pi-freeflow. Public, user-visible behavior only.
+
+## 1.9.0 - 2026-08-30
+
+### Development hardening
+- Test suite now runs fully sandboxed: every test uses a temporary data directory, so no test can ever write to your real `~/.pi/agent/` files or interfere with a running local proxy. A single env override (`PI_*_DATA_DIR`) re-roots all data files for tests/CI.
+- Added a complete mocked user-flow e2e suite: fresh install → onboarding → proxy health → direct chat → relay add/roll/fallback → guided deploy → update check → command surface — all deterministic, zero network.
+- Docs: test counts no longer hardcoded in README (they drifted with releases); release history tracked here.
+
+## 1.8.2 - 2026-08-30
+
+### Fixes & polish
+- Deploy: compare-and-swap on concurrent deployments (no duplicate relays when two sessions deploy at once).
+- Proxy: URL-encoding edge cases (`%` in paths), startup timeout and kill handling, port conflict fallback.
+- Logs: sanitized sensitive headers in debug output.
+- Kilo gateway models: compatibility pass for all 25 models.
+- Docs site build included; README per-host usage guide (Oh My Pi & Pi install + pick + manage).
+
+## 1.8.1 - 2026-08-29
+
+- Fix: stale-daemon auto-heal is now shipped in the published package (previously only in the repo).
+
+## 1.8.0 - 2026-08-29
+
+### Automatic upgrades
+- On version upgrade, the extension detects a stale local proxy daemon and replaces it automatically — users get fixes without manual restarts or killing sessions.
+- Fix: client auth key stripped before reaching the opencode.ai/zen upstream (failed with 401 for some clients).
+- 3 new free models (28 total).
+
+## 1.7.1 - 2026-08-29
+
+- Docs: clarified npm is the distribution channel (the package is an extension loaded by OMP/Pi, not a standalone CLI).
+
+## 1.7.0 - 2026-08-29
+
+- 4 new free models (25 total) with live-verified specs (context/output limits, vision, thinking levels).
+- New alias map aligned with host model selectors.
+
+## 1.6.1 - 2026-08-29
+
+- Catalog: thinking-level map locked per model; docs sync.
+
+## 1.6.0 - 2026-08-29
+
+### Onboarding & UX
+- First-run onboarding message; 429 guidance hint (add your own relay egress).
+- `/freeflow test` to probe a relay; relay latency tracking with health badges in `/freeflow list`.
+- Guided deploy with context picker + confirmation; post-deploy health check.
+- Status clarity: current mode + state file path; log text filter; per-relay usage counters; throttled roll notifications.
+
+### Reliability
+- Relay state write-protection: before every save, the current state is snapshotted to `.bak`; if the main file is corrupted or missing, the backup is recovered automatically.
+- New-user flow never seeds a fake relay; starts in direct mode with an empty pool.
+
+## 1.5.1 - 2026-08-28
+
+- Edge-sweep fixes: port 28180 with legacy 18080 dual-probe auto-migration, OMP/Pi compatibility.
