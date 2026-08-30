@@ -24,12 +24,15 @@ export interface HealthData {
 	relays: HealthRelayInfo[];
 	catalog: number;
 	version: string;
+	/** In-flight proxied requests right now (stale-daemon replacement guard). */
+	activeRequests: number;
 }
 /**
  * Collect current health snapshot.
  * @param portOverride - actual listening port (defaults to config PORT)
+ * @param activeRequests - in-flight proxied requests (defaults to 0 for callers that do not track)
  */
-export function getHealthData(portOverride?: number): HealthData {
+export function getHealthData(portOverride?: number, activeRequests = 0): HealthData {
 	const state = getActiveRelayState();
 	const relays: HealthRelayInfo[] = (state.relays || []).map((r) => {
 		const h = getRelayHealth(r.url);
@@ -50,6 +53,7 @@ export function getHealthData(portOverride?: number): HealthData {
 		relays,
 		catalog: ALL_MODELS.length,
 		version: PKG_VERSION,
+		activeRequests,
 	};
 }
 
@@ -69,6 +73,7 @@ export function handleHealthRequest(
 	req: http.IncomingMessage,
 	res: http.ServerResponse,
 	portOverride?: number,
+	activeRequests = 0,
 ): boolean {
 	let pathname: string | null = null;
 	try {
@@ -96,7 +101,7 @@ export function handleHealthRequest(
 		return true;
 	}
 
-	const data = getHealthData(portOverride);
+	const data = getHealthData(portOverride, activeRequests);
 	const body = JSON.stringify(data);
 	res.writeHead(200, {
 		"content-type": "application/json",

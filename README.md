@@ -280,8 +280,11 @@ Yes. `/freeflow off` → direct. Add relays later to scale.
 **What happens when I update to a new version?**
 The local proxy daemon is shared across sessions on port 28180. On upgrade, the new extension
 detects a stale daemon (mismatched internal version) and replaces it automatically — no manual
-kill, no restart of other sessions required. If an old daemon cannot be replaced (e.g. port held
-by an unrelated process), it falls back to reusing it with a warning.
+kill, no restart of other sessions required. Replacement only happens when the running daemon is
+idle: sessions with in-flight requests are never interrupted (busy or newer daemons are reused
+with a log note instead). If a daemon cannot be replaced (e.g. port held by an unrelated process),
+it falls back to reusing it with a warning. To disable replacement entirely, set the no-kill env
+to `1` before starting a session.
 
 **Where's the normalizer?**
 Deleted in 1.3.0. If zai/qwen/deepseek thinking broke before, it's fixed now because host handles it.

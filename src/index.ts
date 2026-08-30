@@ -18,12 +18,12 @@ import {
 	setAliveCatalog,
 } from "./catalog.ts";
 import { createCommandSpec, updateStatusBar } from "./commands.ts";
-import { HOST, LEGACY_PORT, ONBOARDED_FLAG_FILE, PKG_VERSION, PORT } from "./config.ts";
+import { HOST, LEGACY_PORT, NO_KILL_ENV, ONBOARDED_FLAG_FILE, PKG_VERSION, PORT } from "./config.ts";
 import { log, logInfo, logWarn } from "./logger.ts";
 import { ALL_MODELS, KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
-import { getDaemonVersion, isProxyAlive, killPortHolder, startProxy } from "./proxy.ts";
+import { getDaemonHealth, getDaemonVersion, isProxyAlive, killPortHolder, startProxy } from "./proxy.ts";
 import { resetRateLimits } from "./rate-limiter.ts";
-import { checkForUpdateInBackground } from "./update-checker.ts";
+import { checkForUpdateInBackground, compareVersions } from "./update-checker.ts";
 import {
 	ensureRelay,
 	getActiveRelayState,
@@ -162,6 +162,35 @@ export function buildProviderConfig(
 }
 
 /**
+ * Stale-daemon replacement guard.
+ * Never interrupt a working shared daemon: a newer-version daemon is left
+ * running (downgrade case), an in-flight daemon is left running (busy case —
+ * its streams would die mid-flight), and NO_KILL_ENV disables replacement
+ * entirely. Only older, idle daemons are replaced.
+ */
+async function shouldReplaceDaemon(port: number, remoteVer: string): Promise<boolean> {
+	if (NO_KILL_ENV && process.env[NO_KILL_ENV] === "1") {
+		logInfo(
+			`Reusing existing pi-freeflow proxy daemon on http://${HOST}:${port} (replacement disabled by env)`,
+		);
+		return false;
+	}
+	if (compareVersions(remoteVer, PKG_VERSION) > 0) {
+		logInfo(
+			`Reusing existing pi-freeflow proxy daemon on http://${HOST}:${port} (newer daemon v${remoteVer} left running)`,
+		);
+		return false;
+	}
+	const health = await getDaemonHealth(port);
+	if (health && health.activeRequests !== undefined && health.activeRequests > 0) {
+		logInfo(
+			`Reusing existing pi-freeflow proxy daemon on http://${HOST}:${port} (${health.activeRequests} active request${health.activeRequests === 1 ? "" : "s"} — not interrupted)`,
+		);
+		return false;
+	}
+	return true;
+}
+/**
  * Main extension entrypoint
  */
 export default async function (pi: ExtensionAPI): Promise<void> {
@@ -180,7 +209,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	let alreadyRunning = await isProxyAlive(PORT);
 	if (alreadyRunning) {
 		const remoteVer = await getDaemonVersion(PORT);
-		if (remoteVer !== null && remoteVer !== PKG_VERSION) {
+		if (remoteVer !== null && remoteVer !== PKG_VERSION && (await shouldReplaceDaemon(PORT, remoteVer))) {
 			logWarn(`stale proxy daemon v${remoteVer} on :${PORT} (need v${PKG_VERSION}) — replacing`, {
 				remoteVer,
 				expected: PKG_VERSION,
@@ -214,7 +243,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 	} else if (PORT !== LEGACY_PORT && (await isProxyAlive(LEGACY_PORT))) {
 		const remoteVer = await getDaemonVersion(LEGACY_PORT);
-		if (remoteVer !== null && remoteVer !== PKG_VERSION) {
+		if (remoteVer !== null && remoteVer !== PKG_VERSION && (await shouldReplaceDaemon(LEGACY_PORT, remoteVer))) {
 			logWarn(`stale legacy daemon v${remoteVer} on :${LEGACY_PORT} (need v${PKG_VERSION}) — replacing`, {
 				remoteVer,
 				expected: PKG_VERSION,
@@ -284,6 +313,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			if (await isProxyAlive(actualPort)) {
 				const v = await getDaemonVersion(actualPort);
 				if (v === null || v === PKG_VERSION) return;
+				if (!(await shouldReplaceDaemon(actualPort, v))) return;
 				logWarn(`proxy on :${actualPort} is stale v${v} (need v${PKG_VERSION}) — replacing`, {
 					remoteVer: v,
 					expected: PKG_VERSION,
@@ -299,7 +329,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			}
 			if (await isProxyAlive(PORT)) {
 				const v = await getDaemonVersion(PORT);
-				if (v !== null && v !== PKG_VERSION) {
+				if (v !== null && v !== PKG_VERSION && (await shouldReplaceDaemon(PORT, v))) {
 					logWarn(`proxy on :${PORT} is stale v${v} (need v${PKG_VERSION}) — replacing`, {
 						remoteVer: v,
 						expected: PKG_VERSION,
@@ -326,7 +356,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			}
 			if (PORT !== LEGACY_PORT && (await isProxyAlive(LEGACY_PORT))) {
 				const v = await getDaemonVersion(LEGACY_PORT);
-				if (v !== null && v !== PKG_VERSION) {
+				if (v !== null && v !== PKG_VERSION && (await shouldReplaceDaemon(LEGACY_PORT, v))) {
 					logWarn(`legacy proxy on :${LEGACY_PORT} is stale v${v} (need v${PKG_VERSION}) — replacing`, {
 						remoteVer: v,
 						expected: PKG_VERSION,

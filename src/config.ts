@@ -203,6 +203,8 @@ export const UPDATE_CHECK_TTL_MS = 86_400_000;
 // ── Security & Relay Validation ─────────────────────────────────────
 /** Opt-out for tests/dev: when set to "1", relay URLs on http:// and private hosts are allowed. */
 export const ALLOW_UNSAFE_RELAY_ENV = "PI_FREEFLOW_ALLOW_UNSAFE_RELAY";
+/** Opt-out for the stale-daemon replace: when "1", a version-mismatched daemon is never killed. */
+export const NO_KILL_ENV = ALLOW_UNSAFE_RELAY_ENV.replace("_ALLOW_UNSAFE_RELAY", "_NO_KILL");
 /** Max request body the proxy buffers before responding 413. */
 export const MAX_BODY_BYTES = 32 * 1024 * 1024;
 /** Default timeout for upstream headers while proxying a request. */

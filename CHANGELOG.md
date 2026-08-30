@@ -9,6 +9,9 @@ All notable changes to pi-freeflow. Public, user-visible behavior only.
 - Added a complete mocked user-flow e2e suite: fresh install → onboarding → proxy health → direct chat → relay add/roll/fallback → guided deploy → update check → command surface — all deterministic, zero network.
 - Docs: test counts no longer hardcoded in README (they drifted with releases); release history tracked here.
 
+### Fixes
+- **Stale-daemon replacement no longer interrupts running sessions.** The shared local proxy can be held by another OMP/Pi session; the old upgrade logic killed that holder on version mismatch, which could terminate the session that owned the proxy mid-stream. Replacement now only happens when the running daemon is strictly older AND idle (0 in-flight requests, reported via `/_health`); newer or busy daemons are reused with a log note instead. Optional opt-out: set the no-kill env to `1` (see README FAQ for upgrades).
+
 ## 1.8.2 - 2026-08-30
 
 ### Fixes & polish

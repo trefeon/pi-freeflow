@@ -126,7 +126,21 @@ export async function isProxyAlive(port: number): Promise<boolean> {
 	}
 }
 
-export async function getDaemonVersion(port: number): Promise<string | null> {
+let activeRequests = 0;
+
+/** Current in-flight proxied requests (guard for stale-daemon replacement). */
+export function getActiveRequests(): number {
+	return activeRequests;
+}
+
+/**
+ * Fetch the full health snapshot from a running daemon.
+ * `activeRequests` is undefined on daemons older than the busy-tracking
+ * feature (1.9.0) — callers treat that as "cannot verify usage".
+ */
+export async function getDaemonHealth(
+	port: number,
+): Promise<{ version: string | null; activeRequests: number | undefined } | null> {
 	if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
 	try {
 		const res = await fetch(`http://${HOST}:${port}/_health`, {
@@ -134,15 +148,24 @@ export async function getDaemonVersion(port: number): Promise<string | null> {
 		});
 		if (!res.ok) return null;
 		const data: unknown = await res.json();
-		if (data && typeof data === "object" && "version" in data) {
-			const v = data.version;
-			if (typeof v === "string" && v) return v;
+		if (data && typeof data === "object") {
+			const v =
+				"version" in data && typeof data.version === "string" && data.version
+					? data.version
+					: "";
+			const ar = "activeRequests" in data ? data.activeRequests : undefined;
+			return { version: v, activeRequests: typeof ar === "number" ? ar : undefined };
 		}
-		// Alive but no version field = pre-1.8.0 daemon (never embedded it) — stale.
-		return "";
+		return null;
 	} catch {
 		return null;
 	}
+}
+
+/** Version of the daemon on `port`; "" when alive but pre-version-field, null when not alive. */
+export async function getDaemonVersion(port: number): Promise<string | null> {
+	const h = await getDaemonHealth(port);
+	return h ? h.version : null;
 }
 
 export async function killPortHolder(port: number): Promise<boolean> {
@@ -242,7 +265,7 @@ export function startProxy(
 		if (req.method === "GET" && reqPathname !== null && (reqPathname === "/_health" || reqPathname === "/health")) {
 			const addr = server.address();
 			const realPort = addr && typeof addr === "object" ? (addr as { port: number }).port : basePort;
-			if (handleHealthRequest(req, res, realPort)) return;
+			if (handleHealthRequest(req, res, realPort, getActiveRequests())) return;
 		}
 		if (req.method === "GET" && (reqPathname === "/v1/models" || reqPathname === "/v1/models/")) {
 			const alive = getAliveCatalog();
@@ -277,6 +300,11 @@ export function startProxy(
 		}
 		// Buffer request body to inspect model ID for upstream routing
 		const bodyChunks: Buffer[] = [];
+		activeRequests += 1;
+		res.on("close", () => {
+			activeRequests -= 1;
+		});
+
 		// Reject oversized bodies before buffering starts: the client declares
 		// the size in content-length, so no transfer cost is wasted.
 		const declaredLength = Number(req.headers["content-length"] ?? 0);
