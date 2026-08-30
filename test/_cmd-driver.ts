@@ -45,7 +45,6 @@ process.env.HOME = home;
 // driver exists precisely to exercise that module-loading boundary in
 // isolation.
 const config = await import("../src/config.ts");
-process.env[config.DATA_DIR_ENV] = home;
 const { createCommandSpec } = await import("../src/commands.ts");
 
 const stateFile = config.RELAY_STATE_FILE;

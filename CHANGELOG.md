@@ -2,6 +2,13 @@
 
 All notable changes to pi-freeflow. Public, user-visible behavior only.
 
+## 1.9.1 - 2026-08-30
+
+### Fixes
+- Stale-daemon guard completed: a pre-1.9.0 daemon cannot report its in-flight requests, and usage cannot be verified — so it is now left running instead of being replaced. Previously such a daemon could still be killed mid-stream while busy (a one-time window when upgrading from 1.8.x). The guarantee now holds in every case: only older, verified-idle daemons are replaced.
+- The stale-daemon kill ritual was consolidated into one path (it was duplicated at five call sites); behavior unchanged.
+- Tests: new coverage for the pre-1.9 daemon case; shared sandbox helpers extracted.
+
 ## 1.9.0 - 2026-08-30
 
 ### Development hardening
