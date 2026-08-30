@@ -57,7 +57,7 @@ import type {
 
 // ── Sandbox isolation (shared with user-lifecycle.test.ts) ──────────────────
 
-import { BAK_FILE, clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
+import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
 
 // ── Response / body stubs ───────────────────────────────────────────────────
 
