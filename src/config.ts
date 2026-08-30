@@ -75,7 +75,7 @@ export const RATE_LIMIT_MAX: Record<Upstream, number> = {
 };
 
 // ── Whitelists & Security ───────────────────────────────────────────
-export const ALLOWED_PATH_PATTERN = /^\/v1\/[a-zA-Z0-9/_.,\-?&=]*$/;
+export const ALLOWED_PATH_PATTERN = /^\/v1\/[a-zA-Z0-9/_.,\-?&= %]*$/;
 export const PATH_TRAVERSAL_PATTERN = /\.\./;
 export const ALLOWED_METHODS = new Set(["GET", "POST", "OPTIONS", "HEAD"]);
 

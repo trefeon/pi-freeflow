@@ -66,6 +66,7 @@ export function validatePath(rawUrl: string): URL | null {
 	if (PATH_TRAVERSAL_PATTERN.test(cleaned)) return null;
 	try {
 		const decoded = decodeURIComponent(cleaned);
+		if (PATH_TRAVERSAL_PATTERN.test(decoded)) return null;
 		if (decoded !== cleaned && !ALLOWED_PATH_PATTERN.test(`/${decoded}`)) {
 			return null;
 		}
@@ -171,6 +172,7 @@ export async function killPortHolder(port: number): Promise<boolean> {
 			}) as string;
 			const pid = out.trim().split(/\s+/)[0];
 			if (!pid || !/^\d+$/.test(pid)) return false;
+			if (Number(pid) === process.pid) return false; // never self-kill (Unix) — matches Windows guard at 161
 			execSync(`kill -9 ${pid}`, { timeout: 3000, stdio: "ignore" });
 			return true;
 		} catch {
@@ -522,7 +524,7 @@ export function startProxy(
 					fwd["connection"] = "keep-alive";
 
 					const controller = new AbortController();
-					const timeoutId = setTimeout(() => controller.abort(), 300_000);
+					const timeoutId = setTimeout(() => controller.abort(upstreamTimeoutError()), UPSTREAM_HEADER_TIMEOUT_MS);
 					const onClientClose = () => {
 						if (!res.writableEnded) controller.abort();
 					};
@@ -600,6 +602,7 @@ export function startProxy(
 			let settled = false;
 
 			const tryListen = async (port: number) => {
+				server.removeAllListeners("error");
 				server.once("error", async (err: NodeJS.ErrnoException) => {
 					if (settled) return;
 					if (err.code === "EADDRINUSE") {

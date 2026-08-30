@@ -150,7 +150,7 @@ export function buildProviderConfig(
 						: m.source === "kilo"
 							? {
 									supportsDeveloperRole: false,
-									supportsReasoningEffort: false,
+									supportsReasoningEffort: !!m.thinkingLevelMap,
 								}
 							: {
 									supportsDeveloperRole: false,

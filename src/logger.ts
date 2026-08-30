@@ -197,6 +197,10 @@ export function formatLogMeta(
 	if (meta && Object.keys(meta).length > 0) {
 		const safe: Record<string, unknown> = {};
 		for (const [k, v] of Object.entries(meta)) {
+			if (/(auth|token|secret|password|bearer|api.?key|cookie|x-relay-auth)/i.test(k)) {
+				safe[k] = "[REDACTED]";
+				continue;
+			}
 			if (typeof v === "string" && v.length > 800) {
 				safe[k] = `${v.slice(0, 800)}…(${v.length})`;
 			} else if (v instanceof Error) {

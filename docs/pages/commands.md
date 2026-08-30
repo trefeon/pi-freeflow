@@ -8,19 +8,19 @@ All commands are available inside the OMP or Pi TUI via `/freeflow`:
 | :--- | :--- |
 | `/freeflow status` | View active relay URL, pool status (ON/OFF), and candidates |
 | `/freeflow list` | List all relays with health badges (✓ / ⚠️ cooling) |
-| `/freeflow use <url|index|label>` | Switch active relay |
+| `/freeflow use <url&vert;index&vert;label>` | Switch active relay |
 | `/freeflow url <url>` | Set the active relay URL directly |
 | `/freeflow add <url> [label]` | Add a new relay to the pool |
-| `/freeflow label <index|url> <name>` | Assign a friendly label to a relay |
-| `/freeflow remove <index|url|label>` | Remove a relay from the pool |
-| `/freeflow test <index|url|label>` | Probe a relay for reachability (HTTP 200 + latency) |
-| `/freeflow on | off | auto` | Toggle relay mode (auto = enabled for freeflow) |
+| `/freeflow label <index&vert;url> <name>` | Assign a friendly label to a relay |
+| `/freeflow remove <index&vert;url&vert;label>` | Remove a relay from the pool |
+| `/freeflow test <index&vert;url&vert;label>` | Probe a relay for reachability (HTTP 200 + latency) |
+| `/freeflow on &vert; off &vert; auto` | Toggle relay mode (auto = enabled for freeflow) |
 | `/freeflow deploy <platform>` | Guided relay deploy (vercel, cloudflare, deno) |
 | `/freeflow logs [lines]` | Inspect recent proxy logs |
 | `/freeflow trace [req-id]` | Tail logs filtered by request correlation ID |
 | `/freeflow refresh` | Force reload models from live upstream APIs |
 | `/freeflow update` | Check for and install a package update |
-| `/freeflow debug on | off` | Toggle full HTTP lifecycle debug logging |
+| `/freeflow debug on &vert; off` | Toggle full HTTP lifecycle debug logging |
 
 ## Logging
 

@@ -42,6 +42,9 @@ jobs:
       - name: Typecheck (tsc --noEmit)
         run: pnpm run typecheck
 
+      - name: Build docs (vitepress)
+        run: pnpm run docs:build
+
       - name: Smoke test (extension entrypoint)
         run: pnpm run smoke
 

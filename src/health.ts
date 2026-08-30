@@ -55,7 +55,8 @@ export function getHealthData(portOverride?: number): HealthData {
 
 function isLoopbackIP(ip: string): boolean {
 	if (!ip) return false;
-	const clean = ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+	const withoutZone = ip.split("%")[0];
+	const clean = withoutZone.startsWith("::ffff:") ? withoutZone.slice(7) : withoutZone;
 	return clean === "127.0.0.1" || clean === "::1" || clean === "localhost";
 }
 

@@ -191,7 +191,28 @@ export function readCatalogCache(): CatalogCacheData | null {
 /**
  * Atomically write catalog cache data to disk using temporary file + rename.
  * Persists etag alongside models for subsequent If-None-Match conditional requests.
+ * Note: fsync not needed — rename is atomic on same filesystem; crash leaves either old or new file intact.
  */
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function renameWithRetry(from: string, to: string): void {
+	const retryable: Record<string, true> = { EPERM: true, EACCES: true, EBUSY: true };
+	for (let attempt = 1; ; attempt++) {
+		try {
+			fs.renameSync(from, to);
+			return;
+		} catch (e) {
+			const code = (e as NodeJS.ErrnoException | null)?.code;
+			if (!code || !retryable[code] || attempt >= 3) {
+				throw e;
+			}
+			sleepSync(50);
+		}
+	}
+}
+
 export function writeCatalogCache(data: CatalogCacheData): void {
 	try {
 		const dir = path.dirname(CATALOG_CACHE_FILE);
@@ -200,7 +221,7 @@ export function writeCatalogCache(data: CatalogCacheData): void {
 		}
 		const tmpPath = `${CATALOG_CACHE_FILE}.${randomUUID()}.tmp`;
 		fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
-		fs.renameSync(tmpPath, CATALOG_CACHE_FILE);
+		renameWithRetry(tmpPath, CATALOG_CACHE_FILE);
 	} catch (err) {
 		logWarn("Could not persist catalog cache to disk", { error: String(err) });
 	}

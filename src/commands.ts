@@ -350,12 +350,13 @@ export function createCommandSpec(
 					const { url, auth } = await deployer(token, name, (m) =>
 						ctx.ui.notify(m, "info"),
 					);
-					setRelay(true, url, `deployed ${name}`);
-					// Persist the per-deployment shared secret with the relay entry
-					// (setRelay wrote without it; this save must include it).
-					const deployed = relayState.relays.find((r) => r.url === url);
-					if (deployed) deployed.auth = auth;
-					setActiveRelayState(relayState);
+					relayState = withRelayState((s) => {
+						const r = ensureRelay(s, url, `deployed ${name}`);
+						r.auth = auth;
+						s.enabled = true;
+						s.url = url;
+						return s;
+					});
 					persist();
 					let probeNote = "";
 					try {
@@ -589,12 +590,17 @@ export function createCommandSpec(
 					const tokens = rest.trim().split(/\s+/);
 					const targetUrl = tokens[0];
 					const customLabel = tokens.slice(1).join(" ").trim() || undefined;
-					applyRelayState((s) => {
-						const added = ensureRelay(s, targetUrl, customLabel);
-						s.enabled = true;
-						s.url = added.url;
-						return s;
-					});
+					try {
+						applyRelayState((s) => {
+							const added = ensureRelay(s, targetUrl, customLabel);
+							s.enabled = true;
+							s.url = added.url;
+							return s;
+						});
+					} catch (e) {
+						ctx.ui.notify((e as Error).message, "warning");
+						return;
+					}
 					persist();
 					flash();
 					ctx.ui.notify(
@@ -632,12 +638,17 @@ export function createCommandSpec(
 						} catch {}
 						const looksLikeUrl = parsedUrl && (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:");
 						if (looksLikeUrl) {
-							applyRelayState((s) => {
-								const added = ensureRelay(s, targetToken, customLabel);
-								s.enabled = true;
-								s.url = added.url;
-								return s;
-							});
+							try {
+								applyRelayState((s) => {
+									const added = ensureRelay(s, targetToken, customLabel);
+									s.enabled = true;
+									s.url = added.url;
+									return s;
+								});
+							} catch (e) {
+								ctx.ui.notify((e as Error).message, "warning");
+								return;
+							}
 							persist();
 							flash();
 						} else {

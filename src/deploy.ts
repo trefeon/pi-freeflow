@@ -75,6 +75,8 @@ const timingSafeEqualStr = function(a, b) {
 // (never forwarded upstream) instead of living in the denylist.
 const DENY_HEADERS = ["host", "connection", "content-length", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "transfer-encoding", "te", "trailer", "upgrade", "x-relay-target", "x-relay-path"];
 async function relayHandler(req) {
+  if (!["GET", "POST", "HEAD", "OPTIONS"].includes(req.method)) return new Response("Method Not Allowed", { status: 405 });
+  if (Number(req.headers.get("content-length") || 0) > 32 * 1024 * 1024) return new Response("Payload Too Large", { status: 413 });
   const target = req.headers.get("x-relay-target");
   if (!target) return new Response(JSON.stringify({ error: "Missing x-relay-target header" }), { status: 400, headers: { "content-type": "application/json" } });
   if (RELAY_AUTH && !timingSafeEqualStr(req.headers.get("x-relay-auth") || "", RELAY_AUTH)) {
@@ -159,11 +161,11 @@ export async function deployVercelRelay(
 	name: string,
 	onProgress?: (msg: string) => void,
 ): Promise<{ url: string; auth: string }> {
+	name = baseRelayName(name) || "relay-worker";
 	const auth = {
 		Authorization: `Bearer ${token}`,
 		"Content-Type": "application/json",
 	};
-
 	// 1. Create deployment (3 inline files, no git repository required)
 	onProgress?.("Uploading relay files to Vercel…");
 	log("info", `Starting Vercel deployment: ${name}`);

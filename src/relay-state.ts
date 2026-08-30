@@ -512,7 +512,7 @@ lastKnownStateMtimeMs = currentDiskStateMtimeMs();
  */
 export function getActiveRelayState(): RelayState {
 	const currentMtime = currentDiskStateMtimeMs();
-	if (currentMtime > 0 && currentMtime > lastKnownStateMtimeMs) {
+	if (currentMtime !== lastKnownStateMtimeMs) {
 		activeRelayState = resolveRelayState();
 		lastKnownStateMtimeMs = currentMtime;
 	}

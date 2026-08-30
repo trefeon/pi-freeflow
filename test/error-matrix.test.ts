@@ -298,9 +298,12 @@ test("Error Matrix [8/10] saveRelayState recovers from Windows EPERM lock conten
 		};
 
 		saveRelayState(testState);
-
-		// Assert that retry kicked in and succeeded on attempt 2
-		assert.equal(attempts, 2, "Must retry exactly once on transient EPERM and succeed");
+		let hadPriorRelays = false;
+		try { const p = JSON.parse(backup); hadPriorRelays = Array.isArray(p?.relays) && p.relays.length > 0; } catch {}
+		// Simple .bak uses writeFileSync, so only main rename counts -> 2 attempts (1 fail + 1 retry) regardless of prior
+		void hadPriorRelays;
+		const expectedAttempts = 2;
+		assert.equal(attempts, expectedAttempts, "Must retry exactly once on transient EPERM and succeed");
 		const loaded = loadRelayState();
 		assert.equal(loaded.url, "https://retry-test.example.com");
 	} finally {
