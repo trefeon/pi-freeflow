@@ -2,6 +2,25 @@
 
 All notable changes to pi-freeflow. Public, user-visible behavior only.
 
+## 1.9.2 - 2026-08-31
+
+### Fixes
+- **Closing one session no longer stops the shared local proxy.** The proxy daemon
+  is now a fully detached background process: it outlives any single OMP/Pi session
+  (previously, closing the session that owned the daemon could shut it down even
+  while other sessions were still using it). It retires by itself only when no
+  session is connected, no request is in flight, and it has been idle for a grace
+  period. The next use starts it again automatically.
+- New command: `/freeflow kill` (aliases `stop`, `shutdown`) stops the background
+  daemon on demand. The next freeflow use restarts it.
+
+### Improvements
+- The proxy tracks connected sessions and last request time; `/freeflow status`
+  and the health endpoint now report active session leases, so you can see when
+  other sessions are keeping the daemon alive.
+- Docs: the command reference now lists `kill`, and the FAQ explains the shared
+  daemon lifecycle (survives session close; self-retires when unused).
+
 ## 1.9.1 - 2026-08-30
 
 ### Fixes

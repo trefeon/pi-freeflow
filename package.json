@@ -1,7 +1,7 @@
 {
   "name": "pi-freeflow",
   "type": "module",
-  "version": "1.9.1",
+  "version": "1.9.2",
   "description": "Thin provider for OMP/Pi — model list + dumb relay proxy + log; host pi-ai owns thinking/normalization",
   "main": "extensions/index.ts",
   "types": "src/index.ts",

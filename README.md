@@ -117,6 +117,7 @@ Manage your relay pool directly from the OMP / Pi terminal:
 /freeflow refresh                 # Reload the model catalog from live upstreams
 /freeflow update                  # Check for and install a package update
 /freeflow debug on | off          # Toggle full HTTP lifecycle debug logging
+/freeflow kill                    # Stop the shared proxy daemon now (restarts on next use)
 ```
 
 ---
@@ -285,6 +286,13 @@ idle: sessions with in-flight requests are never interrupted (busy or newer daem
 with a log note instead). If a daemon cannot be replaced (e.g. port held by an unrelated process),
 it falls back to reusing it with a warning. To disable replacement entirely, set the no-kill env
 to `1` before starting a session.
+
+**What happens when I close a session?**
+Nothing visible to your other sessions. The proxy daemon is a separate background
+process shared by every OMP/Pi session on the machine. Closing one session just
+unregisters it; the daemon keeps serving the rest and retires itself automatically
+once the last client disconnects and it has been idle for a short grace period.
+To stop it manually, run `/freeflow kill` — the next freeflow use starts it again.
 
 **Where's the normalizer?**
 Deleted in 1.3.0. If zai/qwen/deepseek thinking broke before, it's fixed now because host handles it.
