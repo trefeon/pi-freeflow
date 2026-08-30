@@ -205,7 +205,34 @@ export const UPDATE_CHECK_TTL_MS = 86_400_000;
 export const ALLOW_UNSAFE_RELAY_ENV = "PI_FREEFLOW_ALLOW_UNSAFE_RELAY";
 /** Opt-out for the stale-daemon replace: when "1", a version-mismatched daemon is never killed. */
 export const NO_KILL_ENV = ALLOW_UNSAFE_RELAY_ENV.replace("_ALLOW_UNSAFE_RELAY", "_NO_KILL");
-/** Max request body the proxy buffers before responding 413. */
+/** When "0", the extension never spawns a detached proxy daemon (tests/CI). */
+export const DAEMON_SPAWN_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_SPAWN");
+/** Lease TTL for attached clients (ms); expired leases are dropped by the daemon GC. */
+export const DAEMON_TTL_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_TTL_MS");
+/** Client heartbeat interval (ms) — must stay well under the lease TTL. */
+export const DAEMON_HEARTBEAT_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_HEARTBEAT_MS");
+/** Daemon GC sweep interval (ms). */
+export const DAEMON_GC_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_GC_MS");
+/** Idle grace after the last request before a lease-less daemon exits (ms). */
+export const DAEMON_GRACE_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_GRACE_MS");
+/** Max time a client waits for a freshly spawned daemon to answer /_health (ms). */
+export const DAEMON_READY_TIMEOUT_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_READY_TIMEOUT_MS");
+
+function envMs(name: string, fallback: number): number {
+	const raw = process.env[name];
+	if (raw) {
+		const parsed = Number(raw);
+		if (Number.isFinite(parsed) && parsed > 0) return parsed;
+	}
+	return fallback;
+}
+
+export const DAEMON_SPAWN_ENABLED = process.env[DAEMON_SPAWN_ENV] !== "0";
+export const DAEMON_TTL_MS = envMs(DAEMON_TTL_MS_ENV, 30_000);
+export const DAEMON_HEARTBEAT_MS = envMs(DAEMON_HEARTBEAT_MS_ENV, 10_000);
+export const DAEMON_GC_MS = envMs(DAEMON_GC_MS_ENV, 5_000);
+export const DAEMON_GRACE_MS = envMs(DAEMON_GRACE_MS_ENV, 10_000);
+export const DAEMON_READY_TIMEOUT_MS = envMs(DAEMON_READY_TIMEOUT_MS_ENV, 5_000);
 export const MAX_BODY_BYTES = 32 * 1024 * 1024;
 /** Default timeout for upstream headers while proxying a request. */
 export const UPSTREAM_HEADER_TIMEOUT_MS = 300_000;

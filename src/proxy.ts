@@ -9,9 +9,11 @@ import { randomUUID } from "node:crypto";
 import { execSync } from "node:child_process";
 import * as http from "node:http";
 import * as https from "node:https";
-import { handleHealthRequest } from "./health.ts";
+import { handleHealthRequest, isLoopbackIP } from "./health.ts";
+import { registerClient, renewClient, touchActivity, unregisterClient } from "./lease.ts";
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
+
 import { getAliveCatalog } from "./catalog.ts";
 import {
 	ALLOWED_METHODS,
@@ -25,6 +27,7 @@ import {
 	UPSTREAM_OPENCODE,
 	opencodeHeaders,
 } from "./config.ts";
+
 import { isDebugEnabled, log } from "./logger.ts";
 import { KILO_MODEL_IDS, resolveCanonicalModelId } from "./models.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
@@ -33,6 +36,12 @@ import { agent, canUseCustomDispatcher, relayFetch } from "./relay.ts";
 import { getActiveRelayState } from "./relay-state.ts";
 import { pipeUpstreamStream } from "./stream-pipe.ts";
 import type { Upstream } from "./types.ts";
+
+
+let shutdownShouldExit = false;
+export function setShutdownShouldExit(v: boolean): void {
+	shutdownShouldExit = v;
+}
 
 /**
  * Direct-mode 429 hint throttle: the guidance hint is emitted at most once per
@@ -207,15 +216,78 @@ export async function killPortHolder(port: number): Promise<boolean> {
 }
 
 /**
+ * Loopback-only client lease + control endpoints used by the detached-daemon
+ * protocol (src/client.ts). Returns false when the request is not a control
+ * endpoint (caller continues). Control writes are async (chunked JSON).
+ */
+export function handleControlRequest(
+	req: http.IncomingMessage,
+	res: http.ServerResponse,
+	reqPathname: string | null,
+	closeServer: () => void,
+): boolean {
+	if (reqPathname === null) return false;
+	const isShutdown = reqPathname === "/_shutdown";
+	const isClientRoute = reqPathname.startsWith("/_client/");
+	if (!isShutdown && !isClientRoute) return false;
+	const clientIP = req.socket.remoteAddress ?? "";
+	if (!isLoopbackIP(clientIP)) {
+		res.writeHead(403, { "content-type": "application/json" });
+		res.end(JSON.stringify({ error: "loopback only" }));
+		return true;
+	}
+	if (isShutdown) {
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ ok: true }));
+		setTimeout(() => {
+			try { closeServer(); } catch {}
+			if (shutdownShouldExit) process.exit(0);
+		}, 50);
+		return true;
+	}
+	const chunks: Buffer[] = [];
+	let total = 0;
+	req.on("data", (c: Buffer) => {
+		total += c.length;
+		if (total > 4096) { req.destroy(); return; }
+		chunks.push(c);
+	});
+	req.on("end", () => {
+		let clientId = "";
+		try {
+			const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+			if (parsed && typeof parsed === "object" && "id" in parsed) {
+				const candidate = parsed.id;
+				if (typeof candidate === "string" && candidate) clientId = candidate;
+			}
+		} catch {}
+		if (!clientId) {
+			res.writeHead(400, { "content-type": "application/json" });
+			res.end(JSON.stringify({ error: "missing client id" }));
+			return;
+		}
+		if (reqPathname === "/_client/attach") registerClient(clientId);
+		else if (reqPathname === "/_client/heartbeat") renewClient(clientId);
+		else if (reqPathname === "/_client/detach") unregisterClient(clientId);
+		else {
+			res.writeHead(404, { "content-type": "application/json" });
+			res.end(JSON.stringify({ error: "not found" }));
+			return;
+		}
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ ok: true }));
+	});
+	return true;
+}
+
+/**
  * Tagged abort reason for the proxy-internal header-wait timeout.
  * relayFetch rethrows AbortErrors untouched, and stream-pipe recognizes
  * code FF_INTERNAL_ABORT as "our abort, not a relay fault" — so neither
  * rolls nor penalizes a healthy relay when the request merely ran slow.
  */
 function upstreamTimeoutError(): Error & { code: string } {
-	const err = new Error(
-		`upstream header timeout (${UPSTREAM_HEADER_TIMEOUT_MS}ms)`,
-	) as Error & { code: string };
+	const err = new Error(`upstream header timeout (${UPSTREAM_HEADER_TIMEOUT_MS}ms)`) as Error & { code: string };
 	err.name = "AbortError";
 	err.code = "FF_INTERNAL_ABORT";
 	return err;
@@ -261,6 +333,7 @@ export function startProxy(
 		try {
 			reqPathname = new URL(req.url ?? "/", `http://${HOST}`).pathname;
 		} catch {}
+		if (handleControlRequest(req, res, reqPathname, () => server.close())) return;
 		// Loopback-only health endpoint — always accessible even when widget hidden
 		if (req.method === "GET" && reqPathname !== null && (reqPathname === "/_health" || reqPathname === "/health")) {
 			const addr = server.address();
@@ -268,6 +341,7 @@ export function startProxy(
 			if (handleHealthRequest(req, res, realPort, getActiveRequests())) return;
 		}
 		if (req.method === "GET" && (reqPathname === "/v1/models" || reqPathname === "/v1/models/")) {
+			touchActivity();
 			const alive = getAliveCatalog();
 			const body = JSON.stringify({
 				object: "list",
@@ -298,6 +372,7 @@ export function startProxy(
 			}
 			return;
 		}
+		touchActivity();
 		// Buffer request body to inspect model ID for upstream routing
 		const bodyChunks: Buffer[] = [];
 		activeRequests += 1;

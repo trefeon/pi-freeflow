@@ -5,8 +5,9 @@
  */
 
 import { spawn } from "node:child_process";
+import { getClientPort } from "./client.ts";
 import { refreshCatalog, setAliveCatalog } from "./catalog.ts";
-import { DEBUG_STATE_FILE, LOG_FILE, RELAY_STATE_FILE } from "./config.ts";
+import { DEBUG_STATE_FILE, HOST, LOG_FILE, PORT, RELAY_STATE_FILE } from "./config.ts";
 import {
 	compareVersions,
 	fetchLatestVersion,
@@ -532,6 +533,21 @@ export function createCommandSpec(
 				}`;
 				const stateFileLine = `State file: ${RELAY_STATE_FILE}`;
 				ctx.ui.notify(`${modeLine} | ${poolLine}\n${stateFileLine}`, "info");
+			} else if (sub === "kill" || sub === "stop" || sub === "shutdown") {
+				const port = getClientPort() || PORT;
+				try {
+					const res = await fetch(`http://${HOST}:${port}/_shutdown`, {
+						method: "POST",
+						signal: AbortSignal.timeout(1500),
+					});
+					if (res.ok) {
+						ctx.ui.notify("Proxy daemon stopped — next freeflow use restarts it", "info");
+					} else {
+						ctx.ui.notify(`Daemon kill got HTTP ${res.status}`, "warning");
+					}
+				} catch {
+					ctx.ui.notify("Daemon not running or not reachable", "warning");
+				}
 			} else if (sub === "update") {
 				if (isLinkedInstall()) {
 					ctx.ui.notify(

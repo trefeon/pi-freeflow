@@ -32,6 +32,11 @@ if (!logLevelMatch) throw new Error("src/logger.ts must read a *_LOG_LEVEL env v
 /** Alternate test port — never 28180/18080, so a real daemon is not reused. */
 export const TEST_PROXY_PORT = 29751;
 
+// Disable detached-daemon spawn in tests — they use spawnFakeDaemon or in-process servers.
+const dataDirMatch = /DATA_DIR_ENV\s*=\s*"([^"]+)"/.exec(configSrc);
+if (!dataDirMatch) throw new Error("src/config.ts must define DATA_DIR_ENV");
+process.env[dataDirMatch[1].replace("_DATA_DIR", "_DAEMON_SPAWN")] = "0";
+
 // Re-route the proxy port, relax relay URL validation (http loopback relays),
 // and enable debug logging so proxy requests are recorded in the sandbox log.
 process.env[portMatch[1] + "_PORT"] = String(TEST_PROXY_PORT);

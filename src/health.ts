@@ -6,6 +6,7 @@
 import type * as http from "node:http";
 import { ALL_MODELS } from "./models.ts";
 import { getActiveRelayState, getRelayHealth, isRelayHealthy } from "./relay-state.ts";
+import { getLastActivityAt, getLeaseCount, getLeaseSnapshot } from "./lease.ts";
 import { PKG_VERSION, PORT } from "./config.ts";
 
 export interface HealthRelayInfo {
@@ -26,7 +27,14 @@ export interface HealthData {
 	version: string;
 	/** In-flight proxied requests right now (stale-daemon replacement guard). */
 	activeRequests: number;
+	/** Clients holding a live lease (detached-daemon GC). */
+	clients: number;
+	/** clientId -> lastSeenAt for every live lease. */
+	leases: Record<string, number>;
+	/** Last time any request was proxied (request-touch for legacy clients). */
+	lastActivityAt: number;
 }
+
 /**
  * Collect current health snapshot.
  * @param portOverride - actual listening port (defaults to config PORT)
@@ -54,10 +62,16 @@ export function getHealthData(portOverride?: number, activeRequests = 0): Health
 		catalog: ALL_MODELS.length,
 		version: PKG_VERSION,
 		activeRequests,
+		clients: getLeaseCount(),
+		leases: getLeaseSnapshot(),
+		lastActivityAt: getLastActivityAt(),
 	};
 }
 
-function isLoopbackIP(ip: string): boolean {
+/**
+ * Check whether an IP address is a loopback address (127.0.0.1, ::1, localhost).
+ */
+export function isLoopbackIP(ip: string): boolean {
 	if (!ip) return false;
 	const withoutZone = ip.split("%")[0];
 	const clean = withoutZone.startsWith("::ffff:") ? withoutZone.slice(7) : withoutZone;
@@ -75,37 +89,30 @@ export function handleHealthRequest(
 	portOverride?: number,
 	activeRequests = 0,
 ): boolean {
-	let pathname: string | null = null;
+	if (req.method !== "GET") return false;
+
+	let reqPathname: string | null = null;
 	try {
-		pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+		reqPathname = new URL(req.url ?? "/", `http://127.0.0.1`).pathname;
 	} catch {
 		return false;
 	}
+	if (reqPathname === null) return false;
+	if (reqPathname !== "/_health" && reqPathname !== "/health") return false;
 
-	const isHealthPath = pathname === "/_health" || pathname === "/health";
-	if (req.method !== "GET" || !isHealthPath) {
-		return false;
-	}
-
-	const sock: unknown = req.socket;
-	let rawIp = "";
-	if (sock && typeof sock === "object" && "remoteAddress" in sock) {
-		const v = sock.remoteAddress;
-		if (typeof v === "string") rawIp = v;
-	}
-	const clientIP = rawIp.startsWith("::ffff:") ? rawIp.slice(7) : rawIp;
+	const clientIP = req.socket.remoteAddress ?? "";
 	if (!isLoopbackIP(clientIP)) {
-		const body = JSON.stringify({ error: "forbidden" });
-		res.writeHead(403, { "content-type": "application/json", "content-length": Buffer.byteLength(body) });
-		res.end(body);
+		res.writeHead(403, { "content-type": "application/json" });
+		res.end(JSON.stringify({ error: "loopback only" }));
 		return true;
 	}
 
 	const data = getHealthData(portOverride, activeRequests);
-	const body = JSON.stringify(data);
+	const body = JSON.stringify(data, null, 2);
 	res.writeHead(200, {
 		"content-type": "application/json",
 		"content-length": Buffer.byteLength(body),
+		"cache-control": "no-store",
 	});
 	res.end(body);
 	return true;
