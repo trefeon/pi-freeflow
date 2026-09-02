@@ -261,7 +261,7 @@ Log rotation at 10MB. Clean, parseable, real-time HTTP lifecycle tracking.
 
 ### Design
 
-This package stays thin. It ships three things: a model catalog, a relay proxy, and a log. There is no build step. The only runtime dependency is `undici`, which powers the upstream fetch agent. Thinking and prompt normalization stay with the host (`pi-ai`).
+This package stays thin. It ships three things: a model catalog, a relay proxy, and a log. There is no build step. Zero runtime dependencies — uses native Node.js global fetch. Thinking and prompt normalization stay with the host (`pi-ai`).
 
 Current size: about 11.3k lines including tests. The full suite (sandboxed, mocked network) and typecheck pass before every release — see CHANGELOG.md.
 
@@ -361,7 +361,7 @@ test/
 
 #### Guidelines
 
-- **Stay thin.** One runtime dependency (`undici`), no build step. If it belongs in the host (`pi-ai`), don't add it here.
+- **Stay thin.** Zero runtime dependencies, no build step. If it belongs in the host (`pi-ai`), don't add it here.
 - **Test what you touch.** Every `src/*.ts` has a matching `test/*.test.ts`. Add or update tests for your change.
 - **Keep model IDs clean.** Slash-free, colon-free aliases for CLI compatibility. See existing patterns in `models.ts`.
 - **One concern per PR.** Bug fix? One PR. New relay platform? Separate PR. Easier to review, faster to merge.
