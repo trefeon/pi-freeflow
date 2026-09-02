@@ -4,20 +4,7 @@
 
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { Agent } from "undici";
 import { isDebugEnabled, log } from "./logger.ts";
-
-export const agent = new Agent({ keepAliveTimeout: 30_000 });
-/**
- * Node's global fetch runs on the node-process-bundled undici. Node 22/23
- * bundle undici 6.x/7.x whose dispatcher interface rejects an npm-undici 8.x
- * Agent passed as `dispatcher` (`invalid onRequestStart method`). Only attach
- * the custom dispatcher when the bundled undici major matches (Node 25+);
- * otherwise fall back to the built-in global dispatcher, which still pools
- * keep-alive connections, so the relay proxy works on Node 22/23 too.
- */
-const bundledUndiciMajor = Number((process.versions.undici ?? "0").split(".")[0]);
-export const canUseCustomDispatcher = bundledUndiciMajor >= 8;
 import {
 	getActiveRelayState,
 	getOrderedRelayUrls,
@@ -68,7 +55,7 @@ export async function relayFetch(
 
 	if (!relayState.enabled) {
 		log("debug", `relayFetch: direct (relay disabled) -> ${url}`, undefined, rid);
-		return fetch(url, { ...opts, ...(canUseCustomDispatcher ? { dispatcher: agent } : {}) } as unknown as RequestInit);
+		return fetch(url, opts as unknown as RequestInit);
 	}
 	const candidates = getOrderedRelayUrls();
 
@@ -76,7 +63,7 @@ export async function relayFetch(
 		// Empty pool: skip straight to upstream instead of logging a misleading
 		// "relays bypassed/exhausted" WARN on every request.
 		log("debug", `relayFetch: direct (empty relay pool) -> ${url}`, undefined, rid);
-		return fetch(url, { ...opts, ...(canUseCustomDispatcher ? { dispatcher: agent } : {}) } as unknown as RequestInit);
+		return fetch(url, opts as unknown as RequestInit);
 	}
 
 	let lastResponse: Response | null = null;
@@ -145,7 +132,7 @@ export async function relayFetch(
 			}
 
 			const signal = opts.signal || AbortSignal.timeout(300_000);
-			const res = await fetch(targetUrl, { ...opts, headers, signal, ...(canUseCustomDispatcher ? { dispatcher: agent } : {}) } as unknown as RequestInit);
+			const res = await fetch(targetUrl, { ...opts, headers, signal } as unknown as RequestInit);
 			const elapsed = ((Date.now() - attemptStart) / 1000).toFixed(1);
 			// Vercel 504 Gateway Timeout on heavy prompts (>50KB or >25s):
 			// Fast fallback directly to upstream instead of cycling through multiple 25s timeouts.
@@ -251,7 +238,7 @@ export async function relayFetch(
 		directHeaders.set("host", u.host);
 		directHeaders.set("x-request-id", rid);
 
-		const directRes = await fetch(url, { ...opts, headers: directHeaders, ...(canUseCustomDispatcher ? { dispatcher: agent } : {}) } as unknown as RequestInit);
+		const directRes = await fetch(url, { ...opts, headers: directHeaders } as unknown as RequestInit);
 		// lastResponse holds an unread body that would otherwise leak its socket
 		// until GC; the salvage path below still needs it, so only cancel here.
 		lastResponse?.body?.cancel().catch(() => {});

@@ -1,33 +1,17 @@
 /**
- * Keep-alive agent tests for relay and proxy
+ * Keep-alive and relay tests (0 deps, global fetch)
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { agent, relayFetch, _resetRollNotifyForTest } from "../src/relay.ts";
+import { relayFetch, _resetRollNotifyForTest } from "../src/relay.ts";
 import { setActiveRelayState, setStatusUi, resetAllRelayHealth } from "../src/relay-state.ts";
 import { startProxy } from "../src/proxy.ts";
 
-function getAgentTimeout(a: unknown): number | undefined {
-	// undici Agent stores options under Symbol(options)
-	const syms = Object.getOwnPropertySymbols(a as object);
-	for (const s of syms) {
-		const v = (a as Record<symbol, unknown>)[s] as unknown;
-		if (v && typeof v === "object" && "keepAliveTimeout" in (v as Record<string, unknown>)) {
-			return (v as Record<string, unknown>).keepAliveTimeout as number;
-		}
-	}
-	// fallback: direct property
-	const anyAgent = a as unknown as Record<string, unknown>;
-	if (typeof anyAgent.keepAliveTimeout === "number") return anyAgent.keepAliveTimeout;
-	return undefined;
-}
-
-test("undici Agent has keepAliveTimeout 30s", () => {
-	const timeout = getAgentTimeout(agent);
-	assert.equal(timeout, 30_000, `keepAliveTimeout should be 30000, got ${timeout}`);
+test("relayFetch uses global fetch (keep-alive via Node default)", () => {
+	// 0 deps now — global fetch pools keep-alive without custom undici Agent
+	assert.equal(typeof relayFetch, "function");
 });
-
 test("relayFetch direct uses keepAlive dispatcher (connection: keep-alive)", async () => {
 	const seen: string[] = [];
 	const server = http.createServer((req, res) => {

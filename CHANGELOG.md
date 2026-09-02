@@ -2,6 +2,11 @@
 
 All notable changes to pi-freeflow. Public, user-visible behavior only.
 
+## 1.9.4 - 2026-09-02
+
+### Dependencies
+- **Zero runtime dependencies.** Removed `undici@8.10.0` — `pi` (`0.84.4`) and `omp` (`18.1.3`) already bundle `undici` 6.x/7.x and expose `global fetch` with keep-alive pooling. `relayFetch` and proxy now use `global fetch` directly (`src/relay.ts` `Agent` + `canUseCustomDispatcher` + `dispatcher: agent` removed; `src/proxy.ts` dispatcher removed). Keeps thin `11.3k` + `298 tests` + `0 deps` compatible directly with `reference/pi` + `reference/oh-my-pi`.
+
 ## 1.9.3 - 2026-09-02
 
 ### Fixes
