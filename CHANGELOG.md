@@ -7,6 +7,9 @@ All notable changes to pi-freeflow. Public, user-visible behavior only.
 ### Dependencies
 - **Zero runtime dependencies.** Removed `undici@8.10.0` — `pi` (`0.84.4`) and `omp` (`18.1.3`) already bundle `undici` 6.x/7.x and expose `global fetch` with keep-alive pooling. `relayFetch` and proxy now use `global fetch` directly (`src/relay.ts` `Agent` + `canUseCustomDispatcher` + `dispatcher: agent` removed; `src/proxy.ts` dispatcher removed). Keeps thin `11.3k` + `298 tests` + `0 deps` compatible directly with `reference/pi` + `reference/oh-my-pi`.
 
+### Validation
+- `npx tsc --noEmit` clean, `npm test 298/298` on **Windows** (`omp/18.1.3`, `pi 0.84.4`) and **Linux `acerblue-local`** (`Ubuntu 6.8.0-138`, `node v22.23.2`, `pi 0.84.4`) via `/tmp/pi-freeflow-validation`. **`macOS not tested`** this cycle.
+
 ## 1.9.3 - 2026-09-02
 
 ### Fixes
