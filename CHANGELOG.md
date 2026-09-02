@@ -2,6 +2,16 @@
 
 All notable changes to pi-freeflow. Public, user-visible behavior only.
 
+## 1.9.3 - 2026-09-02
+
+### Fixes
+- **Windows console flood fixed.** Two Windows-only helpers flashed a visible `conhost`/`cmd` window on every daemon probe: `netstat -ano | findstr :28180` / `taskkill` in the stale-daemon replace path and `spawn(omp|npm, shell:true)` for `/freeflow update`. Both now use `windowsHide: true` (no-op on Linux/macOS) and `spawnWithProgress` was refactored to `Promise.withResolvers` to satisfy `ts-promise-with-resolvers`. Idle `pi` no longer spawns many visible consoles even after closing the terminal (detached daemon at `127.0.0.1:28180` survives by design; `beatOnce` 10s heartbeat now throttled 2s via `lastSpawnAt`).
+- Daemon spawn now throttled per-process (2s) as a storm guard when `28180` is contended or blocked; the `ensuring` guard + `waitForReady 5s` already prevented tight loops.
+
+### Validation
+- `npx tsc --noEmit` clean, `npm test 279/279` on **Windows** (`omp/18.1.3`, `pi 0.84.4`) and **Linux `acerblue-local`** (`Ubuntu 6.8.0-138`, `node v22.23.2`, `pi 0.84.4`) via `/tmp/pi-freeflow-validation`. **`macOS not tested`** this cycle.
+- Reporter `LOYINuts` issue #3 (`pi idle creates many sessions → force reboot`) — `grep -r rtk src` ∅ confirms `rtk` is an external global skill (`~/.agents/skills/rtk` → `Command::new("cmd")` without `CREATE_NO_WINDOW`), not `pi-freeflow`. After this fix, closing the terminal no longer leaves flashing zombies; kill via `netstat -ano | findstr :28180` → `taskkill /F /PID` or `/freeflow kill`.
+
 ## 1.9.2 - 2026-08-31
 
 ### Fixes
