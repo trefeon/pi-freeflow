@@ -182,7 +182,11 @@ export async function killPortHolder(port: number): Promise<boolean> {
 	try {
 		if (process.platform === "win32") {
 			try {
-				const out = execSync(`netstat -ano | findstr :${port}`, { encoding: "utf8", timeout: 3000 }) as string;
+				const out = execSync(`netstat -ano | findstr :${port}`, {
+					encoding: "utf8",
+					timeout: 3000,
+					windowsHide: true,
+				}) as string;
 				for (const line of out.split("\n")) {
 					if (!line.includes("LISTENING")) continue;
 					if (!line.includes(`:${port}`)) continue;
@@ -191,7 +195,7 @@ export async function killPortHolder(port: number): Promise<boolean> {
 					if (!pid || !/^\d+$/.test(pid)) continue;
 					// Windows netstat report: 127.0.0.1:38180 ... LISTENING/PID
 					if (Number(pid) === process.pid) continue; // never self-kill
-					execSync(`taskkill /F /PID ${pid}`, { timeout: 3000, stdio: "ignore" });
+					execSync(`taskkill /F /PID ${pid}`, { timeout: 3000, stdio: "ignore", windowsHide: true });
 					return true;
 				}
 			} catch {}

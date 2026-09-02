@@ -69,30 +69,31 @@ function spawnWithProgress(
 	args: string[],
 	ctx: ExtensionContext,
 ): Promise<number> {
-	return new Promise((resolve) => {
-		try {
-			const child = spawn(cmd, args, {
-				shell: process.platform === "win32",
-				stdio: "pipe",
-			});
-			child.stdout?.on("data", (d: Buffer) => {
-				const s = String(d).trim();
-				if (s) ctx.ui.notify(s, "info");
-			});
-			child.stderr?.on("data", (d: Buffer) => {
-				const s = String(d).trim();
-				if (s) ctx.ui.notify(s, "info");
-			});
-			child.on("error", (err: Error) => {
-				ctx.ui.notify(`spawn ${cmd} failed: ${err.message}`, "warning");
-				resolve(1);
-			});
-			child.on("close", (code: number | null) => resolve(code ?? 0));
-		} catch (e) {
-			ctx.ui.notify(`spawn ${cmd} failed: ${(e as Error).message}`, "warning");
+	const { promise, resolve } = Promise.withResolvers<number>();
+	try {
+		const child = spawn(cmd, args, {
+			shell: process.platform === "win32",
+			stdio: "pipe",
+			windowsHide: true,
+		});
+		child.stdout?.on("data", (d: Buffer) => {
+			const s = String(d).trim();
+			if (s) ctx.ui.notify(s, "info");
+		});
+		child.stderr?.on("data", (d: Buffer) => {
+			const s = String(d).trim();
+			if (s) ctx.ui.notify(s, "info");
+		});
+		child.on("error", (err: Error) => {
+			ctx.ui.notify(`spawn ${cmd} failed: ${err.message}`, "warning");
 			resolve(1);
-		}
-	});
+		});
+		child.on("close", (code: number | null) => resolve(code ?? 0));
+	} catch (e) {
+		ctx.ui.notify(`spawn ${cmd} failed: ${(e as Error).message}`, "warning");
+		resolve(1);
+	}
+	return promise;
 }
 
 /**

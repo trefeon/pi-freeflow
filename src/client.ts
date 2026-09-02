@@ -184,7 +184,16 @@ async function killStaleDaemon(
 	return false;
 }
 
+let lastSpawnAt = 0;
+const SPAWN_THROTTLE_MS = 2_000;
+
 function spawnDaemonProcess(): void {
+	const now = Date.now();
+	if (now - lastSpawnAt < SPAWN_THROTTLE_MS) {
+		logWarn("daemon spawn throttled — recent spawn still pending");
+		return;
+	}
+	lastSpawnAt = now;
 	const script = daemonScriptPath();
 	const args = isBunRuntime() ? [script] : ["--experimental-strip-types", script];
 	try {
@@ -304,6 +313,7 @@ export function _resetClientForTest(): void {
 	heartbeatPort = 0;
 	attachedPort = 0;
 	ensuring = false;
+	lastSpawnAt = 0;
 	if (fallbackServer) {
 		try {
 			fallbackServer.close();
