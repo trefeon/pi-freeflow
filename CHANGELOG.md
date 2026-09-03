@@ -2,6 +2,18 @@
 
 All notable changes to pi-freeflow. Public, user-visible behavior only.
 
+## 1.9.6 - 2026-09-03
+
+### Fixes
+- **Hiding the status widget now sticks.** `/freeflow hide` survives restarts, new sessions, and background update notices — previously the widget could reappear on the next session.
+- **Calmer startup with many sessions.** Sessions starting at the same time now converge on a single background proxy instead of each spawning its own; a spawn that never becomes ready falls back to in-process mode instead of running untracked.
+- **Survives daemon restarts mid-session.** If the background proxy is replaced while sessions run, connected sessions re-register automatically instead of silently losing their lease (which could retire the daemon mid-use).
+- **Stale-version cleanup targets the right process.** Windows port matching is now exact, and Linux without `lsof`/`fuser` resolves the holder via `/proc` instead of giving up.
+- **`/freeflow logs --follow` no longer runs forever.** The live tail stops when the session ends and caps burst output; the update/install subprocess now has a 2-minute timeout.
+
+### Validation
+- `npx tsc --noEmit` clean, `npm test` 299 (298 pass + 1 Linux-only skip) + smoke green on Windows; stress harness 7/7 on Windows and Linux `acerblue-local`. **`macOS not tested`** this cycle.
+
 ## 1.9.5 - 2026-09-03
 
 ### Changes

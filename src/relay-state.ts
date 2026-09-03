@@ -117,6 +117,7 @@ function parseRelayState(raw: string): RelayState | null {
 						: s?.enabled !== false && relays.length > 0,
 			url: typeof s?.url === "string" ? s.url.trim() : (relays[0]?.url || ""),
 			relays,
+			hideWidget: s?.hideWidget === true,
 		};
 	} catch {
 		return null;
@@ -182,9 +183,10 @@ export function loadRelayState(): RelayState {
 			if (healed) {
 				return healed;
 			}
-			return { mode: "auto", enabled: true, url: "", relays: [] };
+			return { mode: "auto", enabled: true, url: "", relays: [], hideWidget: false };
 		}
-		const main = parseRelayState(fs.readFileSync(RELAY_STATE_FILE, "utf8"));
+		const raw = fs.readFileSync(RELAY_STATE_FILE, "utf8");
+		const main = parseRelayState(raw);
 		if (main) {
 			return main;
 		}
@@ -196,9 +198,15 @@ export function loadRelayState(): RelayState {
 		logWarn("relay state file unusable and no valid backup — starting fresh", {
 			path: RELAY_STATE_FILE,
 		});
-		return { mode: "auto", enabled: true, url: "", relays: [] };
+		// parse returns null on an empty pool by design (wipe-protection above);
+		// preserve an explicit hide so hide-with-zero-relays survives reload.
+		let hide = false;
+		try {
+			hide = (JSON.parse(raw) as RelayState)?.hideWidget === true;
+		} catch {}
+		return { mode: "auto", enabled: true, url: "", relays: [], hideWidget: hide };
 	} catch {
-		return { mode: "auto", enabled: true, url: "", relays: [] };
+		return { mode: "auto", enabled: true, url: "", relays: [], hideWidget: false };
 	}
 }
 
@@ -537,9 +545,6 @@ export function setActiveRelayState(s: RelayState, persist = true): void {
 // concurrent sessions cannot silently clobber each other's edits.
 
 const RELAY_STATE_LOCK_FILE = `${RELAY_STATE_FILE}.lock`;
-const LOCK_WAIT_MAX_MS = 2_000;
-const LOCK_RETRY_START_MS = 25;
-const LOCK_RETRY_MAX_MS = 200;
 /** A lock older than this is presumed abandoned (crashed holder) and taken over. */
 const LOCK_STALE_MS = 30_000;
 
@@ -571,24 +576,19 @@ function tryAcquireRelayLock(): boolean {
 
 /**
  * Apply a mutation to relay state with a compare-and-swap discipline.
- * Locks the state file (bounded retry, ~2s), loads the freshest on-disk state,
+ * Makes a single lock acquisition attempt, loads the freshest on-disk state,
  * runs the updater against it, persists atomically, and releases the lock.
- * On lock timeout the write proceeds unlocked — the atomic tmp+rename save
- * already prevents torn files; the lock only serializes write intent.
+ * When the lock is held the write proceeds unlocked — the atomic tmp+rename
+ * save already prevents torn files; the lock only serializes write intent.
+ * (Never spin here: this runs on the proxy request path and blocking the
+ * event loop stalls all in-flight streams.)
  * Returns the state that was actually persisted (also becomes the in-memory
  * active state).
  */
 export function withRelayState(updater: (s: RelayState) => RelayState): RelayState {
-	const deadline = Date.now() + LOCK_WAIT_MAX_MS;
-	let locked = tryAcquireRelayLock();
-	let delay = LOCK_RETRY_START_MS;
-	while (!locked && Date.now() < deadline) {
-		sleepSync(delay);
-		locked = tryAcquireRelayLock();
-		delay = Math.min(delay * 2, LOCK_RETRY_MAX_MS);
-	}
+	const locked = tryAcquireRelayLock();
 	if (!locked) {
-		logWarn("relay state lock held — proceeding without lock after timeout", {
+		logWarn("relay state lock held — proceeding without lock", {
 			lock: RELAY_STATE_LOCK_FILE,
 		});
 	}

@@ -68,6 +68,7 @@ function spawnWithProgress(
 	cmd: string,
 	args: string[],
 	ctx: ExtensionContext,
+	timeoutMs = 120_000,
 ): Promise<number> {
 	const { promise, resolve } = Promise.withResolvers<number>();
 	try {
@@ -76,6 +77,16 @@ function spawnWithProgress(
 			stdio: "pipe",
 			windowsHide: true,
 		});
+		const timer = setTimeout(() => {
+			try { child.kill(); } catch {}
+			ctx.ui.notify(`spawn ${cmd} timed out after ${timeoutMs}ms — killed`, "warning");
+			resolve(1);
+		}, timeoutMs);
+		try { timer.unref?.(); } catch {}
+		const done = (code: number | null): void => {
+			clearTimeout(timer);
+			resolve(code ?? 0);
+		};
 		child.stdout?.on("data", (d: Buffer) => {
 			const s = String(d).trim();
 			if (s) ctx.ui.notify(s, "info");
@@ -85,10 +96,11 @@ function spawnWithProgress(
 			if (s) ctx.ui.notify(s, "info");
 		});
 		child.on("error", (err: Error) => {
+			clearTimeout(timer);
 			ctx.ui.notify(`spawn ${cmd} failed: ${err.message}`, "warning");
 			resolve(1);
 		});
-		child.on("close", (code: number | null) => resolve(code ?? 0));
+		child.on("close", done);
 	} catch (e) {
 		ctx.ui.notify(`spawn ${cmd} failed: ${(e as Error).message}`, "warning");
 		resolve(1);
@@ -100,8 +112,15 @@ function spawnWithProgress(
  * Follow-mode log poller: tracks the count of matched lines already printed
  * and notifies only lines beyond it, so repeated ticks never re-notify the
  * same tail. One poller at a time — a re-run clears the previous interval.
+ * Stop with stopLogsFollow (session shutdown / non-follow commands).
  */
 let logsFollowTimer: NodeJS.Timeout | null = null;
+export function stopLogsFollow(): void {
+	if (logsFollowTimer) {
+		clearInterval(logsFollowTimer);
+		logsFollowTimer = null;
+	}
+}
 function startLogsFollow(
 	ctx: ExtensionContext,
 	filterLevel: LogLevel | null,
@@ -110,10 +129,7 @@ function startLogsFollow(
 	filterText: string | null,
 	baselineMatched: number,
 ): void {
-	if (logsFollowTimer) {
-		clearInterval(logsFollowTimer);
-		logsFollowTimer = null;
-	}
+	stopLogsFollow();
 	let lastPrinted = baselineMatched;
 	logsFollowTimer = setInterval(() => {
 		try {
@@ -127,7 +143,7 @@ function startLogsFollow(
 			if (newCount <= 0) return;
 			const newLines = tail.lines.slice(
 				tail.lines.length - Math.min(newCount, tail.lines.length),
-			);
+			).slice(-50);
 			if (newLines.length > 0) {
 				ctx.ui.notify(newLines.join("\n"), "info");
 			}

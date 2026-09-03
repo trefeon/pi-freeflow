@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { UPDATE_CACHE_FILE, UPDATE_CHECK_TTL_MS } from "./config.ts";
 import { logInfo } from "./logger.ts";
 import { logWarn } from "./logger.ts";
-import { getStatusUi } from "./relay-state.ts";
+import { getActiveRelayState, getStatusUi } from "./relay-state.ts";
 import type { ExtensionUIContext } from "./types.ts";
 const REGISTRY_URL = "https://registry.npmjs.org/pi-freeflow/latest";
 /** Strict semver shape: major.minor.patch with optional -prerelease or +build suffix. */
@@ -143,6 +143,10 @@ export function checkForUpdateInBackground(ui?: ExtensionUIContext | null): void
 					const local = getLocalVersion();
 					if (local && compareVersions(latest, local) > 0) {
 						logInfo(`pi-freeflow update available: ${local} -> ${latest} (run /freeflow update)`);
+						// Respect hide: log only, never re-show the widget.
+						try {
+							if (getActiveRelayState().hideWidget) return;
+						} catch {}
 						const targetUi = ui ?? null;
 						if (targetUi?.setStatus) {
 							try { targetUi.setStatus("freeflow", `update: ${local} → ${latest}`); } catch {}

@@ -17,7 +17,7 @@ import {
 	setAliveCatalog,
 } from "./catalog.ts";
 import { ensureDaemon as ensureClientDaemon, getClientPort, stopHeartbeat } from "./client.ts";
-import { createCommandSpec, updateStatusBar } from "./commands.ts";
+import { createCommandSpec, stopLogsFollow, updateStatusBar } from "./commands.ts";
 import { HOST, ONBOARDED_FLAG_FILE, PORT } from "./config.ts";
 import { logInfo, logWarn } from "./logger.ts";
 import { ALL_MODELS, KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
@@ -330,5 +330,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	});
 	pi.on?.("session_shutdown", () => {
 		stopHeartbeat();
+		stopLogsFollow();
 	});
 }

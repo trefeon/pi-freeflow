@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import { execSync } from "node:child_process";
 import * as http from "node:http";
 import * as https from "node:https";
@@ -177,6 +178,63 @@ export async function getDaemonVersion(port: number): Promise<string | null> {
 	return h ? h.version : null;
 }
 
+/**
+ * Linux fallback when neither lsof nor fuser exists: resolve the LISTEN
+ * socket inode for `port` via /proc/net/tcp{,6}, then find the owning pid by
+ * scanning /proc fds. Dependency-free, same-user only, never self-kills.
+ */
+function killViaProcNet(port: number): boolean {
+	if (process.platform !== "linux") return false;
+	try {
+		const hexPort = port.toString(16).toUpperCase().padStart(4, "0");
+		const inodes = new Set<string>();
+		for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+			let text = "";
+			try {
+				text = fs.readFileSync(table, "utf8");
+			} catch {
+				continue;
+			}
+			for (const line of text.split("\n").slice(1)) {
+				const cols = line.trim().split(/\s+/);
+				if (cols.length < 10) continue;
+				const addr = cols[1].split(":");
+				if (addr.length !== 2 || addr[1].toUpperCase() !== hexPort) continue;
+				if (cols[3] !== "0A") continue; // LISTEN only
+				inodes.add(cols[9]);
+			}
+		}
+		if (inodes.size === 0) return false;
+		for (const pid of fs.readdirSync("/proc")) {
+			if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
+			let fds: string[];
+			try {
+				fds = fs.readdirSync(`/proc/${pid}/fd`);
+			} catch {
+				continue;
+			}
+			for (const fd of fds) {
+				let link = "";
+				try {
+					link = fs.readlinkSync(`/proc/${pid}/fd/${fd}`);
+				} catch {
+					continue;
+				}
+				const sock = link.match(/^socket:\[(\d+)\]$/);
+				if (sock && inodes.has(sock[1])) {
+					try {
+						process.kill(Number(pid), "SIGKILL");
+						return true;
+					} catch {
+						return false;
+					}
+				}
+			}
+		}
+	} catch {}
+	return false;
+}
+
 export async function killPortHolder(port: number): Promise<boolean> {
 	if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
 	try {
@@ -189,8 +247,10 @@ export async function killPortHolder(port: number): Promise<boolean> {
 				}) as string;
 				for (const line of out.split("\n")) {
 					if (!line.includes("LISTENING")) continue;
-					if (!line.includes(`:${port}`)) continue;
 					const parts = line.trim().split(/\s+/);
+					// Match the port on the Local Address column only — a raw
+					// substring match can hit longer ports (:2818 vs :28180).
+					if (!parts[1] || !parts[1].endsWith(`:${port}`)) continue;
 					const pid = parts[parts.length - 1];
 					if (!pid || !/^\d+$/.test(pid)) continue;
 					// Windows netstat report: 127.0.0.1:38180 ... LISTENING/PID
@@ -206,13 +266,14 @@ export async function killPortHolder(port: number): Promise<boolean> {
 				encoding: "utf8",
 				timeout: 3000,
 			}) as string;
-			const pid = out.trim().split(/\s+/)[0];
-			if (!pid || !/^\d+$/.test(pid)) return false;
-			if (Number(pid) === process.pid) return false; // never self-kill (Unix) — matches Windows guard at 161
-			execSync(`kill -9 ${pid}`, { timeout: 3000, stdio: "ignore" });
+			const pids = out.trim().split(/\s+/).filter((p) => /^\d+$/.test(p) && Number(p) !== process.pid);
+			// lsof matches both ends of a connection: our own recent probe socket
+			// (TIME_WAIT) can sort first, so skip self instead of taking [0].
+			if (pids.length === 0) return killViaProcNet(port);
+			execSync(`kill -9 ${pids[0]}`, { timeout: 3000, stdio: "ignore" });
 			return true;
 		} catch {
-			return false;
+			return killViaProcNet(port);
 		}
 	} catch {
 		return false;
@@ -271,8 +332,15 @@ export function handleControlRequest(
 			return;
 		}
 		if (reqPathname === "/_client/attach") registerClient(clientId);
-		else if (reqPathname === "/_client/heartbeat") renewClient(clientId);
-		else if (reqPathname === "/_client/detach") unregisterClient(clientId);
+		else if (reqPathname === "/_client/heartbeat") {
+			// Unknown id = daemon restarted since attach. Report ok:false so the
+			// client re-attaches instead of heartbeating lease-less.
+			if (!renewClient(clientId)) {
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(JSON.stringify({ ok: false }));
+				return;
+			}
+		} else if (reqPathname === "/_client/detach") unregisterClient(clientId);
 		else {
 			res.writeHead(404, { "content-type": "application/json" });
 			res.end(JSON.stringify({ error: "not found" }));
@@ -345,7 +413,6 @@ export function startProxy(
 			if (handleHealthRequest(req, res, realPort, getActiveRequests())) return;
 		}
 		if (req.method === "GET" && (reqPathname === "/v1/models" || reqPathname === "/v1/models/")) {
-			touchActivity();
 			const alive = getAliveCatalog();
 			const body = JSON.stringify({
 				object: "list",

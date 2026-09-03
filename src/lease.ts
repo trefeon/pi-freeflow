@@ -32,11 +32,13 @@ export function registerClient(clientId: string): void {
 	leases.set(clientId, Date.now());
 }
 
-/** Renew an existing client lease (unknown ids are ignored). */
-export function renewClient(clientId: string): void {
+/** Renew an existing client lease. Returns false when the id is unknown (daemon restarted). */
+export function renewClient(clientId: string): boolean {
 	if (leases.has(clientId)) {
 		leases.set(clientId, Date.now());
+		return true;
 	}
+	return false;
 }
 
 /** Remove a client lease (graceful detach on session end). */

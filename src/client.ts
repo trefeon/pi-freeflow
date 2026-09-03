@@ -63,7 +63,7 @@ function isSpawnEnabled(): boolean {
 	return process.env[DAEMON_SPAWN_ENV] !== "0";
 }
 
-type ControlResult = "ok" | "legacy" | "gone";
+type ControlResult = "ok" | "unknown" | "legacy" | "gone";
 
 async function controlCall(
 	port: number,
@@ -77,7 +77,12 @@ async function controlCall(
 			body: JSON.stringify(payload),
 			signal: AbortSignal.timeout(1500),
 		});
-		return res.ok ? "ok" : "legacy";
+		if (!res.ok) return "legacy";
+		try {
+			const data: unknown = await res.json();
+			if (data && typeof data === "object" && "ok" in data && data.ok === false) return "unknown";
+		} catch {}
+		return "ok";
 	} catch {
 		return "gone";
 	}
@@ -122,6 +127,9 @@ async function beatOnce(port: number): Promise<void> {
 	const result = await controlCall(port, "/_client/heartbeat", { id: CLIENT_ID });
 	if (result === "gone") {
 		void ensureDaemon();
+	} else if (result === "unknown") {
+		// Daemon restarted since attach: re-register our lease.
+		await attachTo(port);
 	}
 }
 
@@ -259,13 +267,22 @@ export async function ensureDaemon(): Promise<number> {
 		}
 
 		if (isSpawnEnabled()) {
+			// Cross-process race guard: a sibling session may be spawning right
+			// now (singleflight is per-process). Jitter + re-probe converts most
+			// cold-start races into attach instead of N detached spawns.
+			await new Promise<void>((r) => setTimeout(r, 100 + Math.random() * 200));
+			if (await isProxyAlive(PORT)) {
+				await attachTo(PORT);
+				return PORT;
+			}
 			spawnDaemonProcess();
 			const ready = await waitForReady(PORT, DAEMON_READY_TIMEOUT_MS);
 			if (ready) {
 				const ver = await getDaemonVersion(PORT);
 				if (ver !== null && ver !== PKG_VERSION) {
-					if (await killStaleDaemon(PORT, ver, "proxy daemon")) {
-						spawnDaemonProcess();
+				if (await killStaleDaemon(PORT, ver, "proxy daemon")) {
+					lastSpawnAt = 0; // kill-confirmed retry bypasses the spawn throttle
+					spawnDaemonProcess();
 						const retryReady = await waitForReady(PORT, DAEMON_READY_TIMEOUT_MS);
 						if (retryReady) {
 							await attachTo(PORT);
@@ -282,7 +299,8 @@ export async function ensureDaemon(): Promise<number> {
 			} else {
 				logWarn("daemon spawn did not become ready — is the port blocked?");
 			}
-			return PORT;
+			// Fall through to the in-process fallback below — never hand the caller
+			// a port we did not attach to (no lease, no heartbeat).
 		}
 
 		try {
