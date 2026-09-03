@@ -138,8 +138,8 @@ test("A: activation completes on a MINIMAL Pi host (no pi.on, ui notify-only) an
 	assert.equal(captured.providerName, "freeflow");
 	assert.ok(captured.providerConfig, "provider config must be registered");
 	assert.ok(
-		captured.providerConfig!.models.length >= 28,
-		"static catalog must expose at least 28 models",
+		captured.providerConfig!.models.length >= 26,
+		"static catalog must expose at least 26 models",
 	);
 	assert.ok(captured.commands.has("freeflow"), "/freeflow command must be registered");
 	assert.equal(
@@ -296,7 +296,7 @@ test("F: buildProviderConfig emits the host-compatible provider contract", () =>
 	assert.equal(cfg.apiKey, "public");
 	assert.equal(cfg.api, "openai-completions");
 	assert.equal(cfg.compat?.supportsDeveloperRole, false);
-	assert.ok(cfg.models.length >= 28, "at least 28 static models registered");
+	assert.ok(cfg.models.length >= 26, "at least 26 static models registered");
 
 	// every model carries the minimal {id, name} shape the host picker needs
 	for (const m of cfg.models) {

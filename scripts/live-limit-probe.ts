@@ -91,8 +91,8 @@ const plan: Array<() => Promise<ProbeResult>> = [
 	() => probeCtx("liquid/lfm-2.5-2.6b:free", "lfm ctx", 70_000),       // >65,536 cap → 131K?
 	() => probeCtx("nvidia/nemotron-3-super-120b-a12b:free", "super ctx", 270_000), // >262,144 cap → 1M?
 	() => probeCtx("nvidia/nemotron-3-super-120b-a12b:free", "super ctx", 520_000),
-	() => probeCtx("hy3-free", "hy3 zen ctx", 200_000),                  // >190,000 zen view → 262K?
-	() => probeCtx("tencent/hy3:free", "hy3 kilo ctx", 270_000),         // >262,144? (marginal)
+	() => probeCtx("nvidia/nemotron-3.5-lightning:free", "lightning kilo ctx", 1_050_000), // >1M cap?
+	() => probeCtx("thinkingmachines/inkling:free", "inkling ctx", 1_050_000),    // >1M cap?
 	// ── MAX OUTPUT ladder (cheap) ──
 	() => probeMax("laguna-s-2.1-free", "laguna zen max", 33_000),       // >32,768 cap → 131K?
 	() => probeMax("laguna-s-2.1-free", "laguna zen max", 65_000),

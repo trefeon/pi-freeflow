@@ -21,7 +21,7 @@ import { CATALOG_CACHE_FILE, CATALOG_CACHE_TTL_MS } from "../src/config.ts";
 import { ALL_MODELS } from "../src/models.ts";
 import type { RegisteredModel } from "../src/types.ts";
 
-/** Baseline 28 static models as RegisteredModel entries. */
+/** Baseline static models as RegisteredModel entries. */
 function baselineModels(): RegisteredModel[] {
 	return ALL_MODELS.map((m) => ({ ...m, source: "opencode" as const }));
 }

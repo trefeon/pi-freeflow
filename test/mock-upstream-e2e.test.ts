@@ -279,7 +279,7 @@ test("mock upstream: kilo model routes to api.kilo.ai with kilo-free auth", asyn
 
 // ── 7. /v1/models catalog ───────────────────────────────────────────────────
 
-test("mock upstream: /v1/models serves the 28-model catalog", async () => {
+test("mock upstream: /v1/models serves the 26-model catalog", async () => {
 	await withIsolatedRelayFiles(async () => {
 		await withProxyScenario(
 			{ state: makeState([]) },
@@ -288,7 +288,7 @@ test("mock upstream: /v1/models serves the 28-model catalog", async () => {
 				const res = await fetch(`http://127.0.0.1:${port}/v1/models`);
 				assert.equal(res.status, 200);
 				const json = (await res.json()) as { data?: Array<{ id: string }> };
-				assert.equal(json.data?.length, 28);
+				assert.equal(json.data?.length, 26);
 			},
 		);
 	});

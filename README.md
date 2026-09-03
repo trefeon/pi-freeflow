@@ -1,6 +1,6 @@
 # pi-freeflow 🌊
 
-> **28 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.**
+> **26 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.**
 
 Thin by design: model list + dumb relay + log. Host `pi-ai` owns thinking, normalization & provider magic. We just make it free, fast, and unbreakable.
 
@@ -18,7 +18,7 @@ Join devs bypassing rate limits with their own relay pools. BYO, add as many as 
 
 | Feature | Description | Value | Cost |
 | :--- | :--- | :--- | :--- |
-| **28 Curated Free Models** | 8 OpenCode Zen + 20 KiloCode Gateway models, up to 1M context & 512K output | Ceiling Unlocked | **$0** |
+| **26 Curated Free Models** | 8 OpenCode Zen + 18 KiloCode Gateway models, up to 1M context & 512K output | Ceiling Unlocked | **$0** |
 | **BYO Relay Pool** | Round-robin load balancing across your Cloudflare Workers & Vercel Edges | Zero Rate Limits | **$0** (your free tiers) |
 | **Adaptive Health & Error Detection** | Auto-cooldown on 429 rate limits, 504 timeouts, and socket drops | 0ms Wasted Latency | **$0** |
 | **Stream Truncation Resilience** | Stateful SSE terminal tracking (`response.failed` / `response.incomplete` injection) | Zero Host Crashes | **$0** |
@@ -32,24 +32,25 @@ Philosophy: **Thin by design.** We only ship model list + relay proxy + log. Hos
 
 ---
 
-### 28 Curated Models, One Command
+### 26 Curated Models, One Command
 
 ```bash
 /model → freeflow → pick
 ```
 
-#### OpenCode Zen (7 Models), Responses & Chat API
+#### OpenCode Zen (8 Models), Responses & Chat API
 Optimized for deep reasoning, long-horizon coding & autonomous agentic workflows.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `muse-spark-1.2-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
+| `muse-spark-1.3-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
 | `mimo-v2.5-free` | Xiaomi MiMo | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh`\* | ✅ |
 | `laguna-s-2.1-free` | Poolside | **262K** (262.144) | **32K** (32.768) | `minimal … xhigh` | ❌ |
 | `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `minimal … xhigh` | ❌ |
 | `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `minimal … xhigh` | ❌ |
-| `hy3-free` | Tencent Hunyuan | **262K** (262.144) | **128K** (128.000) | `minimal … xhigh` | ❌ |
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
+| `ling-3.0-flash-fin-free` | Inclusion AI | **262K** (262.144) | **131K** (131.072) | `minimal … xhigh` | ❌ |
 
 #### KiloCode Gateway (18 Models), OpenRouter Compatible
 Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI aliases supported.
@@ -62,7 +63,6 @@ Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI alia
 | `nemotron-3-ultra-550b` (`nvidia/...:free`) | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `minimal…xhigh`\* | ❌ |
 | `nvidia/nemotron-3.5-lightning:free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `minimal…xhigh`\* | ❌ |
 | `nemotron-3-super` (`nvidia/...:free`) | NVIDIA | **262K** (262.144) | **262K** (262.144) | `minimal…xhigh`\* | ❌ |
-| `hy3:free` (`tencent/hy3:free`) | Tencent Hunyuan | **262K** (262.144) | **128K** (128.000) | `minimal…xhigh`\* | ❌ |
 | `north-mini-code` (`cohere/...:free`) | Cohere | **256K** (256.000) | **64K** (64.000) | `minimal…xhigh`\* | ❌ |
 | `laguna-s-2.1:free` (`poolside/...:free`) | Poolside | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
 | `laguna-xs-2.1:free` (`poolside/...:free`) | Poolside | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
@@ -70,12 +70,13 @@ Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI alia
 | `kilo-auto` (`kilo-auto/free`) | Kilo Gateway Auto | **256K** (256.000) | **10K** (10.000) | `minimal…xhigh`\* | ❌ |
 | `openrouter` (`openrouter/free`) | OpenRouter Free | **200K** (200.000) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
 | `content-safety` (`nvidia/...:free`) | NVIDIA | **128K** (128.000) | **8K** (8.192) | ❌ *(non-thinking)* | ✅ |
-| `longcat-2.0` (`meituan/longcat-2.0-free`) | Meituan | **1M** (1.048.756) | **262K** (262.144) | `minimal…xhigh`\* | ❌ |
 | `minimax-m2.7` (`minimax/minimax-m2.7:free`) | MiniMax | **196K** (196.608) | **196K** (196.608) | `minimal…xhigh`\* | ❌ |
 | `minimax-m3` (`minimax/minimax-m3:free`) | MiniMax | **1M** (1.048.576) | **512K** (524.288) | `minimal…xhigh`\* | ❌ |
 | `ling-3.0-flash-fin` (`inclusionai/ling-3.0-flash-fin:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
+| `inkling` (`thinkingmachines/inkling:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
+| `inkling-small` (`thinkingmachines/inkling-small:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
 
-\* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. (Verified live 2026-08-29: hy3 accepts flat `reasoning_effort`/nested `reasoning` and returns thinking — README previously said otherwise.) MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.
+\* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.
 
 ---
 
@@ -341,7 +342,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
 src/
 ├── index.ts          # extension entry, lifecycle hooks
-├── models.ts         # 28-model catalog definitions
+├── models.ts         # 26-model catalog definitions
 ├── catalog.ts        # model catalog cache (24h disk)
 ├── proxy.ts          # local proxy server (127.0.0.1:28180)
 ├── relay.ts          # relay selection & round-robin

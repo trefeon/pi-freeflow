@@ -3,7 +3,7 @@
  *
  * Drives the whole fresh-user journey against mocks, no real network, no real
  * ports 28180/18080:
- *   1. Fresh install — activation registers 28 models, binds a proxy, onboards
+ *   1. Fresh install — activation registers 26 models, binds a proxy, onboards
  *      exactly once (flag-gated), no re-notify on a second session.
  *   2. Direct-mode chat — POST /v1/chat/completions streams SSE chunks + a
  *      terminal event through the running proxy; request hits the sandbox log.
@@ -162,7 +162,7 @@ const mockPi: ExtensionAPI = {
 
 // ── 1. Fresh install ────────────────────────────────────────────────────────
 
-test("user flow [1/6] fresh install registers 28 models, binds a proxy, and onboards exactly once", async () => {
+test("user flow [1/6] fresh install registers 26 models, binds a proxy, and onboards exactly once", async () => {
 	await withIsolatedSandboxFiles(async () => {
 		clearSandboxFiles();
 
@@ -215,7 +215,7 @@ test("user flow [1/6] fresh install registers 28 models, binds a proxy, and onbo
 			assert.equal(
 				registeredConfig.models.length,
 				ALL_MODELS.length,
-				"all 28 static models must be registered",
+				"all 26 static models must be registered",
 			);
 			assert.match(registeredConfig.baseUrl, /127\.0\.0\.1/, "baseUrl must point to loopback");
 
@@ -233,7 +233,7 @@ test("user flow [1/6] fresh install registers 28 models, binds a proxy, and onbo
 			assert.equal(fs.readFileSync(ONBOARDED_FLAG_FILE, "utf8"), "1");
 			assert.match(
 				msgs[0],
-				/^freeflow ready: 28 free models via local proxy 127\.0\.0\.1:28180\. /,
+				/^freeflow ready: 26 free models via local proxy 127\.0\.0\.1:28180\. /,
 				"welcome must announce the local proxy",
 			);
 

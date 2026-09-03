@@ -1,9 +1,9 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 28 verified free models:
- * - 8 OpenCode Zen models (1 Responses API + 7 Chat Completions)
- * - 20 KiloCode Keyless Gateway models (19 OpenRouter format + 1 Standard format)
+ * Defines the 26 verified free models:
+ * - 8 OpenCode Zen models (2 Responses API + 6 Chat Completions)
+ * - 18 KiloCode Keyless Gateway models (17 OpenRouter format + 1 Standard format)
  */
 
 import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
@@ -16,6 +16,23 @@ export const OPENCODE_MODELS: ModelDef[] = [
 	{
 		id: "muse-spark-1.2-contributor-free",
 		name: "Muse Spark 1.2 (1M)",
+		reasoning: true,
+		contextWindow: 1_048_576,
+		maxTokens: 131_072,
+		api: "openai-responses",
+		input: ["text", "image"],
+		thinkingLevelMap: {
+			off: null,
+			minimal: "minimal",
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: null,},
+	},
+	{
+		id: "muse-spark-1.3-contributor-free",
+		name: "Muse Spark 1.3 (1M)",
 		reasoning: true,
 		contextWindow: 1_048_576,
 		maxTokens: 131_072,
@@ -44,22 +61,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
 			medium: "medium",
 			high: "high",
 			xhigh: "high",
-			max: null,},
-	},
-	{
-		id: "hy3-free",
-		name: "Hy3 (262K)",
-		reasoning: true,
-		contextWindow: 262_144,
-		maxTokens: 128_000,
-		input: ["text"],
-		thinkingLevelMap: {
-			off: null,
-			minimal: "minimal",
-			low: "low",
-			medium: "medium",
-			high: "high",
-			xhigh: "xhigh",
 			max: null,},
 	},
 	{
@@ -227,16 +228,6 @@ export const KILO_MODELS: ModelDef[] = [
 		thinkingLevelMap: KILO_REASONING_MAP,
 	},
 	{
-		id: "tencent/hy3:free",
-		name: "Tencent Hy3 (Kilo)",
-		reasoning: true,
-		contextWindow: 262_144,
-		maxTokens: 128_000,
-		input: ["text"],
-		thinkingFormat: "openrouter",
-		thinkingLevelMap: KILO_REASONING_MAP,
-	},
-	{
 		id: "cohere/north-mini-code:free",
 		name: "North Mini Code",
 		reasoning: true,
@@ -304,16 +295,6 @@ export const KILO_MODELS: ModelDef[] = [
 		maxTokens: 8_192,
 		input: ["text", "image"],
 	},
-{
-	id: "meituan/longcat-2.0-free",
-	name: "LongCat 2.0 (1M)",
-	reasoning: true,
-	contextWindow: 1_048_756,
-	maxTokens: 262_144,
-	input: ["text"],
-	thinkingFormat: "openrouter",
-	thinkingLevelMap: KILO_REASONING_MAP,
-},
 {
 	id: "minimax/minimax-m2.7:free",
 	name: "MiniMax M2.7 (free)",
@@ -384,14 +365,12 @@ export const MODEL_ALIASES: Record<string, string> = {
 	"north-mini-code": "cohere/north-mini-code:free",
 	"lfm-2.5": "liquid/lfm-2.5-2.6b:free",
 	"content-safety": "nvidia/nemotron-3.5-content-safety:free",
-	"longcat-2.0": "meituan/longcat-2.0-free",
 	"minimax-m2.7": "minimax/minimax-m2.7:free",
 	"minimax-m3": "minimax/minimax-m3:free",
 	"ling-3.0-flash-fin": "inclusionai/ling-3.0-flash-fin:free",
 	"inkling": "thinkingmachines/inkling:free",
 	"inkling-small": "thinkingmachines/inkling-small:free",
 	// provider-prefixed short aliases (slash-normalized)
-	"hy3:free": "tencent/hy3:free",
 	"laguna-s-2.1:free": "poolside/laguna-s-2.1:free",
 	"laguna-xs-2.1:free": "poolside/laguna-xs-2.1:free",
 	"kilo-auto": "kilo-auto/free",
@@ -417,7 +396,7 @@ export const KILO_MODEL_IDS = new Set<string>([
 ]);
 
 /**
- * Combined list of all 28 static free models (canonical)
+ * Combined list of all 26 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS];
 

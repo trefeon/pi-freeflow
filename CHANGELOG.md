@@ -2,6 +2,18 @@
 
 All notable changes to pi-freeflow. Public, user-visible behavior only.
 
+## 1.9.5 - 2026-09-03
+
+### Changes
+- **Catalog refreshed against live upstream model lists (26 models: 8 OpenCode Zen + 18 KiloCode Gateway).** Re-checked both upstreams against their live endpoints and live inference probes:
+  - **Added** `muse-spark-1.3-contributor-free` (OpenCode Zen, Responses API, 1M context, 131K output, vision) — verified live: completes with reasoning, accepts effort levels, and answers vision queries.
+  - **Removed** `hy3-free` (OpenCode Zen) — upstream no longer serves it (`Model hy3-free is not supported`).
+  - **Removed** `tencent/hy3:free` and `meituan/longcat-2.0-free` (KiloCode Gateway) — upstream free tier dropped them (model unavailable / sign-in required).
+- Pruned IDs added to the dead-model filter so a stale disk cache cannot resurrect them.
+
+### Validation
+- `npx tsc --noEmit` clean, `npm test` full suite green on Windows.
+
 ## 1.9.4 - 2026-09-02
 
 ### Dependencies

@@ -34,7 +34,7 @@ src/
 ├── health.ts          # Loopback-only /health endpoint handler
 ├── index.ts           # Extension bootstrap, provider registration, lifecycle hooks
 ├── logger.ts          # Structured, leveled, rotating file logger (10MB x 10)
-├── models.ts          # 28 curated free model definitions and upstream mappings
+├── models.ts          # 26 curated free model definitions and upstream mappings
 ├── probe.ts           # Relay reachability probe (HTTP 200 + latency)
 ├── proxy.ts           # Loopback HTTP proxy server on 28180 with master/worker reuse
 ├── rate-limiter.ts    # In-memory sliding rate limiter (200/day opencode, 200/hour kilo)
@@ -63,7 +63,7 @@ To prevent network burst storms when multiple subagents boot simultaneously, the
 - **Location**: `~/.pi/agent/pi-freeflow-catalog-cache.json`
 - **TTL**: 24 hours (86,400,000 ms)
 - **Atomic Write**: Uses a temp file + `fs.renameSync` to prevent corruption under concurrent writes
-- **Boot Speed**: Subagents load all 28 models from disk cache in ~0.1ms
+- **Boot Speed**: Subagents load all 26 models from disk cache in ~0.1ms
 
 ## Stream Lifecycle Safety
 

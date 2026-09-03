@@ -2,7 +2,7 @@ import { defineConfig } from 'vitepress'
 
 export default defineConfig({
   title: 'pi-freeflow Docs',
-  description: '28 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.',
+  description: '26 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.',
   themeConfig: {
     sidebar: [
       { text: 'Home', link: '/' },

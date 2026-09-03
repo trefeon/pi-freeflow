@@ -31,10 +31,16 @@ import type {
 /**
  * Pruned model IDs that must never re-enter the catalog via disk cache or upstream merge.
  */
-export const DEAD_MODEL_IDS = new Set<string>(["deepseek-v4-flash-free", "x-preview-f-free"]);
+export const DEAD_MODEL_IDS = new Set<string>([
+	"deepseek-v4-flash-free",
+	"x-preview-f-free",
+	"hy3-free",
+	"tencent/hy3:free",
+	"meituan/longcat-2.0-free",
+]);
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 28 verified models for 0ms instant availability.
+ * Initialized with all 26 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
 	...m,
@@ -148,7 +154,9 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
 		maxTokens = 131_072;
 	}
 
-	const isResponses = raw.id === "muse-spark-1.2-contributor-free";
+	const isResponses =
+		raw.id === "muse-spark-1.2-contributor-free" ||
+		raw.id === "muse-spark-1.3-contributor-free";
 
 	return {
 		id: raw.id,
@@ -349,6 +357,6 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 	} catch (err) {
 		logDebug("Failed reading stale catalog cache", { error: String(err) });
 	}
-	// No valid cache — return in-memory static 28 (host will refresh if needed)
+	// No valid cache — return in-memory static 26 (host will refresh if needed)
 	return aliveCatalog;
 }

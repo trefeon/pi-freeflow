@@ -2,7 +2,7 @@
  * Comprehensive End-to-End (E2E) Test Suite: New User Lifecycle & System Contracts
  *
  * Covers:
- * 1. Fresh bootstrap & provider registration (28 models on default port 28180)
+ * 1. Fresh bootstrap & provider registration (26 models on default port 28180)
  * 2. CLI exit safety (server.unref() allows installer/CLI commands to exit cleanly)
  * 3. Multi-session daemon reuse (zero-duplicate single-port architecture)
  * 4. Legacy migration & dual-probe backward compatibility (18080 fallback)
@@ -58,7 +58,7 @@ import type {
 
 // ── 1. Fresh Bootstrap & Static Catalog Registration ─────────────────────────
 
-test("E2E [1/10] fresh new user bootstrap registers 28 models with zero-latency catalog", async () => {
+test("E2E [1/10] fresh new user bootstrap registers 26 models with zero-latency catalog", async () => {
 	let registeredProviderName = "";
 	let registeredProviderConfig: ProviderConfig | undefined;
 	const registeredCommands: Record<string, Omit<RegisteredCommand, "name">> = {};
@@ -90,8 +90,12 @@ test("E2E [1/10] fresh new user bootstrap registers 28 models with zero-latency 
 	// Discontinued models are absent
 	const hasV4Flash = registeredProviderConfig.models.some((m) => m.id === "deepseek-v4-flash-free");
 	const hasXPreview = registeredProviderConfig.models.some((m) => m.id === "x-preview-f-free");
+	const hasHy3 = registeredProviderConfig.models.some((m) => m.id === "hy3-free" || m.id === "tencent/hy3:free");
+	const hasLongcat = registeredProviderConfig.models.some((m) => m.id === "meituan/longcat-2.0-free");
 	assert.equal(hasV4Flash, false);
 	assert.equal(hasXPreview, false);
+	assert.equal(hasHy3, false);
+	assert.equal(hasLongcat, false);
 
 	// Slash command and lifecycle hooks registered
 	assert.ok(registeredCommands["freeflow"], "/freeflow command must be registered");
@@ -205,8 +209,8 @@ test("E2E [5/10] ensureDaemon seamlessly rebinds when active daemon process is t
 test("E2E [6/10] model catalog accurately maps thinking formats and source routing", () => {
 	// Canonical resolution
 	assert.equal(resolveCanonicalModelId("muse-spark-1.2-contributor-free"), "muse-spark-1.2-contributor-free");
+	assert.equal(resolveCanonicalModelId("muse-spark-1.3-contributor-free"), "muse-spark-1.3-contributor-free");
 	assert.equal(resolveCanonicalModelId("mimo-v2.5-free"), "mimo-v2.5-free");
-	assert.equal(resolveCanonicalModelId("hy3-free"), "hy3-free");
 
 	// Kilo models identification
 	assert.equal(isKiloModel("dots-3-note-preview"), true);
