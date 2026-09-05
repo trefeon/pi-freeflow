@@ -18,7 +18,7 @@ Join devs bypassing rate limits with their own relay pools. BYO, add as many as 
 
 | Feature | Description | Value | Cost |
 | :--- | :--- | :--- | :--- |
-| **26 Curated Free Models** | 8 OpenCode Zen + 18 KiloCode Gateway models, up to 1M context & 512K output | Ceiling Unlocked | **$0** |
+| **26 Curated Free Models** | 7 OpenCode Zen + 19 KiloCode Gateway models, up to 1M context & 512K output | Ceiling Unlocked | **$0** |
 | **BYO Relay Pool** | Round-robin load balancing across your Cloudflare Workers & Vercel Edges | Zero Rate Limits | **$0** (your free tiers) |
 | **Adaptive Health & Error Detection** | Auto-cooldown on 429 rate limits, 504 timeouts, and socket drops | 0ms Wasted Latency | **$0** |
 | **Stream Truncation Resilience** | Stateful SSE terminal tracking (`response.failed` / `response.incomplete` injection) | Zero Host Crashes | **$0** |

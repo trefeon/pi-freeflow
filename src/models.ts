@@ -2,8 +2,8 @@
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
  * Defines the 26 verified free models:
- * - 8 OpenCode Zen models (2 Responses API + 6 Chat Completions)
- * - 18 KiloCode Keyless Gateway models (17 OpenRouter format + 1 Standard format)
+ * - 7 OpenCode Zen models (2 Responses API + 5 Chat Completions)
+ * - 19 KiloCode Keyless Gateway models (18 OpenRouter format + 1 Standard format)
  */
 
 import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
