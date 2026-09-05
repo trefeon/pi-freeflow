@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
 	enrichModelDef,
+	isFreeCatalogId,
 	mergeCatalog,
 	readCatalogCache,
 	refreshCatalog,
@@ -130,6 +131,58 @@ test("refreshCatalog 200 with empty data is a no-op returning the alive catalog"
 	});
 });
 
+test("stale cache without etag serves spark-1.3 with repaired responses api (issue #6)", async () => {
+	await withCacheFileIsolation(async () => {
+		// Reporter's exact file shape: 3-day-old cache, no etag, 1.3 entry
+		// written before enrichment knew it (api missing), paid ids present.
+		const staleSpark = {
+			id: "muse-spark-1.3-contributor-free",
+			name: "Muse Spark 1.3 (1M)",
+			reasoning: true,
+			contextWindow: 1_048_576,
+			maxTokens: 131_072,
+			input: ["text", "image"] as ["text", "image"],
+			source: "opencode" as const,
+		};
+		const paid = {
+			id: "claude-fable-5-1",
+			name: "Claude Fable 5-1",
+			reasoning: false,
+			contextWindow: 1000,
+			maxTokens: 1000,
+			input: ["text"] as ["text"],
+			source: "opencode" as const,
+		};
+		const models = [
+			...baselineModels().filter((m) => m.id !== "muse-spark-1.3-contributor-free"),
+			staleSpark,
+			paid,
+		];
+		fs.writeFileSync(
+			CATALOG_CACHE_FILE,
+			JSON.stringify({
+				timestamp: Date.now() - 3 * CATALOG_CACHE_TTL_MS,
+				opencode: models.map((m) => m.id),
+				kilo: [],
+				models,
+			}),
+			"utf8",
+		);
+		setAliveCatalog([]);
+		let calls = 0;
+		globalThis.fetch = async () => {
+			calls++;
+			throw new Error("offline fallback");
+		};
+		const result = await refreshCatalog(false);
+		assert.equal(calls, 1, "etagless stale cache must attempt one plain revalidation fetch");
+		const spark = result.find((m) => m.id === "muse-spark-1.3-contributor-free");
+		assert.ok(spark, "stale 1.3 entry must survive");
+		assert.equal(spark.api, "openai-responses", "stale 1.3 api must be backfilled, not undefined");
+		assert.equal(result.some((m) => m.id === "claude-fable-5-1"), false, "paid ids must be purged");
+	});
+});
+
 test("writeCatalogCache does not throw when the disk write fails", () => {
 	const origWriteFileSync = fs.writeFileSync;
 	const origRenameSync = fs.renameSync;
@@ -145,4 +198,74 @@ test("writeCatalogCache does not throw when the disk write fails", () => {
 		fs.writeFileSync = origWriteFileSync;
 		fs.renameSync = origRenameSync;
 	}
+});
+
+test("mergeCatalog drops paid upstream ids like claude-fable-5-1 (issue #6)", () => {
+	const base = baselineModels().slice(0, 2);
+	const paid = {
+		id: "claude-fable-5-1",
+		name: "Claude Fable 5-1",
+		reasoning: false,
+		contextWindow: 1000,
+		maxTokens: 1000,
+		input: ["text"] as ["text"],
+		source: "opencode" as const,
+	};
+	const merged = mergeCatalog(base, [paid]);
+	assert.equal(merged.some((m) => m.id === "claude-fable-5-1"), false);
+	assert.deepEqual(merged.map((m) => m.id), base.map((m) => m.id));
+});
+
+test("isFreeCatalogId accepts -free, :free, /free and known ids, rejects paid and dead", () => {
+	assert.equal(isFreeCatalogId("mimo-v2.5-free"), true);
+	assert.equal(isFreeCatalogId("minimax/minimax-m3:free"), true);
+	assert.equal(isFreeCatalogId("lab/new-model/free"), true);
+	assert.equal(isFreeCatalogId("big-pickle"), true);
+	assert.equal(isFreeCatalogId("claude-fable-5-1"), false);
+	assert.equal(isFreeCatalogId("hy3-free"), false);
+	assert.equal(isFreeCatalogId(""), false);
+});
+
+test("sanitizeCatalogModels repairs stale spark api to openai-responses (issue #6)", () => {
+	const staleSpark = {
+		id: "muse-spark-1.3-contributor-free",
+		name: "Muse Spark 1.3 (1M)",
+		reasoning: true,
+		contextWindow: 1_048_576,
+		maxTokens: 131_072,
+		api: "openai-completions" as const,
+		input: ["text", "image"] as ["text", "image"],
+		source: "opencode" as const,
+	};
+	const merged = mergeCatalog([], [staleSpark]);
+	assert.equal(merged.length, 1);
+	assert.equal(merged[0].api, "openai-responses");
+});
+
+test("readCatalogCache purges paid ids persisted by pre-fix refreshes (issue #6)", async () => {
+	await withCacheFileIsolation(async () => {
+		const paid = {
+			id: "claude-fable-5-1",
+			name: "Claude Fable 5-1",
+			reasoning: false,
+			contextWindow: 1000,
+			maxTokens: 1000,
+			input: ["text"] as ["text"],
+			source: "opencode" as const,
+		};
+		fs.writeFileSync(
+			CATALOG_CACHE_FILE,
+			JSON.stringify({
+				timestamp: Date.now(),
+				etag: '"paid-cache"',
+				opencode: [paid.id],
+				kilo: [],
+				models: [...baselineModels().slice(0, 1), paid],
+			}),
+			"utf8",
+		);
+		const cached = readCatalogCache();
+		assert.ok(cached);
+		assert.equal((cached.models ?? []).some((m) => m.id === "claude-fable-5-1"), false);
+	});
 });

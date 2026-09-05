@@ -20,7 +20,6 @@ import {
 	ALL_MODELS,
 	KILO_MODEL_IDS,
 	MODEL_MAP,
-	OPENCODE_MODELS,
 } from "./models.ts";
 import type {
 	CatalogCacheData,
@@ -40,6 +39,39 @@ export const DEAD_MODEL_IDS = new Set<string>([
 	"meituan/longcat-2.0-free",
 	"laguna-s-2.1-free",
 ]);
+/**
+ * Free-tier allowlist for anything entering the picker via network or stale disk.
+ * Upstream lists paid models alongside free ones (e.g. claude-fable-5-1,
+ * claude-opus-4-*, gemini-3-*) so a bare upstream merge leaks paid entries that
+ * fail with 401 Missing API key. Known static IDs without a free suffix
+ * (e.g. big-pickle) stay allowed via MODEL_MAP.
+ */
+export function isFreeCatalogId(id: string): boolean {
+	if (typeof id !== "string" || id.length === 0) return false;
+	if (DEAD_MODEL_IDS.has(id)) return false;
+	return id.includes("-free") || id.includes(":free") || id.includes("/free") || MODEL_MAP.has(id);
+}
+/**
+ * Purge paid/dead entries from a catalog list and repair known models against
+ * the static definitions. Stale disk caches predate the paid filter and the
+ * muse-spark-1.3 responses-api entry, so loading them verbatim replays a wrong
+ * api (chat/completions for a responses-only model -> upstream 500) until the
+ * 24h TTL expires. Repairing here self-heals on the next refresh without a
+ * reinstall.
+ */
+export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredModel[] {
+	const out: RegisteredModel[] = [];
+	for (const m of models) {
+		if (!m || typeof m.id !== "string" || !isFreeCatalogId(m.id)) continue;
+		const known = MODEL_MAP.get(m.id);
+		if (known) {
+			out.push({ ...known, source: m.source ?? (KILO_MODEL_IDS.has(m.id) ? "kilo" : "opencode") });
+		} else {
+			out.push(m);
+		}
+	}
+	return out;
+}
 /**
  * In-memory cache of currently active/available free models.
  * Initialized with all 26 verified models for 0ms instant availability.
@@ -73,11 +105,12 @@ export function mergeCatalog(
 	base: RegisteredModel[],
 	fresh: RegisteredModel[],
 ): RegisteredModel[] {
-	const filteredFresh = fresh.filter((m) => !DEAD_MODEL_IDS.has(m.id));
+	const filteredFresh = fresh.filter((m) => m && typeof m.id === "string" && isFreeCatalogId(m.id));
 	const byId = new Map(base.map((m) => [m.id, m]));
 	for (const m of filteredFresh) byId.set(m.id, m);
-	// Ensure no dead IDs survive even if base was stale
-	return [...byId.values()].filter((m) => !DEAD_MODEL_IDS.has(m.id));
+	// Sanitize the merged result so stale paid entries in a pre-fix base and
+	// stale api fields on known models never survive the merge.
+	return sanitizeCatalogModels([...byId.values()]);
 }
 
 /**
@@ -188,7 +221,7 @@ export function readCatalogCache(): CatalogCacheData | null {
 		if (!Array.isArray(data.models)) {
 			return null;
 		}
-		data.models = data.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
+		data.models = sanitizeCatalogModels(data.models);
 		if (Date.now() - data.timestamp < CATALOG_CACHE_TTL_MS) {
 			return data;
 		}
@@ -250,7 +283,7 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 	if (disk && Array.isArray(disk.models) && disk.models.length > 0) {
 		const age = Date.now() - (disk.timestamp ?? 0);
 		if (!force && age < CATALOG_CACHE_TTL_MS) {
-			aliveCatalog = disk.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
+			aliveCatalog = sanitizeCatalogModels(disk.models);
 			return aliveCatalog;
 		}
 	}
@@ -271,8 +304,12 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 		}
 	}
 
-	// Attempt conditional fetch with If-None-Match when we have an etag
-	if (cachedEtag || force) {
+	// Attempt a fetch whenever there is cache material to revalidate: conditional
+	// with If-None-Match when we have an etag, plain otherwise. A pre-fix cache
+	// file with no etag must still go live (acquiring an etag and discovering
+	// new free models) instead of serving stale indefinitely. Corrupt/missing
+	// caches (staleForEtag null) skip the network and fall through to static.
+	if (cachedEtag || force || staleForEtag) {
 		try {
 			const headers: Record<string, string> = { ...opencodeHeaders() };
 			if (cachedEtag) {
@@ -306,14 +343,7 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 					}
 				}
 				if (rawList.length > 0) {
-					const freeRawList = rawList.filter((r) => {
-						if (!r || typeof r.id !== "string") return false;
-						if (DEAD_MODEL_IDS.has(r.id)) return false;
-						return (
-							r.id.includes("-free") ||
-							OPENCODE_MODELS.some((m) => m.id === r.id)
-						);
-					});
+					const freeRawList = rawList.filter((r) => r && typeof r.id === "string" && isFreeCatalogId(r.id));
 					const fresh = freeRawList.map((r) => enrichModelDef(r, "opencode"));
 					const merged = mergeCatalog(aliveCatalog, fresh);
 					aliveCatalog = merged;
@@ -345,7 +375,7 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 
 	// Stale cache still better than empty — return it without network (filtered)
 	if (disk && Array.isArray(disk.models) && disk.models.length > 0) {
-		const filtered = disk.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
+		const filtered = sanitizeCatalogModels(disk.models);
 		if (filtered.length >= ALL_MODELS.length) {
 			aliveCatalog = filtered;
 			return aliveCatalog;
@@ -357,7 +387,7 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 			const raw = fs.readFileSync(CATALOG_CACHE_FILE, "utf8");
 			const stale = JSON.parse(raw) as CatalogCacheData;
 			if (Array.isArray(stale.models) && stale.models.length > 0) {
-				const filtered = stale.models.filter((m) => !DEAD_MODEL_IDS.has(m.id));
+				const filtered = sanitizeCatalogModels(stale.models);
 				if (filtered.length >= ALL_MODELS.length) {
 					aliveCatalog = filtered;
 					return aliveCatalog;

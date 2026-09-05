@@ -30,7 +30,7 @@ import {
 } from "./config.ts";
 
 import { isDebugEnabled, log } from "./logger.ts";
-import { KILO_MODEL_IDS, resolveCanonicalModelId } from "./models.ts";
+import { KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
 import { checkRateLimit } from "./rate-limiter.ts";
 import { relayFetch } from "./relay.ts";
@@ -524,6 +524,16 @@ export function startProxy(
 				return;
 			}
 
+			// Stale-registration guard: responses-only models (muse-spark-*) must
+			// reach upstream via /v1/responses. A chat/completions request for one
+			// means the host still holds a pre-fix provider registration (stale
+			// disk cache or no restart after upgrade) and upstream answers 500.
+			if (!isKilo && typeof parsedBody?.model === "string" && target.pathname.endsWith("/chat/completions")) {
+				const knownDef = MODEL_MAP.get(String(parsedBody.model));
+				if (knownDef?.api === "openai-responses") {
+					log("warn", `model ${String(parsedBody.model)} expects openai-responses but got ${target.pathname} — stale provider registration (restart Pi/OMP after upgrade)`, { model: String(parsedBody.model), path: target.pathname }, reqId);
+				}
+			}
 			try {
 				if (isKilo && parsedBody) {
 					// Header-wait timeout + client-disconnect abort: once headers
@@ -659,6 +669,9 @@ export function startProxy(
 										relayState.url,
 									);
 								} else {
+									if (!response.ok) {
+										log("warn", `upstream ${response.status} for model ${String((parsedBody as Record<string, unknown> | null)?.model ?? "?")} via relay`, { status: response.status, model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url }, reqId);
+									}
 									const data = await response.text();
 									const ct =
 										response.headers.get("content-type") ||
@@ -716,6 +729,9 @@ export function startProxy(
 						clearTimeout(timeoutId);
 						res.off("close", onClientClose);
 						req.off("error", onReqError);
+						if (upstreamRes.status >= 400) {
+							log("warn", `direct upstream ${upstreamRes.status} for model ${String(parsedBody?.model ?? "?")} ${target.pathname}`, { status: upstreamRes.status, model: parsedBody?.model, path: target.pathname }, reqId);
+						}
 
 						const outHeaders: Record<string, string> = {};
 						for (const h of ["content-type", "cache-control", "x-request-id"] as const) {

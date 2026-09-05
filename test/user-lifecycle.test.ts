@@ -501,9 +501,9 @@ test("catalog cache [g1] fresh cache is served without a network refresh", async
 		setAliveCatalog(resetCatalog());
 		writeCatalogCache({
 			timestamp: Date.now(),
-			opencode: ["m-ttl"],
+			opencode: ["m-ttl-free"],
 			kilo: [],
-			models: [fakeModel("m-ttl")],
+			models: [fakeModel("m-ttl-free")],
 			etag: "etag-ttl",
 		});
 
@@ -512,7 +512,7 @@ test("catalog cache [g1] fresh cache is served without a network refresh", async
 		});
 		try {
 			const result = await refreshCatalog(false);
-			assert.ok(result.some((m) => m.id === "m-ttl"), "fresh cache must be served");
+			assert.ok(result.some((m) => m.id === "m-ttl-free"), "fresh cache must be served");
 			assert.equal(fetchMock.mock.calls.length, 0, "fresh cache must not trigger a fetch");
 			assert.ok(readCatalogCache(), "cache file must remain valid");
 		} finally {
@@ -529,9 +529,9 @@ test("catalog cache [g2] stale cache triggers a conditional refresh that merges 
 		setAliveCatalog(resetCatalog());
 		writeCatalogCache({
 			timestamp: Date.now() - CATALOG_CACHE_TTL_MS - 5000,
-			opencode: ["m-stale"],
+			opencode: ["m-stale-free"],
 			kilo: [],
-			models: [fakeModel("m-stale")],
+			models: [fakeModel("m-stale-free")],
 			etag: "etag-stale",
 		});
 
@@ -682,9 +682,9 @@ test("activation [i1] async catalog refresh merges the fetched model into the re
 		// Pre-seed a STALE cache so the activation's refreshCatalog actually fetches.
 		writeCatalogCache({
 			timestamp: Date.now() - CATALOG_CACHE_TTL_MS - 5000,
-			opencode: ["m-old"],
+			opencode: ["m-old-free"],
 			kilo: [],
-			models: [fakeModel("m-old")],
+			models: [fakeModel("m-old-free")],
 			etag: "etag-old",
 		});
 

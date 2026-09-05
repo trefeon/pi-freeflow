@@ -2,6 +2,19 @@
 
 All notable changes to pi-freeflow. Public, user-visible behavior only.
 
+## 1.9.8 - 2026-09-06
+
+### Fixes
+- **Stale model list heals itself (follow-up to #6).** If your saved model list predates a newly added model, the background refresh now repairs the entry (correct endpoint and details) instead of sending requests to the wrong address — no manual `/freeflow refresh` or cache deletion needed.
+- **Paid models stay out of the picker even from old saved lists.** Every read of the saved model list now drops non-free entries, so models requiring an API key cannot linger after an upgrade.
+- **Old saved lists without a sync marker now re-sync once.** A saved list that could never trigger a network check now performs one plain revalidation (then syncs normally), so newly added free models appear without manual intervention. Missing or corrupt lists still fall back silently with no network call.
+- **Upstream errors are now visible in the proxy log.** Failed upstream responses log their status code and model, and a model routed to the wrong endpoint logs the mismatch with the fix (restart Pi/OMP after upgrade).
+
+### Validation
+- TypeScript typecheck passed cleanly (`tsc --noEmit`).
+- Full test suite passed on Windows (304 tests) and Ubuntu Linux (`acerblue`, 305/305 tests passed), including new regressions for the stale-cache shape from #6.
+- Live sweep of all 26 models through a fresh install on `acerblue`: 23/26 answered on first try (both Muse Spark models via the Responses endpoint); the 3 misses are upstream per-model daily quotas (429), zero server errors.
+
 ## 1.9.7 - 2026-09-06
 
 ### Fixes

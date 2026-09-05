@@ -39,10 +39,10 @@ test("mergeCatalog keeps base entries missing from the fresh list", () => {
 });
 
 test("mergeCatalog appends unknown fresh ids after the base", () => {
-	const merged = mergeCatalog(BASE, [model("gamma-new", 300, "kilo")]);
+	const merged = mergeCatalog(BASE, [model("gamma-new-free", 300, "kilo")]);
 	assert.deepEqual(
 		merged.map((m) => m.id),
-		["alpha-free", "beta-free", "gamma-new"],
+		["alpha-free", "beta-free", "gamma-new-free"],
 	);
 });
 
