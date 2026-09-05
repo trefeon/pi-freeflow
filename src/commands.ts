@@ -370,7 +370,8 @@ export function createCommandSpec(
 					);
 					relayState = withRelayState((s) => {
 						const r = ensureRelay(s, url, `deployed ${name}`);
-						r.auth = auth;
+						if (auth) r.auth = auth;
+						else delete r.auth;
 						s.enabled = true;
 						s.url = url;
 						return s;

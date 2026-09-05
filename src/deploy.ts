@@ -160,6 +160,7 @@ export async function deployVercelRelay(
 	token: string,
 	name: string,
 	onProgress?: (msg: string) => void,
+	authSecret: string = "",
 ): Promise<{ url: string; auth: string }> {
 	name = baseRelayName(name) || "relay-worker";
 	const auth = {
@@ -169,9 +170,9 @@ export async function deployVercelRelay(
 	// 1. Create deployment (3 inline files, no git repository required)
 	onProgress?.("Uploading relay files to Vercel…");
 	log("info", `Starting Vercel deployment: ${name}`);
-	// Per-deployment shared secret: embedded in the worker, persisted on the
-	// relay-state entry by the caller, and required via x-relay-auth.
-	const relayAuth = randomBytes(24).toString("base64url");
+	// Public by default for easy migration with 9router and other proxy tools.
+	// When authSecret is provided, embeds the shared secret for private auth.
+	const relayAuth = authSecret || "";
 
 	const dep = await fetch(`${VERCEL_API}/v13/deployments`, {
 		method: "POST",
@@ -339,6 +340,7 @@ export async function deployCloudflareWorker(
 	token: string,
 	name: string,
 	onProgress?: (msg: string) => void,
+	authSecret: string = "",
 ): Promise<{ url: string; auth: string }> {
 	const auth = { Authorization: `Bearer ${token}` };
 	const scriptName = cloudflareScriptName(name);
@@ -358,9 +360,9 @@ export async function deployCloudflareWorker(
 
 	// 2. Upload the module worker script (multipart: main module + metadata)
 	onProgress?.("Uploading relay worker to Cloudflare…");
-	// Per-deployment shared secret: embedded in the worker, persisted on the
-	// relay-state entry by the caller, and required via x-relay-auth.
-	const relayAuth = randomBytes(24).toString("base64url");
+	// Public by default for easy migration with 9router and other proxy tools.
+	// When authSecret is provided, embeds the shared secret for private auth.
+	const relayAuth = authSecret || "";
 	const formData = new FormData();
 	formData.append(
 		"index.js",
@@ -452,12 +454,11 @@ export async function deployDenoRelay(
 	token: string,
 	name: string,
 	onProgress?: (msg: string) => void,
+	authSecret: string = "",
 ): Promise<{ url: string; auth: string }> {
+	const slug = denoProjectName(name);
 	const auth = { Authorization: `Bearer ${token}` };
 	const jsonHeaders = { ...auth, "Content-Type": "application/json" };
-	const slug = denoProjectName(name);
-
-	// 1. Create the app
 	onProgress?.("Creating Deno Deploy app…");
 	log("info", `Starting Deno Deploy deployment: ${slug}`);
 	const createRes = await fetch(`${DENO_API}/apps`, {
@@ -495,9 +496,9 @@ export async function deployDenoRelay(
 
 	// 2. Push the relay source as a single-file revision
 	onProgress?.("Uploading relay script to Deno Deploy…");
-	// Per-deployment shared secret: embedded in the worker, persisted on the
-	// relay-state entry by the caller, and required via x-relay-auth.
-	const relayAuth = randomBytes(24).toString("base64url");
+	// Public by default for easy migration with 9router and other proxy tools.
+	// When authSecret is provided, embeds the shared secret for private auth.
+	const relayAuth = authSecret || "";
 	const deployRes = await fetch(`${DENO_API}/apps/${appId}/deploy`, {
 		method: "POST",
 		headers: jsonHeaders,

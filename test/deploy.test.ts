@@ -123,8 +123,7 @@ test("deployCloudflareWorker uploads module worker and returns workers.dev URL",
 	const deployed = await deployCloudflareWorker(TOKEN, "My Relay", (m) => progress.push(m));
 
 	assert.equal(deployed.url, "https://my-relay.mysub.workers.dev");
-	assert.match(deployed.auth, /^[A-Za-z0-9_-]{32}$/, "relay auth must be a 32-char base64url secret");
-	assert.equal(deployed.auth.includes(TOKEN), false, "relay auth must never leak the API token");
+	assert.equal(deployed.auth, "", "relay is public by default for easy migration");
 
 	// Multipart upload carries metadata + main module part
 	const upload = calls.find((c) => c.init?.method === "PUT");
@@ -215,7 +214,7 @@ test("deployDenoRelay creates app, pushes script, polls revision, resolves route
 	const deployed = await deployDenoRelay(TOKEN, "My App", (m) => progress.push(m));
 
 	assert.equal(deployed.url, "https://my-app.my-org.deno.net");
-	assert.match(deployed.auth, /^[A-Za-z0-9_-]{32}$/, "deno relay auth must be base64url");
+	assert.equal(deployed.auth, "", "deno relay auth is public by default");
 
 	// App creation requests a dynamic runtime with main.ts entrypoint
 	const createCall = calls.find((c) => c.url.endsWith("/v2/apps") && c.init?.method === "POST");
@@ -250,7 +249,7 @@ test("deployDenoRelay falls back to managed *.deno.net domain when timelines are
 
 	const deployed = await deployDenoRelay("ddo-tok", "my-app");
 	assert.equal(deployed.url, "https://my-app.my-org.deno.net");
-	assert.match(deployed.auth, /^[A-Za-z0-9_-]{32}$/, "deno relay auth must be base64url");
+	assert.equal(deployed.auth, "", "deno relay auth is public by default");
 });
 
 test("deployDenoRelay throws actionable auth error on 401 before creating anything", async (t) => {
