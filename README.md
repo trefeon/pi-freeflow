@@ -38,7 +38,7 @@ Philosophy: **Thin by design.** We only ship model list + relay proxy + log. Hos
 /model → freeflow → pick
 ```
 
-#### OpenCode Zen (8 Models), Responses & Chat API
+#### OpenCode Zen (7 Models), Responses & Chat API
 Optimized for deep reasoning, long-horizon coding & autonomous agentic workflows.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
@@ -46,13 +46,11 @@ Optimized for deep reasoning, long-horizon coding & autonomous agentic workflows
 | `muse-spark-1.2-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
 | `muse-spark-1.3-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
 | `mimo-v2.5-free` | Xiaomi MiMo | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh`\* | ✅ |
-| `laguna-s-2.1-free` | Poolside | **262K** (262.144) | **32K** (32.768) | `minimal … xhigh` | ❌ |
 | `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `minimal … xhigh` | ❌ |
 | `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `minimal … xhigh` | ❌ |
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 | `ling-3.0-flash-fin-free` | Inclusion AI | **262K** (262.144) | **131K** (131.072) | `minimal … xhigh` | ❌ |
-
-#### KiloCode Gateway (18 Models), OpenRouter Compatible
+#### KiloCode Gateway (19 Models), OpenRouter Compatible
 Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI aliases supported.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
@@ -74,6 +72,7 @@ Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI alia
 | `minimax-m3` (`minimax/minimax-m3:free`) | MiniMax | **1M** (1.048.576) | **512K** (524.288) | `minimal…xhigh`\* | ❌ |
 | `ling-3.0-flash-fin` (`inclusionai/ling-3.0-flash-fin:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
 | `inkling` (`thinkingmachines/inkling:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
+| `ling-3.0-flash-sante` (`inclusionai/ling-3.0-flash-sante:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
 | `inkling-small` (`thinkingmachines/inkling-small:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
 
 \* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.

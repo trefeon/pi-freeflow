@@ -215,3 +215,41 @@ test("edges-relay: isRetriableStatus 52x band regression lock", () => {
 			"x-relay-target must be stripped on direct fallback",
 		);
 	});
+
+	test("edges-relay: Vercel edge 404 marks failure and rolls to next relay", async (t) => {
+		setActiveRelayState(
+			makeRelayState({
+				enabled: true,
+				url: "https://dead-relay.vercel.app",
+				relays: [
+					{ url: "https://dead-relay.vercel.app" },
+					{ url: "https://healthy-relay.vercel.app" },
+				],
+			}),
+			false,
+		);
+		resetAllRelayHealth();
+
+		const calls: string[] = [];
+		t.mock.method(globalThis, "fetch", async (url: string) => {
+			calls.push(url);
+			if (url === "https://dead-relay.vercel.app") {
+				return new Response("The deployment could not be found on Vercel.", {
+					status: 404,
+					headers: {
+						"x-vercel-error": "DEPLOYMENT_NOT_FOUND",
+						"x-vercel-id": "sin1::test",
+						"content-type": "text/plain",
+					},
+				});
+			}
+			return new Response("ok", { status: 200 });
+		});
+
+		const res = await relayFetch(UPSTREAM_URL, { method: "POST" }, "edge-404");
+		assert.equal(res.status, 200);
+		assert.deepEqual(calls, [
+			"https://dead-relay.vercel.app",
+			"https://healthy-relay.vercel.app",
+		]);
+	});

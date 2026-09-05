@@ -145,7 +145,6 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 		"mimo-v2.5-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
 		"nemotron-3-ultra-free": { ctx: 1_000_000, max: 128_000, reasoning: true },
 		"nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 262_144, reasoning: true },
-		"laguna-s-2.1-free": { ctx: 262_144, max: 32_768, reasoning: true },
 		"big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
 		"ling-3.0-flash-fin-free": { ctx: 262_144, max: 131_072, reasoning: true },
 		// KiloCode Gateway
@@ -167,6 +166,7 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 		"minimax/minimax-m3:free": { ctx: 1_048_576, max: 524_288, reasoning: true },
 		"inclusionai/ling-3.0-flash-fin:free": { ctx: 262_144, max: 32_768, reasoning: true },
 		"thinkingmachines/inkling:free": { ctx: 1_048_576, max: 262_144, reasoning: true },
+		"inclusionai/ling-3.0-flash-sante:free": { ctx: 262_144, max: 32_768, reasoning: true },
 		"thinkingmachines/inkling-small:free": { ctx: 1_048_576, max: 262_144, reasoning: true },
 	};
 	for (const [id, { ctx, max, reasoning }] of Object.entries(locked)) {
@@ -185,4 +185,5 @@ test("new alias map resolves to canonical kilo ids", () => {
 	assert.equal(resolveCanonicalModelId("ling-3.0-flash-fin"), "inclusionai/ling-3.0-flash-fin:free");
 	assert.equal(resolveCanonicalModelId("inkling"), "thinkingmachines/inkling:free");
 	assert.equal(resolveCanonicalModelId("inkling-small"), "thinkingmachines/inkling-small:free");
+	assert.equal(resolveCanonicalModelId("ling-3.0-flash-sante"), "inclusionai/ling-3.0-flash-sante:free");
 });

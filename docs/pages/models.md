@@ -21,20 +21,19 @@ pi-freeflow provides unified access to **26 curated free models** across two ups
 
 ## 26 Model Specifications
 
-### OpenCode Zen (8 models)
+### OpenCode Zen (7 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
 | `muse-spark-1.2-contributor-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `muse-spark-1.3-contributor-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `mimo-v2.5-free` | 1,048,576 | 131,072 | minimal..xhigh (3 values)* | ✅ |
-| `laguna-s-2.1-free` | 262,144 | 32,768 | minimal..xhigh | ❌ |
 | `nemotron-3.5-lightning-free` | 1,000,000 | 262,144 | minimal..xhigh | ❌ |
 | `nemotron-3-ultra-free` | 1,000,000 | 128,000 | minimal..xhigh | ❌ |
 | `big-pickle` | 200,000 | 32,000 | high, max | ❌ |
 | `ling-3.0-flash-fin-free` | 262,144 | 131,072 | minimal..xhigh | ❌ |
 
-### KiloCode Gateway (18 models)
+### KiloCode Gateway (19 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -56,6 +55,7 @@ pi-freeflow provides unified access to **26 curated free models** across two ups
 | `ling-3.0-flash-fin` | 262,144 | 32,768 | OpenRouter | ❌ |
 | `inkling` | 1,048,576 | 262,144 | OpenRouter | ✅ |
 | `inkling-small` | 1,048,576 | 262,144 | OpenRouter | ✅ |
+| `ling-3.0-flash-sante` | 262,144 | 32,768 | OpenRouter | ❌ |
 
 \* MiMo collapses `minimal→low` and `xhigh→high` upstream — 5 labels, 3 effective effort values (low/medium/high).
 
@@ -63,5 +63,5 @@ pi-freeflow provides unified access to **26 curated free models** across two ups
 
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :--- | :--- | :--- | :--- |
-| **OpenCode Zen** | 8 | `opencode.ai` | `/zen/v1/responses` (2) + `/zen/v1/chat/completions` (6) | Browser fingerprinting |
-| **KiloCode Gateway** | 18 | `api.kilo.ai` | `/api/gateway/chat/completions` | `Bearer kilo-free` |
+| **OpenCode Zen** | 7 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat) | Keyless |
+| **KiloCode Gateway** | 19 | `api.kilo.ai` | `/api/gateway/chat/completions` | `Bearer kilo-free` |

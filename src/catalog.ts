@@ -20,6 +20,7 @@ import {
 	ALL_MODELS,
 	KILO_MODEL_IDS,
 	MODEL_MAP,
+	OPENCODE_MODELS,
 } from "./models.ts";
 import type {
 	CatalogCacheData,
@@ -37,6 +38,7 @@ export const DEAD_MODEL_IDS = new Set<string>([
 	"hy3-free",
 	"tencent/hy3:free",
 	"meituan/longcat-2.0-free",
+	"laguna-s-2.1-free",
 ]);
 /**
  * In-memory cache of currently active/available free models.
@@ -304,7 +306,15 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 					}
 				}
 				if (rawList.length > 0) {
-					const fresh = rawList.map((r) => enrichModelDef(r, "opencode"));
+					const freeRawList = rawList.filter((r) => {
+						if (!r || typeof r.id !== "string") return false;
+						if (DEAD_MODEL_IDS.has(r.id)) return false;
+						return (
+							r.id.includes("-free") ||
+							OPENCODE_MODELS.some((m) => m.id === r.id)
+						);
+					});
+					const fresh = freeRawList.map((r) => enrichModelDef(r, "opencode"));
 					const merged = mergeCatalog(aliveCatalog, fresh);
 					aliveCatalog = merged;
 					writeCatalogCache({

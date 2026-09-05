@@ -156,6 +156,36 @@ export async function relayFetch(
 				break;
 			}
 
+			// Relay host infrastructure 404 (e.g. Vercel DEPLOYMENT_NOT_FOUND or non-JSON 404):
+			// When a relay URL is deleted, misconfigured, or has no deployment, Vercel/Cloudflare
+			// returns edge 404. This is a relay failure, not an upstream API response.
+			const isRelayEdge404 =
+				res.status === 404 &&
+				(Boolean(res.headers.get("x-vercel-error")) ||
+					Boolean(res.headers.get("x-vercel-id")) ||
+					res.headers.get("server")?.toLowerCase().includes("vercel") ||
+					!res.headers.get("content-type")?.includes("json"));
+
+			if (isRelayEdge404) {
+				markRelayFailure(targetUrl, 404, "Deployment or route not found on relay host");
+				lastResponse?.body?.cancel().catch(() => {});
+				lastResponse = res;
+				log(
+					"warn",
+					`relay ${targetUrl} returned edge 404 (deployment missing or route not found) — rolling to next relay`,
+					{ upstream: url },
+					rid,
+				);
+				const now = Date.now();
+				if (now - lastRollNotify > ROLL_NOTIFY_MS) {
+					lastRollNotify = now;
+					const ui = getStatusUi();
+					if (ui?.notify) {
+						ui.notify(`relay ${shortRelayLabel(targetUrl)} failed (HTTP 404) — rolled to next relay`, "warning");
+					}
+				}
+				continue;
+			}
 			if (isRetriableStatus(res.status)) {
 				markRelayFailure(targetUrl, res.status);
 				lastResponse?.body?.cancel().catch(() => {});

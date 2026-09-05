@@ -541,17 +541,17 @@ test("catalog cache [g2] stale cache triggers a conditional refresh that merges 
 			const headers = init?.headers as Record<string, string> | Headers | undefined;
 			const etag = headers instanceof Headers ? headers.get("if-none-match") : headers?.["If-None-Match"];
 			assert.equal(etag, "etag-stale", "conditional fetch must send If-None-Match");
-			return new Response(JSON.stringify({ data: [{ id: "m-fresh", name: "Fresh" }] }), {
+			return new Response(JSON.stringify({ data: [{ id: "m-fresh-free", name: "Fresh" }] }), {
 				status: 200,
 				headers: { "content-type": "application/json", etag: "etag-fresh" },
 			});
 		});
 		try {
 			const result = await refreshCatalog(false);
-			assert.ok(result.some((m) => m.id === "m-fresh"), "stale cache must be refreshed with the fetched model");
+			assert.ok(result.some((m) => m.id === "m-fresh-free"), "stale cache must be refreshed with the fetched model");
 			assert.equal(fetchMock.mock.calls.length, 1, "exactly one conditional fetch");
 			const cache = readCatalogCache();
-			assert.ok(cache?.models?.some((m) => m.id === "m-fresh"), "fresh model must be persisted to the cache");
+			assert.ok(cache?.models?.some((m) => m.id === "m-fresh-free"), "fresh model must be persisted to the cache");
 		} finally {
 			fetchMock.mock.restore();
 		}
@@ -690,7 +690,7 @@ test("activation [i1] async catalog refresh merges the fetched model into the re
 
 		const handle = await activate([TEST_PROXY_PORT], (u: string) => {
 			if (u.startsWith("https://opencode.ai") && u.includes("/models")) {
-				return new Response(JSON.stringify({ data: [{ id: "m-extra-x", name: "Extra X" }] }), {
+				return new Response(JSON.stringify({ data: [{ id: "m-extra-x-free", name: "Extra X" }] }), {
 					status: 200,
 					headers: { "content-type": "application/json", etag: "etag-new" },
 				});
@@ -699,11 +699,11 @@ test("activation [i1] async catalog refresh merges the fetched model into the re
 		});
 		try {
 			// Wait for the background refreshCatalog .then to merge and re-register.
-			await flushUntil(() => handle.config?.models.some((m) => m.id === "m-extra-x") === true);
+			await flushUntil(() => handle.config?.models.some((m) => m.id === "m-extra-x-free") === true);
 
 			assert.ok(handle.config, "provider must be registered");
 			assert.ok(
-				handle.config.models.some((m) => m.id === "m-extra-x"),
+				handle.config.models.some((m) => m.id === "m-extra-x-free"),
 				"async refresh must merge the fetched model into the registered provider",
 			);
 			assert.ok(

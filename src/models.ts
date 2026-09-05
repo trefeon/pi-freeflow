@@ -112,22 +112,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
 			max: "max",},
 	},
 	{
-		id: "laguna-s-2.1-free",
-		name: "Laguna S 2.1 (256K)",
-		reasoning: true,
-		contextWindow: 262_144,
-		maxTokens: 32_768,
-		input: ["text"],
-		thinkingLevelMap: {
-			off: null,
-			minimal: "minimal",
-			low: "low",
-			medium: "medium",
-			high: "high",
-			xhigh: "xhigh",
-			max: null,},
-	},
-	{
 		id: "ling-3.0-flash-fin-free",
 		name: "Ling 3.0 Flash Fin (256K)",
 		reasoning: true,
@@ -345,6 +329,16 @@ export const KILO_MODELS: ModelDef[] = [
 	thinkingFormat: "openrouter",
 	thinkingLevelMap: KILO_REASONING_MAP,
 },
+	{
+		id: "inclusionai/ling-3.0-flash-sante:free",
+		name: "Ling 3.0 Flash Sante",
+		reasoning: true,
+		contextWindow: 262_144,
+		maxTokens: 32_768,
+		input: ["text"],
+		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
+	},
 ];
 
 /**
@@ -368,6 +362,7 @@ export const MODEL_ALIASES: Record<string, string> = {
 	"minimax-m2.7": "minimax/minimax-m2.7:free",
 	"minimax-m3": "minimax/minimax-m3:free",
 	"ling-3.0-flash-fin": "inclusionai/ling-3.0-flash-fin:free",
+	"ling-3.0-flash-sante": "inclusionai/ling-3.0-flash-sante:free",
 	"inkling": "thinkingmachines/inkling:free",
 	"inkling-small": "thinkingmachines/inkling-small:free",
 	// provider-prefixed short aliases (slash-normalized)
