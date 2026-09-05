@@ -27,7 +27,7 @@ Instead of VPN tunnels, pi-freeflow uses standard edge worker scripts across **C
 | :--- | :--- | :--- |
 | **HTTP 200 (OK)** | Success (sticky active) | Active relay is saved as sticky target |
 | **HTTP 429 (Rate Limit)** | Roll to next relay | IP quota exceeded; fresh egress IP per relay |
-| **HTTP 404 / 410** | Keep response, set sticky | Terminal non-retriable; not rolled |
+| **Relay Edge 404 (Dead Deployment)** | Roll to next relay | Deployment missing or deleted on relay host; auto-failover |
 | **HTTP 502 / 503** | Roll to next relay | Upstream edge transient error |
 | **HTTP 504** | Fast fallback to direct | Vercel Edge 25s execution timeout |
 | **HTTP 520-530** | Roll to next relay | Cloudflare network/origin drops |

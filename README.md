@@ -214,7 +214,7 @@ For `api/relay.js`, use the canonical worker source (see below); `vercel.json` s
 
 **Canonical worker source (all platforms)**
 
-The relay worker template is generated per deployment by `/freeflow deploy` and lives in [`src/deploy.ts`](src/deploy.ts): one hardened core plus thin Vercel / Cloudflare / Deno wrappers. Every deployment embeds its own shared secret and enforces the target allowlist (`https://opencode.ai`, `https://api.kilo.ai`), SSRF/private-host guard, relay-path validation, and a header denylist — `x-relay-auth` is checked by the worker and never forwarded upstream.
+The relay worker template is generated per deployment by `/freeflow deploy` and lives in [`src/deploy.ts`](src/deploy.ts): one hardened core plus thin Vercel / Cloudflare / Deno wrappers. Deployed relays are public by default for seamless migration across proxy tools (such as 9router), while enforcing the target allowlist (`https://opencode.ai`, `https://api.kilo.ai`), SSRF/private-host guard, relay-path validation, and a header denylist.
 
 ```js
 // Minimal Cloudflare illustration. Prefer /freeflow deploy: the generated
