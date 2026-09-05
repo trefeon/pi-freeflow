@@ -2,6 +2,23 @@
 
 All notable changes to pi-freeflow. Public, user-visible behavior only.
 
+## 1.9.7 - 2026-09-06
+
+### Fixes
+- **Model picker only shows verified free models (fixes #6).** Background catalog refresh now filters out non-free models from upstream endpoints so paid models requiring an API key no longer leak into your picker.
+- **Relay pool automatically recovers from dead deployments (fixes #5).** If a relay URL in your pool returns an infrastructure 404 (such as a missing or deleted Vercel deployment), the proxy marks it as failed and immediately rolls over to your next healthy relay or direct mode instead of getting trapped in a 404 loop.
+
+### Changes
+- **Updated model catalog (26 verified free models: 7 OpenCode Zen + 19 KiloCode Gateway).**
+  - Added `inclusionai/ling-3.0-flash-sante:free` (Ling 3.0 Flash Sante, 262K context, 32K output, reasoning supported). Clean CLI alias `ling-3.0-flash-sante` supported.
+  - Removed `laguna-s-2.1-free` (OpenCode Zen) after upstream dropped free-tier access. `poolside/laguna-s-2.1:free` on Kilo remains active.
+- **Public by default for new relay deployments.** Relays deployed via `/freeflow deploy` are now public by default with no mandatory authentication tokens. This enables seamless copy-paste migration across proxy tools (such as 9router) while maintaining safety guards for allowed AI upstreams.
+
+### Validation
+- TypeScript typecheck passed cleanly (`tsc --noEmit`).
+- Full test suite passed across Windows (299 tests) and Ubuntu Linux (`acerblue-local`, 300/300 tests passed).
+- End-to-end concurrency and failover stress testing verified (100 parallel requests, 20 subagent leases, burst failover).
+
 ## 1.9.6 - 2026-09-03
 
 ### Fixes
