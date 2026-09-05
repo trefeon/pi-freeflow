@@ -50,6 +50,7 @@ Optimized for deep reasoning, long-horizon coding & autonomous agentic workflows
 | `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `minimal … xhigh` | ❌ |
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 | `ling-3.0-flash-fin-free` | Inclusion AI | **262K** (262.144) | **131K** (131.072) | `minimal … xhigh` | ❌ |
+
 #### KiloCode Gateway (19 Models), OpenRouter Compatible
 Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI aliases supported.
 
