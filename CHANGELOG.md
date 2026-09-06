@@ -2,6 +2,16 @@
 
 All notable changes to pi-freeflow. Public, user-visible behavior only.
 
+## 1.9.9 - 2026-09-06
+
+### Fixes
+- **Removed our own request cap — sorry, that one was on us.** The proxy used to enforce a built-in request limit and could answer 429 before upstream quota was actually exhausted. That was a bug, not your quota. From this version the proxy never rejects on quota itself: a 429 only surfaces when the upstream — and every relay in your pool — genuinely is rate-limited, and that response now points you at `/freeflow deploy` to add relay egress.
+
+### Validation
+- TypeScript typecheck passed cleanly (`tsc --noEmit`) on Windows and Ubuntu Linux (`acerblue-local`).
+- Full test suite: Windows 302 tests (301 pass + 1 Linux-only skip), `acerblue-local` 302/302 pass, including new regressions locking the guidance hint onto genuine upstream 429s (direct path and exhausted relay pool).
+- Sandboxed stress harness 7/7 on `acerblue-local`; extension smoke load green on both machines.
+
 ## 1.9.8 - 2026-09-06
 
 ### Fixes

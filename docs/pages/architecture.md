@@ -37,7 +37,6 @@ src/
 ├── models.ts          # 26 curated free model definitions and upstream mappings
 ├── probe.ts           # Relay reachability probe (HTTP 200 + latency)
 ├── proxy.ts           # Loopback HTTP proxy server on 28180 with master/worker reuse
-├── rate-limiter.ts    # In-memory sliding rate limiter (200/day opencode, 200/hour kilo)
 ├── relay.ts           # Multi-cloud relay fetch with failover and direct fallback
 ├── relay-state.ts     # Persistent relay pool state and ordering logic
 ├── stream-pipe.ts     # Resilient SSE stream pass-through with thinking sniffing

@@ -76,19 +76,6 @@ export interface CatalogCacheData {
 	etag?: string;
 }
 
-export interface RateLimitEntry {
-	count: number;
-	resetAt: number;
-}
-
-export interface RateLimitStatus {
-	allowed: boolean;
-	remaining: number;
-	resetAt: number;
-	limit: number;
-	count: number;
-}
-
 // ── Extension API & UI Types (compatible with @earendil-works/pi-coding-agent) ──
 
 export interface ExtensionUIContext {

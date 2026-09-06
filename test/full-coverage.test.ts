@@ -26,7 +26,6 @@ import {
 	formatRelayStatusLabel,
 } from "../src/relay-state.ts";
 import { isRetriableStatus, relayFetch } from "../src/relay.ts";
-import { checkRateLimit, getRateLimitStatus, resetRateLimits } from "../src/rate-limiter.ts";
 import { validatePath, sanitizeHeaders, isProxyAlive, startProxy } from "../src/proxy.ts";
 import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
 import { getHealthData, isLoopbackIP } from "../src/health.ts";
@@ -184,14 +183,6 @@ test("catalog ETag 304 extends timestamp", async () => {
 			globalThis.fetch = orig;
 		}
 	});
-});
-
-test("rate-limit path: getRateLimitStatus returns remaining", () => {
-	resetRateLimits();
-	const ip = "127.0.0.1";
-	for (let i = 0; i < 100; i++) checkRateLimit(ip, "opencode");
-	const s1 = getRateLimitStatus(ip, "opencode");
-	assert.equal(typeof s1.remaining, "number");
 });
 
 test("validatePath guards traversal and allowed methods", () => {

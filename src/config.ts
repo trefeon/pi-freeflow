@@ -7,7 +7,6 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
-import type { Upstream } from "./types.ts";
 
 // Package version — stale-daemon detection in the shared-port reuse path.
 let PKG_VERSION = "0.0.0";
@@ -67,12 +66,6 @@ export const VERCEL_API = "https://api.vercel.com";
 export const CATALOG_CACHE_TTL_MS = 86_400_000; // 24 hours — delegate to host fetchDynamicModels
 export const LOG_MAX_BYTES = 10 * 1024 * 1024; // 10MB per file
 export const LOG_MAX_FILES = 10; // 10 archived + current ≈ 110MB max (≈100MB per your request, rotated, not single 100MB blob)
-
-// ── Rate Limit Maxima ───────────────────────────────────────────────
-export const RATE_LIMIT_MAX: Record<Upstream, number> = {
-	opencode: 200, // public free quota: requests per UTC day per IP
-	kilo: 200, // documented gateway quota: requests per 1-hour window per IP
-};
 
 // ── Whitelists & Security ───────────────────────────────────────────
 export const ALLOWED_PATH_PATTERN = /^\/v1\/[a-zA-Z0-9/_.,\-?&= %]*$/;

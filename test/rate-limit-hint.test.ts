@@ -1,16 +1,16 @@
 /**
- * P0-2 429 Rate-Limit Guidance Hint Test Suite
+ * Natural-429 guidance hint test suite.
  *
- * Behavioral coverage: spins up the real in-process proxy in direct mode
- * (empty relay pool) and drives 201 sequential POSTs against it with the
- * upstream fetch stubbed. The 201st request trips the local per-IP quota
- * (RATE_LIMIT_MAX.opencode = 200) and must return a 429 whose JSON body
- * carries the relay-egress guidance hint. The hint is throttled to at most
- * once per 10 minutes per process and returns after _reset429HintForTest().
+ * Behavioral coverage: spins up the real in-process proxy and stubs the
+ * upstream fetch to return 429. No local quota gate exists anymore — the
+ * deploy hint is attached to a genuine upstream 429 passthrough, which by
+ * construction means every relay plus direct is rate-limited (relayFetch
+ * exhausts all candidates and the direct fallback before a 429 surfaces).
+ * The hint is throttled to at most once per 10 minutes per process and
+ * returns after _reset429HintForTest().
  *
- * One minimal source guard ([2/4]) keeps the hint text pinned to exactly one
- * code path; all other source-string assertions were replaced by the
- * behavioral test above.
+ * One minimal source guard keeps the hint text pinned to exactly one
+ * code path.
  */
 
 import test from "node:test";
@@ -18,9 +18,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 import { startProxy, _reset429HintForTest } from "../src/proxy.ts";
-import { resetRateLimits } from "../src/rate-limiter.ts";
 import {
 	getActiveRelayState,
+	getRelayHealth,
 	resetAllRelayHealth,
 	setActiveRelayState,
 } from "../src/relay-state.ts";
@@ -28,13 +28,14 @@ import { RELAY_STATE_FILE } from "../src/config.ts";
 
 const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
 
-/** The exact hint string clients receive in a direct-mode 429 body. */
+/** The exact hint string clients receive in a natural-429 body. */
 const HINT_TEXT =
 	"Shared free-tier IP quota reached. Add your own relay egress: /freeflow deploy (Vercel 1M/mo recommended)";
 
 const TEST_PORT = 19183;
-const LOCAL_QUOTA = 200; // RATE_LIMIT_MAX.opencode: requests per UTC day per IP
+const TEST_PORT_RELAY = 19184;
 const MODEL = "muse-spark-1.2-contributor-free";
+const FAKE_RELAY = "https://dead-relay-999.example.com";
 
 /** Isolate both main and .bak disk files for the duration of an async test. */
 function withIsolatedRelayFiles(fn: () => Promise<void>): Promise<void> {
@@ -61,26 +62,27 @@ function withIsolatedRelayFiles(fn: () => Promise<void>): Promise<void> {
 	})();
 }
 
-/** Response-like stub for the upstream: a plain 200 JSON, no stream body. */
-function stubResponse(status: number): Response {
+/** Response-like stub: a JSON error with the given status, no stream body. */
+function stubResponse(status: number, body: string): Response {
 	return {
 		status,
 		ok: status >= 200 && status < 300,
-		headers: new Headers(),
-		text: async () => "{}",
+		headers: new Headers({ "content-type": "application/json" }),
+		text: async () => body,
 		body: null,
 	} as unknown as Response;
 }
 
-// ── Behavioral: hint on direct-mode 429, throttled 10 min, resettable ────────
+const UPSTREAM_429 = JSON.stringify({ error: "FreeUsageLimitError" });
 
-test("429 hint: direct-mode 429 carries guidance, throttled 10 min, resettable", async (t) => {
+// ── Behavioral: hint on natural direct-path 429 ─────────────────────────────
+
+test("429 hint: natural direct 429 carries guidance, throttled 10 min, resettable", async (t) => {
 	await withIsolatedRelayFiles(async () => {
-		// Direct mode with an empty relay pool => willUseRelay false => hint branch live.
+		// Direct mode with an empty relay pool.
 		const priorState = getActiveRelayState();
 		setActiveRelayState({ enabled: true, url: "", relays: [] }, false);
 		resetAllRelayHealth();
-		resetRateLimits();
 		_reset429HintForTest();
 
 		const { server, port } = await startProxy(TEST_PORT);
@@ -89,36 +91,29 @@ test("429 hint: direct-mode 429 carries guidance, throttled 10 min, resettable",
 		const realFetch = globalThis.fetch.bind(globalThis);
 
 		try {
-			// Stub upstream: passthrough local proxy traffic, fabricate 200 elsewhere.
+			// Stub upstream: passthrough local proxy traffic, 429 elsewhere.
 			t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
 				const u = String(url);
 				if (u.startsWith(localPrefix)) return realFetch(u, init);
-				return stubResponse(200);
+				return stubResponse(429, UPSTREAM_429);
 			});
 
-			const postChat = (): Promise<Response> =>
+			const postChat = (stream: boolean): Promise<Response> =>
 				fetch(`${localPrefix}/v1/chat/completions`, {
 					method: "POST",
 					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ model: MODEL, stream: false }),
+					body: JSON.stringify({ model: MODEL, stream }),
 				});
 
-			// 200 sequential requests consume the per-IP opencode quota; each is allowed.
-			for (let i = 0; i < LOCAL_QUOTA; i++) {
-				const res = await postChat();
-				assert.equal(res.status, 200, `request ${i + 1} within quota must be allowed`);
-				await res.arrayBuffer(); // drain so the pooled connection is reusable
-			}
-
-			// 201st request trips the local quota -> 429 WITH the guidance hint.
-			const limited = await postChat();
-			assert.equal(limited.status, 429, "201st request must exceed the local quota");
+			// First natural 429 carries the guidance hint alongside the upstream error.
+			const limited = await postChat(false);
+			assert.equal(limited.status, 429);
 			const limitedBody = (await limited.json()) as Record<string, unknown>;
-			assert.equal(limitedBody.error, "rate limit exceeded");
+			assert.equal(limitedBody.error, "FreeUsageLimitError");
 			assert.equal(
 				typeof limitedBody.hint,
 				"string",
-				"first 429 must carry the guidance hint",
+				"first natural 429 must carry the guidance hint",
 			);
 			assert.ok(
 				(limitedBody.hint as string).includes("free-tier IP quota"),
@@ -126,15 +121,16 @@ test("429 hint: direct-mode 429 carries guidance, throttled 10 min, resettable",
 			);
 
 			// Immediate follow-up is still 429 but the 10-minute throttle suppresses the hint.
-			const throttled = await postChat();
+			const throttled = await postChat(false);
 			assert.equal(throttled.status, 429);
 			const throttledBody = (await throttled.json()) as Record<string, unknown>;
-			assert.equal(throttledBody.error, "rate limit exceeded");
+			assert.equal(throttledBody.error, "FreeUsageLimitError");
 			assert.equal(throttledBody.hint, undefined, "hint must be throttled for 10 minutes");
 
-			// Test-only reset rewinds the throttle: the hint returns on the next 429.
+			// Test-only reset rewinds the throttle: a stream-requested 429 also
+			// gets the hint as buffered JSON instead of a piped stream body.
 			_reset429HintForTest();
-			const resumed = await postChat();
+			const resumed = await postChat(true);
 			assert.equal(resumed.status, 429);
 			const resumedBody = (await resumed.json()) as Record<string, unknown>;
 			assert.ok(
@@ -143,7 +139,58 @@ test("429 hint: direct-mode 429 carries guidance, throttled 10 min, resettable",
 			);
 		} finally {
 			_reset429HintForTest();
-			resetRateLimits();
+			resetAllRelayHealth();
+			setActiveRelayState(priorState, false);
+			if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
+	});
+});
+
+// ── Behavioral: hint when the whole relay pool plus direct is 429 ───────────
+
+test("429 hint: exhausted relay pool 429 carries guidance", async (t) => {
+	await withIsolatedRelayFiles(async () => {
+		const priorState = getActiveRelayState();
+		setActiveRelayState(
+			{ enabled: true, url: FAKE_RELAY, relays: [{ url: FAKE_RELAY, label: "dead" }] },
+			false,
+		);
+		resetAllRelayHealth();
+		_reset429HintForTest();
+
+		const { server, port } = await startProxy(TEST_PORT_RELAY);
+		const effectivePort = port ?? TEST_PORT_RELAY;
+		const localPrefix = `http://127.0.0.1:${effectivePort}`;
+		const realFetch = globalThis.fetch.bind(globalThis);
+
+		try {
+			// Both the relay candidate and the direct fallback are rate-limited.
+			t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+				const u = String(url);
+				if (u.startsWith(localPrefix)) return realFetch(u, init);
+				if (u.includes("dead-relay-999")) return stubResponse(429, JSON.stringify({ error: "relay 429" }));
+				return stubResponse(429, UPSTREAM_429);
+			});
+
+			const res = await fetch(`${localPrefix}/v1/chat/completions`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ model: MODEL, stream: false }),
+			});
+			assert.equal(res.status, 429);
+			const body = (await res.json()) as Record<string, unknown>;
+			assert.equal(body.error, "FreeUsageLimitError");
+			assert.ok(
+				(body.hint as string).includes("free-tier IP quota"),
+				"exhausted-pool 429 must carry the guidance hint",
+			);
+			assert.ok(
+				(getRelayHealth(FAKE_RELAY)?.consecutiveFailures ?? 0) >= 1,
+				"the 429 relay must have been tried and marked failed before direct",
+			);
+		} finally {
+			_reset429HintForTest();
+			resetAllRelayHealth();
 			setActiveRelayState(priorState, false);
 			if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
 		}
@@ -152,7 +199,7 @@ test("429 hint: direct-mode 429 carries guidance, throttled 10 min, resettable",
 
 // ── Minimal source guard ────────────────────────────────────────────────────
 
-test("Rate-Limit Hint [2/4] hint text appears exactly once in proxy source", () => {
+test("Rate-Limit Hint hint text appears exactly once in proxy source", () => {
 	const PROXY_SRC = fs.readFileSync(
 		new URL("../src/proxy.ts", import.meta.url),
 		"utf8",

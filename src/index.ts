@@ -43,7 +43,6 @@ import type {
 export * from "./types.ts";
 export * from "./config.ts";
 export * from "./logger.ts";
-export * from "./rate-limiter.ts";
 export * from "./models.ts";
 export * from "./catalog.ts";
 export * from "./relay-state.ts";

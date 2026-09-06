@@ -347,7 +347,6 @@ src/
 ├── proxy.ts          # local proxy server (127.0.0.1:28180)
 ├── relay.ts          # relay selection & round-robin
 ├── relay-state.ts    # relay pool state, health tracking
-├── rate-limiter.ts   # in-memory sliding rate limiter (200/day, 200/hour)
 ├── stream-pipe.ts    # SSE stream piping & truncation resilience
 ├── commands.ts       # /freeflow CLI subcommands
 ├── deploy.ts         # guided relay deploy (vercel/cloudflare/deno)

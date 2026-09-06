@@ -32,11 +32,9 @@ import {
 import { isDebugEnabled, log } from "./logger.ts";
 import { KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
-import { checkRateLimit } from "./rate-limiter.ts";
 import { relayFetch } from "./relay.ts";
 import { getActiveRelayState } from "./relay-state.ts";
 import { pipeUpstreamStream } from "./stream-pipe.ts";
-import type { Upstream } from "./types.ts";
 
 
 let shutdownShouldExit = false;
@@ -45,8 +43,9 @@ export function setShutdownShouldExit(v: boolean): void {
 }
 
 /**
- * Direct-mode 429 hint throttle: the guidance hint is emitted at most once per
- * 10 minutes per process so repeated rate-limit responses don't spam clients.
+ * Natural-429 hint throttle: the deploy guidance hint is attached to upstream
+ * 429 passthroughs at most once per 10 minutes per process so repeated
+ * rate-limit responses don't spam clients.
  */
 let last429HintAt = 0;
 function shouldShow429Hint(): boolean {
@@ -57,6 +56,26 @@ function shouldShow429Hint(): boolean {
 }
 /** Test-only: reset 429 hint throttle */
 export function _reset429HintForTest(): void { last429HintAt = 0; }
+
+/** Deploy guidance attached to a natural upstream 429 once the throttle allows. */
+const RATE_LIMIT_HINT =
+	"Shared free-tier IP quota reached. Add your own relay egress: /freeflow deploy (Vercel 1M/mo recommended)";
+
+/**
+ * Attach the deploy hint to a natural upstream 429 JSON body. Anything else —
+ * non-429 statuses, non-JSON bodies — passes through untouched without
+ * consuming the throttle slot.
+ */
+function withRateLimitHint(status: number, data: string): string {
+	if (status !== 429) return data;
+	try {
+		const parsed: unknown = JSON.parse(data);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && shouldShow429Hint()) {
+			return JSON.stringify({ ...(parsed as Record<string, unknown>), hint: RATE_LIMIT_HINT });
+		}
+	} catch {}
+	return data;
+}
 
 /**
  * Extract client IP address from incoming HTTP request.
@@ -504,25 +523,7 @@ export function startProxy(
 				}
 			} catch {}
 
-			const upstream: Upstream = isKilo ? "kilo" : "opencode";
 			const isStream = parsedBody?.stream === true;
-
-			// Seamless sub-agent rate-limit: when relay pool is active, bypass
-			// local per-IP quota (127.0.0.1 shared by all subagents) — upstream
-			// quota is per-egress-IP and relayFetch already rolls on 429 across
-			// 7 candidates until a response succeeds. Without this, parallel
-			// subagents sharing the daemon would hit local 429 before relay failover.
-			const relayPreview = getActiveRelayState();
-			const willUseRelay = relayPreview.enabled && Boolean(relayPreview.url || relayPreview.relays.length > 0);
-			if (!willUseRelay && !checkRateLimit(clientIP, upstream)) {
-				const body: Record<string, unknown> = { error: "rate limit exceeded" };
-				if (shouldShow429Hint()) {
-					body.hint = "Shared free-tier IP quota reached. Add your own relay egress: /freeflow deploy (Vercel 1M/mo recommended)";
-				}
-				res.writeHead(429, { "content-type": "application/json" });
-				res.end(JSON.stringify(body));
-				return;
-			}
 
 			// Stale-registration guard: responses-only models (muse-spark-*) must
 			// reach upstream via /v1/responses. A chat/completions request for one
@@ -593,7 +594,7 @@ export function startProxy(
 							undefined,
 						);
 					} else {
-						const data = await response.text();
+						const data = withRateLimitHint(response.status, await response.text());
 						const ct =
 							response.headers.get("content-type") || "application/json";
 						res.writeHead(response.status, { "content-type": ct });
@@ -672,7 +673,7 @@ export function startProxy(
 									if (!response.ok) {
 										log("warn", `upstream ${response.status} for model ${String((parsedBody as Record<string, unknown> | null)?.model ?? "?")} via relay`, { status: response.status, model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url }, reqId);
 									}
-									const data = await response.text();
+									const data = withRateLimitHint(response.status, await response.text());
 									const ct =
 										response.headers.get("content-type") ||
 										"application/json";
@@ -731,6 +732,17 @@ export function startProxy(
 						req.off("error", onReqError);
 						if (upstreamRes.status >= 400) {
 							log("warn", `direct upstream ${upstreamRes.status} for model ${String(parsedBody?.model ?? "?")} ${target.pathname}`, { status: upstreamRes.status, model: parsedBody?.model, path: target.pathname }, reqId);
+						}
+
+						// Natural 429: every relay plus direct is rate-limited — buffer the
+						// JSON error and attach the deploy hint instead of piping it
+						// through as a stream body.
+						if (upstreamRes.status === 429) {
+							const data = withRateLimitHint(429, await upstreamRes.text());
+							const ct429 = upstreamRes.headers.get("content-type") || "application/json";
+							res.writeHead(429, { "content-type": ct429 });
+							res.end(data);
+							return;
 						}
 
 						const outHeaders: Record<string, string> = {};
