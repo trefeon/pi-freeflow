@@ -16,7 +16,7 @@ import {
 	refreshCatalog,
 	setAliveCatalog,
 } from "./catalog.ts";
-import { ensureDaemon as ensureClientDaemon, getClientPort, stopHeartbeat } from "./client.ts";
+import { ensureDaemon as ensureClientDaemon, getClientPort, hasFallbackServer, stopHeartbeat } from "./client.ts";
 import { createCommandSpec, stopLogsFollow, updateStatusBar } from "./commands.ts";
 import { HOST, ONBOARDED_FLAG_FILE, PORT } from "./config.ts";
 import { logInfo, logWarn } from "./logger.ts";
@@ -328,7 +328,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 	});
 	pi.on?.("session_shutdown", () => {
-		stopHeartbeat();
 		stopLogsFollow();
+		if (hasFallbackServer()) {
+			stopHeartbeat();
+		}
+	});
+	process.once("exit", () => {
+		try {
+			stopHeartbeat();
+		} catch {}
 	});
 }

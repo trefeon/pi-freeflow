@@ -147,7 +147,7 @@ export async function isProxyAlive(port: number): Promise<boolean> {
 	if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
 	try {
 		const res = await fetch(`http://${HOST}:${port}/v1/models`, {
-			signal: AbortSignal.timeout(500),
+			signal: AbortSignal.timeout(1500),
 		});
 		const ct = res.headers.get("content-type") || "";
 		return res.ok && ct.includes("application/json");
@@ -182,7 +182,7 @@ export async function getDaemonHealth(
 	if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
 	try {
 		const res = await fetch(`http://${HOST}:${port}/_health`, {
-			signal: AbortSignal.timeout(800),
+			signal: AbortSignal.timeout(2500),
 		});
 		if (!res.ok) return null;
 		const data: unknown = await res.json();

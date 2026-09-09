@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import defaultExtension from "../src/index.ts";
 import type { ExtensionAPI, ProviderConfig, RegisteredCommand } from "../src/types.ts";
-
+import { hasFallbackServer } from "../src/client.ts";
 test("extension registers provider, commands, and lifecycle hooks", async () => {
 	let registeredProviderName = "";
 	let registeredProviderConfig: ProviderConfig | undefined;
@@ -43,4 +43,23 @@ test("extension registers provider, commands, and lifecycle hooks", async () => 
 	if (shutdownHandler) {
 		shutdownHandler();
 	}
+});
+
+test("session_shutdown does not stop heartbeat when connected to a daemon (fallbackServer is null)", async () => {
+	const registeredEvents = new Map<string, Function>();
+	const mockPi: ExtensionAPI = {
+		registerProvider() {},
+		registerCommand() {},
+		on(event: string, handler: Function) {
+			registeredEvents.set(event, handler);
+		},
+	};
+
+	await defaultExtension(mockPi);
+	const shutdownHandler = registeredEvents.get("session_shutdown");
+	assert.ok(shutdownHandler, "session_shutdown handler must be registered");
+
+	assert.equal(hasFallbackServer(), false);
+	shutdownHandler();
+	assert.equal(hasFallbackServer(), false);
 });

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.11.1
+
+### Patch Changes
+
+- Apologies for the daemon disconnect bug introduced in v1.11.0: in multi-agent workflows or when subagents, evaluations, and background tasks completed, the extension prematurely detached from the local proxy daemon, causing the proxy to shut down while your main session remained active. The heartbeat connection now persists throughout your active terminal session.
+- Increased local health check and liveness probe timeouts from 800ms and 500ms to 2500ms and 1500ms, with an automatic probe retry to avoid false-alarm daemon restarts during heavy concurrent streaming.
+- Added unhandled error logging inside the daemon to prevent silent process exits.
+- Fresh installs now log full HTTP lifecycle debug output by default so diagnostic reports contain complete request context; turn it off anytime with `/freeflow debug off`.
+
 ## 1.11.0
 
 ### Minor Changes

@@ -349,6 +349,14 @@ export async function watchdogCheck(port: number): Promise<void> {
 	} catch {
 		return;
 	}
+	if (health === null) {
+		await new Promise<void>((r) => setTimeout(r, 200));
+		try {
+			health = await getDaemonHealth(port);
+		} catch {
+			return;
+		}
+	}
 	if (health && (health.activeRequests ?? 0) > 0) {
 		trackBusyEdge(health.activeRequests ?? 0, health.lastBytesAt ?? 0);
 	} else {
@@ -564,6 +572,15 @@ export function getClientPort(): number {
 
 export function getClientId(): string {
 	return CLIENT_ID;
+}
+
+export function hasFallbackServer(): boolean {
+	return fallbackServer !== null;
+}
+
+/** Test seam: true when client heartbeat timer is active. */
+export function isHeartbeatActive(): boolean {
+	return heartbeatTimer !== null;
 }
 
 export function _resetClientForTest(): void {

@@ -25,7 +25,7 @@ export interface LeaseOptions {
 }
 
 const leases = new Map<string, number>();
-let lastActivityAt = Date.now();
+let lastActivityAt = 0;
 let gcTimer: ReturnType<typeof setInterval> | null = null;
 /** First sweep timestamp at which leases were observed empty; null while any lease exists. */
 let emptySince: number | null = null;
@@ -110,7 +110,7 @@ export function stopLeaseGC(): void {
 /** Test-only: reset all lease state. */
 export function _resetLeaseStateForTest(): void {
 	leases.clear();
-	lastActivityAt = Date.now();
+	lastActivityAt = 0;
 	emptySince = null;
 	stopLeaseGC();
 }

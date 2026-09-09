@@ -98,6 +98,12 @@ export async function runDaemon(): Promise<void> {
 	};
 	process.on("SIGTERM", () => retire("SIGTERM"));
 	process.on("SIGINT", () => retire("SIGINT"));
+	process.on("uncaughtException", (err) => {
+		log("error", "daemon uncaughtException", { error: String(err), stack: (err as Error)?.stack });
+	});
+	process.on("unhandledRejection", (reason) => {
+		log("error", "daemon unhandledRejection", { error: String(reason) });
+	});
 	setShutdownShouldExit(true);
 	try {
 		const r = await startProxy();
