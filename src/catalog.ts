@@ -38,6 +38,8 @@ export const DEAD_MODEL_IDS = new Set<string>([
 	"tencent/hy3:free",
 	"meituan/longcat-2.0-free",
 	"laguna-s-2.1-free",
+	"minimax/minimax-m2.7:free",
+	"minimax/minimax-m3:free",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.
@@ -74,7 +76,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 26 verified models for 0ms instant availability.
+ * Initialized with all 24 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
 	...m,
@@ -397,6 +399,6 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 	} catch (err) {
 		logDebug("Failed reading stale catalog cache", { error: String(err) });
 	}
-	// No valid cache — return in-memory static 26 (host will refresh if needed)
+	// No valid cache — return in-memory static 24 (host will refresh if needed)
 	return aliveCatalog;
 }

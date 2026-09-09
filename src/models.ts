@@ -1,9 +1,9 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 26 verified free models:
+ * Defines the 24 verified free models:
  * - 7 OpenCode Zen models (2 Responses API + 5 Chat Completions)
- * - 19 KiloCode Keyless Gateway models (18 OpenRouter format + 1 Standard format)
+ * - 17 KiloCode Keyless Gateway models (16 OpenRouter format + 1 Standard format)
  */
 
 import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
@@ -280,26 +280,6 @@ export const KILO_MODELS: ModelDef[] = [
 		input: ["text", "image"],
 	},
 {
-	id: "minimax/minimax-m2.7:free",
-	name: "MiniMax M2.7 (free)",
-	reasoning: true,
-	contextWindow: 196_608,
-	maxTokens: 196_608,
-	input: ["text"],
-	thinkingFormat: "openrouter",
-	thinkingLevelMap: KILO_REASONING_MAP,
-},
-{
-	id: "minimax/minimax-m3:free",
-	name: "MiniMax M3 (free)",
-	reasoning: true,
-	contextWindow: 1_048_576,
-	maxTokens: 524_288,
-	input: ["text"],
-	thinkingFormat: "openrouter",
-	thinkingLevelMap: KILO_REASONING_MAP,
-},
-{
 	id: "inclusionai/ling-3.0-flash-fin:free",
 	name: "Ling 3.0 Flash Fin",
 	reasoning: true,
@@ -359,8 +339,6 @@ export const MODEL_ALIASES: Record<string, string> = {
 	"north-mini-code": "cohere/north-mini-code:free",
 	"lfm-2.5": "liquid/lfm-2.5-2.6b:free",
 	"content-safety": "nvidia/nemotron-3.5-content-safety:free",
-	"minimax-m2.7": "minimax/minimax-m2.7:free",
-	"minimax-m3": "minimax/minimax-m3:free",
 	"ling-3.0-flash-fin": "inclusionai/ling-3.0-flash-fin:free",
 	"ling-3.0-flash-sante": "inclusionai/ling-3.0-flash-sante:free",
 	"inkling": "thinkingmachines/inkling:free",
@@ -391,7 +369,7 @@ export const KILO_MODEL_IDS = new Set<string>([
 ]);
 
 /**
- * Combined list of all 26 static free models (canonical)
+ * Combined list of all 24 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS];
 

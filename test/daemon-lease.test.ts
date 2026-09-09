@@ -318,5 +318,5 @@ test("daemon seed helpers do not throw when disk files absent", async () => {
 	syncRelayStateFromDisk();
 	await seedCatalog();
 	// catalog still has at least the static set
-	assert.ok(getAliveCatalog().length >= 25);
+	assert.ok(getAliveCatalog().length >= 24);
 });

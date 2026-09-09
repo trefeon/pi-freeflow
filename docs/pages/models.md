@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **26 curated free models** across two upstream providers: **OpenCode Zen** and **KiloCode Gateway**.
+pi-freeflow provides unified access to **24 curated free models** across two upstream providers: **OpenCode Zen** and **KiloCode Gateway**.
 
 ## Upstream Protocol Distinction
 
@@ -17,9 +17,9 @@ pi-freeflow provides unified access to **26 curated free models** across two ups
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: `Authorization: Bearer kilo-free` (keyless, 200 req/hr per IP)
-- **Models**: 18 models with OpenRouter-style thinking format
+- **Models**: 17 models with OpenRouter-style thinking format
 
-## 26 Model Specifications
+## 24 Model Specifications
 
 ### OpenCode Zen (7 models)
 
@@ -33,7 +33,7 @@ pi-freeflow provides unified access to **26 curated free models** across two ups
 | `big-pickle` | 200,000 | 32,000 | high, max | ❌ |
 | `ling-3.0-flash-fin-free` | 262,144 | 131,072 | minimal..xhigh | ❌ |
 
-### KiloCode Gateway (19 models)
+### KiloCode Gateway (17 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -50,8 +50,6 @@ pi-freeflow provides unified access to **26 curated free models** across two ups
 | `kilo-auto` | 256,000 | 10,000 | OpenRouter (reasoning) | ❌ |
 | `openrouter` | 200,000 | 65,536 | OpenRouter (reasoning) | ✅ |
 | `content-safety` | 128,000 | 8,192 | non-thinking (classifier) | ✅ |
-| `minimax-m2.7` | 196,608 | 196,608 | OpenRouter | ❌ |
-| `minimax-m3` | 1,048,576 | 524,288 | OpenRouter | ❌ |
 | `ling-3.0-flash-fin` | 262,144 | 32,768 | OpenRouter | ❌ |
 | `inkling` | 1,048,576 | 262,144 | OpenRouter | ✅ |
 | `inkling-small` | 1,048,576 | 262,144 | OpenRouter | ✅ |
@@ -64,4 +62,4 @@ pi-freeflow provides unified access to **26 curated free models** across two ups
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :--- | :--- | :--- | :--- |
 | **OpenCode Zen** | 7 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat) | Keyless |
-| **KiloCode Gateway** | 19 | `api.kilo.ai` | `/api/gateway/chat/completions` | `Bearer kilo-free` |
+| **KiloCode Gateway** | 17 | `api.kilo.ai` | `/api/gateway/chat/completions` | `Bearer kilo-free` |

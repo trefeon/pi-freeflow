@@ -55,7 +55,6 @@ test("1M context window models are properly configured", () => {
 		"nemotron-3-ultra-free",
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
-		"minimax/minimax-m3:free",
 		"thinkingmachines/inkling:free",
 		"thinkingmachines/inkling-small:free",
 	];
@@ -162,8 +161,6 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 		"openrouter/free": { ctx: 200_000, max: 65_536, reasoning: true },
 		"nvidia/nemotron-3.5-content-safety:free": { ctx: 128_000, max: 8_192, reasoning: false },
 		// Added 2026-08-30 (live-verified)
-		"minimax/minimax-m2.7:free": { ctx: 196_608, max: 196_608, reasoning: true },
-		"minimax/minimax-m3:free": { ctx: 1_048_576, max: 524_288, reasoning: true },
 		"inclusionai/ling-3.0-flash-fin:free": { ctx: 262_144, max: 32_768, reasoning: true },
 		"thinkingmachines/inkling:free": { ctx: 1_048_576, max: 262_144, reasoning: true },
 		"inclusionai/ling-3.0-flash-sante:free": { ctx: 262_144, max: 32_768, reasoning: true },
@@ -180,8 +177,6 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 });
 
 test("new alias map resolves to canonical kilo ids", () => {
-	assert.equal(resolveCanonicalModelId("minimax-m2.7"), "minimax/minimax-m2.7:free");
-	assert.equal(resolveCanonicalModelId("minimax-m3"), "minimax/minimax-m3:free");
 	assert.equal(resolveCanonicalModelId("ling-3.0-flash-fin"), "inclusionai/ling-3.0-flash-fin:free");
 	assert.equal(resolveCanonicalModelId("inkling"), "thinkingmachines/inkling:free");
 	assert.equal(resolveCanonicalModelId("inkling-small"), "thinkingmachines/inkling-small:free");
