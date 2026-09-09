@@ -155,6 +155,28 @@ export async function relayFetch(
 				}
 				break;
 			}
+			// Relay payload cap hit (413: request exceeds host payload limit):
+			// Not a relay health signal, so no failure marking — try the next
+			// relay (a different host may accept it), else the direct fallback.
+			if (res.status === 413) {
+				lastResponse?.body?.cancel().catch(() => {});
+				lastResponse = res;
+				log(
+					"warn",
+					`relay ${targetUrl} hit HTTP 413 payload limit in ${elapsed}s — trying next path`,
+					{ upstream: url, sizeKB: bodySizeKB },
+					rid,
+				);
+				const now = Date.now();
+				if (now - lastRollNotify > ROLL_NOTIFY_MS) {
+					lastRollNotify = now;
+					const ui = getStatusUi();
+					if (ui?.notify) {
+						ui.notify(`relay ${shortRelayLabel(targetUrl)} hit payload limit — trying next path`, "warning");
+					}
+				}
+				continue;
+			}
 
 			// Relay host infrastructure 404 (e.g. Vercel DEPLOYMENT_NOT_FOUND or non-JSON 404):
 			// When a relay URL is deleted, misconfigured, or has no deployment, Vercel/Cloudflare
