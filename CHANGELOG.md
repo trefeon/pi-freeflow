@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.2
+
+### Patch Changes
+
+- 549b66e: Oversized requests no longer fail at the relay hop: when a relay answers 413 payload limit, the proxy transparently tries the next relay and then the direct route, keeping the stream alive. Long sessions that outgrow the relay payload cap now complete instead of surfacing a function payload error.
+
 ## 1.11.1
 
 ### Patch Changes
