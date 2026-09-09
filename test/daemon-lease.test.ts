@@ -83,7 +83,7 @@ test("lease registry: register → renew → unregister", () => {
 	_resetLeaseStateForTest();
 });
 
-test("lease GC: expires stale leases, retires when idle and lease-less", async () => {
+test("lease GC: expires stale leases, retires after the zero-lease grace", async () => {
 	_resetLeaseStateForTest();
 
 	let retired = false;
@@ -97,8 +97,8 @@ test("lease GC: expires stale leases, retires when idle and lease-less", async (
 		},
 	});
 
-	// Fresh daemon with no leases: lastActivityAt is at GC start, so it
-	// survives the readiness-poll grace — init-at-bind contract.
+	// Fresh daemon with no leases: the empty state only starts the grace clock,
+	// so it survives the re-attach window — init-at-bind contract.
 	await new Promise<void>((r) => setTimeout(r, 60));
 	assert.equal(retired, false, "fresh daemon must not retire during grace");
 
@@ -108,23 +108,23 @@ test("lease GC: expires stale leases, retires when idle and lease-less", async (
 	assert.equal(retired, false, "daemon with a live lease must not retire");
 	assert.equal(getLeaseCount(), 1);
 
-	// After the lease TTL the GC drops it; with 0 leases + idle + past grace it retires.
+	// After the lease TTL the GC drops it; with 0 leases persisting past grace it retires.
 	await new Promise<void>((r) => setTimeout(r, 300));
 	assert.equal(getLeaseCount(), 0);
-	// Grace is 100ms after lastActivityAt (still at GC start ~400ms ago) — should have retired
+	// Empty-for ~400ms past the 100ms grace — should have retired
 	await new Promise<void>((r) => setTimeout(r, 120));
-	assert.equal(retired, true, "lease-less idle daemon must retire after grace");
+	assert.equal(retired, true, "lease-less daemon must retire after grace");
 
 	stopLeaseGC();
 	_resetLeaseStateForTest();
 });
 
-test("lease GC: request-touch keeps lease-less daemon alive (legacy clients)", async () => {
+test("lease GC: held leases never retire, however quiet the proxy", async () => {
 	_resetLeaseStateForTest();
 
 	let retired = false;
 	startLeaseGC({
-		ttlMs: 200,
+		ttlMs: 400,
 		gcMs: 50,
 		graceMs: 150,
 		getActiveRequests: () => 0,
@@ -133,16 +133,15 @@ test("lease GC: request-touch keeps lease-less daemon alive (legacy clients)", a
 		},
 	});
 
-	// Lease-less but actively proxied — touchActivity refreshes the grace.
+	// A live lease with zero proxied requests across many sweeps: request-
+	// idleness alone must never retire the daemon.
+	registerClient("quiet-user");
 	for (let i = 0; i < 5; i++) {
-		touchActivity();
 		await new Promise<void>((r) => setTimeout(r, 80));
-		assert.equal(retired, false, `tick ${i}: activity must prevent retire`);
+		renewClient("quiet-user");
+		assert.equal(retired, false, `tick ${i}: lease held, quiet proxy must not retire`);
 	}
-
-	// Stop touching — after grace it should retire.
-	await new Promise<void>((r) => setTimeout(r, 200));
-	assert.equal(retired, true);
+	assert.equal(getLeaseCount(), 1);
 
 	stopLeaseGC();
 	_resetLeaseStateForTest();
@@ -168,7 +167,70 @@ test("lease GC: in-flight requests block retire", async () => {
 
 	active = 0;
 	await new Promise<void>((r) => setTimeout(r, 150));
-	assert.equal(retired, true, "after requests drain, idle daemon must retire");
+	assert.equal(retired, true, "after requests drain, lease-less daemon must retire");
+
+	stopLeaseGC();
+	_resetLeaseStateForTest();
+});
+
+test("lease GC: empty leases retire only after the grace window", async () => {
+	_resetLeaseStateForTest();
+
+	let retired = false;
+	startLeaseGC({
+		ttlMs: 10_000,
+		gcMs: 50,
+		graceMs: 200,
+		getActiveRequests: () => 0,
+		onIdle: () => {
+			retired = true;
+		},
+	});
+
+	registerClient("leaving");
+	unregisterClient("leaving");
+	assert.equal(getLeaseCount(), 0);
+
+	// First empty sweeps must not retire — the grace window absorbs re-attach races.
+	await new Promise<void>((r) => setTimeout(r, 80));
+	assert.equal(retired, false, "first empty sweep must not retire");
+
+	// Past the grace window with leases still empty it retires.
+	await new Promise<void>((r) => setTimeout(r, 250));
+	assert.equal(retired, true, "zero leases persisting past grace must retire");
+
+	stopLeaseGC();
+	_resetLeaseStateForTest();
+});
+
+test("lease GC: re-registration inside the empty window cancels retire", async () => {
+	_resetLeaseStateForTest();
+
+	let retired = false;
+	startLeaseGC({
+		ttlMs: 10_000,
+		gcMs: 50,
+		graceMs: 200,
+		getActiveRequests: () => 0,
+		onIdle: () => {
+			retired = true;
+		},
+	});
+
+	registerClient("flaky");
+	unregisterClient("flaky");
+	await new Promise<void>((r) => setTimeout(r, 80));
+	assert.equal(retired, false);
+
+	// Fresh-spawn re-attach race: a client lands inside the empty window.
+	registerClient("flaky");
+	await new Promise<void>((r) => setTimeout(r, 250));
+	assert.equal(retired, false, "re-registration inside the window must cancel retire");
+
+	// Drop again and stay empty — now it retires past the grace window.
+	unregisterClient("flaky");
+	await new Promise<void>((r) => setTimeout(r, 300));
+	assert.equal(retired, true, "zero leases persisting past grace must retire");
 
 	stopLeaseGC();
 	_resetLeaseStateForTest();

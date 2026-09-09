@@ -206,7 +206,7 @@ export const DAEMON_TTL_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_TTL_
 export const DAEMON_HEARTBEAT_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_HEARTBEAT_MS");
 /** Daemon GC sweep interval (ms). */
 export const DAEMON_GC_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_GC_MS");
-/** Idle grace after the last request before a lease-less daemon exits (ms). */
+/** Zero-lease persistence window before a lease-less daemon exits (ms). */
 export const DAEMON_GRACE_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_GRACE_MS");
 /** Max time a client waits for a freshly spawned daemon to answer /_health (ms). */
 export const DAEMON_READY_TIMEOUT_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_READY_TIMEOUT_MS");

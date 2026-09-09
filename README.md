@@ -290,7 +290,7 @@ to `1` before starting a session.
 Nothing visible to your other sessions. The proxy daemon is a separate background
 process shared by every OMP/Pi session on the machine. Closing one session just
 unregisters it; the daemon keeps serving the rest and retires itself automatically
-once the last client disconnects and it has been idle for a short grace period.
+once the last client disconnects and no client re-attaches within a short grace window.
 To stop it manually, run `/freeflow kill` — the next freeflow use starts it again.
 
 **Where's the normalizer?**

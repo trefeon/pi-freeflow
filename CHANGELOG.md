@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.0
+
+### Minor Changes
+
+- Proxy daemon now stays up while any session uses it, even when idle. It shuts down only after the last session leaves, instead of retiring after a short quiet window.
+
 ## 1.10.0
 
 ### Minor Changes

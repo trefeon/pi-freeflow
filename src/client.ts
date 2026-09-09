@@ -5,7 +5,8 @@
  * at 127.0.0.1:28180 (or spawns one if none is alive), registers a lease, and
  * renews it with a heartbeat while the session lives. When the session ends
  * the heartbeat stops; the daemon drops the lease after its TTL and retires
- * once no client holds a live lease and no request has been proxied recently.
+ * once no client holds a live lease for a grace window with nothing in flight
+ * (request-idleness alone never retires it).
  */
 
 import { randomUUID } from "node:crypto";

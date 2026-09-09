@@ -4,7 +4,7 @@
  * Spawned as a separate OS process by src/client.ts so the local proxy survives
  * the OMP/Pi session that started it. Owns port 28180, serves the proxy plus
  * the client lease/control endpoints, and retires itself once no client holds
- * a live lease and no request has been proxied recently.
+ * a live lease (request-idleness alone never retires it).
  *
  * Run directly: `node --experimental-strip-types src/daemon.ts` (or `bun src/daemon.ts`).
  */
@@ -113,18 +113,21 @@ export async function runDaemon(): Promise<void> {
 		process.exit(1);
 	}
 
-	// lastActivityAt is initialized AT BIND TIME: a freshly started daemon with
-	// zero leases must never be GC'd during the parent's readiness-poll window.
+	// lastActivityAt is still seeded AT BIND TIME for the /_health snapshot, but
+	// retirement no longer reads it — only the zero-lease persistence window
+	// gates the GC, so a fresh spawn always survives its re-attach window.
 	touchActivity();
 	syncRelayStateFromDisk();
 	void seedCatalog();
 
+	// Retire only when zero leases persist past the grace window with nothing
+	// in flight — never for request-idleness.
 	startLeaseGC({
 		ttlMs: DAEMON_TTL_MS,
 		gcMs: DAEMON_GC_MS,
 		graceMs: DAEMON_GRACE_MS,
 		getActiveRequests,
-		onIdle: () => retire("no clients and idle"),
+		onIdle: () => retire("no clients"),
 	});
 
 	logInfo(`pi-freeflow daemon v${PKG_VERSION} listening on http://${HOST}:${PORT}`);

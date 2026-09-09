@@ -2,12 +2,13 @@
  * Client lease registry for the detached pi-freeflow proxy daemon.
  *
  * Each OMP/Pi session is a client that registers a lease and renews it with a
- * heartbeat while alive. The daemon drops expired leases and, once NO client
- * holds a live lease AND no request has been proxied recently, retires itself.
+ * heartbeat while alive. The daemon drops expired leases and retires itself
+ * once NO client holds a live lease: the empty state must persist for the
+ * grace window (a fresh spawn's clients re-attach within seconds) with
+ * nothing in flight. Request-idleness alone NEVER retires the daemon.
  *
- * The request-touch (`lastActivityAt`) is the fallback for legacy clients that
- * never heartbeated: any proxied request counts as a live user, so the daemon
- * is never idle-killed while a session is actually using it.
+ * The request-touch (`lastActivityAt`) is still recorded and surfaced in
+ * /_health for observability, but it no longer gates retirement.
  */
 
 export interface LeaseOptions {
@@ -15,7 +16,7 @@ export interface LeaseOptions {
 	ttlMs: number;
 	/** GC sweep interval (ms). */
 	gcMs: number;
-	/** Idle grace after the last proxied request before a lease-less daemon exits (ms). */
+	/** Zero-lease persistence window (ms): how long leases must stay empty before a lease-less daemon exits. */
 	graceMs: number;
 	/** Current in-flight proxied requests — daemon never exits mid-stream. */
 	getActiveRequests: () => number;
@@ -26,6 +27,8 @@ export interface LeaseOptions {
 const leases = new Map<string, number>();
 let lastActivityAt = Date.now();
 let gcTimer: ReturnType<typeof setInterval> | null = null;
+/** First sweep timestamp at which leases were observed empty; null while any lease exists. */
+let emptySince: number | null = null;
 
 /** Register or refresh a client lease. */
 export function registerClient(clientId: string): void {
@@ -68,7 +71,7 @@ export function getLastActivityAt(): number {
 
 /**
  * Start the lease GC sweep. Prunes expired leases and, when no client holds a
- * lease, nothing is in flight, and no request has been proxied within the
+ * lease, nothing is in flight, and the lease-less state has persisted for the
  * grace window, invokes `onIdle` (the daemon retires). Idempotent — a second
  * call is a no-op.
  */
@@ -81,11 +84,15 @@ export function startLeaseGC(opts: LeaseOptions): void {
 				leases.delete(id);
 			}
 		}
-		if (
-			leases.size === 0 &&
-			opts.getActiveRequests() === 0 &&
-			now - lastActivityAt > opts.graceMs
-		) {
+		if (leases.size > 0) {
+			emptySince = null;
+			return;
+		}
+		if (emptySince === null) {
+			emptySince = now;
+			return;
+		}
+		if (opts.getActiveRequests() === 0 && now - emptySince >= opts.graceMs) {
 			stopLeaseGC();
 			opts.onIdle();
 		}
@@ -104,5 +111,6 @@ export function stopLeaseGC(): void {
 export function _resetLeaseStateForTest(): void {
 	leases.clear();
 	lastActivityAt = Date.now();
+	emptySince = null;
 	stopLeaseGC();
 }
