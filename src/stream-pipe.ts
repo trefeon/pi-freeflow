@@ -10,6 +10,11 @@ import type * as http from "node:http";
 import type { Readable } from "node:stream";
 import { isDebugEnabled, log } from "./logger.ts";
 import { markRelayFailure } from "./relay-state.ts";
+import {
+	WATCHDOG_SSE_FAIL_RATE,
+	WATCHDOG_SSE_MIN_SAMPLES,
+	WATCHDOG_SSE_WINDOW,
+} from "./config.ts";
 
 /**
  * A premature stream end counts as "substantial" only when BOTH thresholds
@@ -21,6 +26,52 @@ export const SUBSTANTIAL_MIN_BYTES = 100 * 1024;
 
 export function isSubstantial(chunks: number, bytes: number): boolean {
 	return chunks > SUBSTANTIAL_MIN_CHUNKS && bytes > SUBSTANTIAL_MIN_BYTES;
+}
+
+/**
+ * Failed-SSE rolling window (client watchdog input).
+ *
+ * The last WATCHDOG_SSE_WINDOW stream outcomes are kept (true = failed,
+ * false = ok). Client disconnects and proxy-internal aborts never record —
+ * only genuine upstream-side truncation/failure counts as failed, and a
+ * clean terminal marker counts as ok. Degraded = at least
+ * WATCHDOG_SSE_MIN_SAMPLES outcomes and a failure rate above
+ * WATCHDOG_SSE_FAIL_RATE. Exposed on /_health via src/health.ts.
+ */
+const sseOutcomes: boolean[] = [];
+let lastForwardedByteAt = 0;
+
+export function recordSseOutcome(failed: boolean): void {
+	sseOutcomes.push(failed);
+	if (sseOutcomes.length > WATCHDOG_SSE_WINDOW) sseOutcomes.shift();
+}
+
+export function getSseStats(): {
+	failures: number;
+	total: number;
+	rate: number;
+	degraded: boolean;
+} {
+	const total = sseOutcomes.length;
+	const failures = sseOutcomes.filter(Boolean).length;
+	const rate = total === 0 ? 0 : failures / total;
+	return {
+		failures,
+		total,
+		rate,
+		degraded: total >= WATCHDOG_SSE_MIN_SAMPLES && rate > WATCHDOG_SSE_FAIL_RATE,
+	};
+}
+
+/** Timestamp (Date.now()) of the last forwarded stream byte, 0 when no stream has flowed yet. */
+export function getLastForwardedByteAt(): number {
+	return lastForwardedByteAt;
+}
+
+/** Test-only: clear the rolling window and byte timestamp. */
+export function _resetSseStatsForTest(): void {
+	sseOutcomes.length = 0;
+	lastForwardedByteAt = 0;
 }
 /**
  * Pipes an upstream readable stream to a client HTTP response.
@@ -55,6 +106,15 @@ export function pipeUpstreamStream(
 	// recognized. Longest marker is "response.completed" (18 bytes); 32
 	// gives comfortable headroom.
 	let terminalScanCarry = Buffer.alloc(0);
+	// Watchdog outcome: recorded exactly once per stream. Client disconnects
+	// and proxy-internal aborts set clientAborted first, so the ensure path
+	// below skips them and the window only reflects upstream-side results.
+	let outcomeRecorded = false;
+	const recordOnce = (failed: boolean): void => {
+		if (outcomeRecorded) return;
+		outcomeRecorded = true;
+		recordSseOutcome(failed);
+	};
 
 	const sniffThinking = (chunk: Buffer | string): boolean => {
 		const s =
@@ -86,6 +146,7 @@ export function pipeUpstreamStream(
 		penalizeRelay = true,
 	) => {
 		if (hasTerminalEvent || res.writableEnded) return;
+		if (!clientAborted) recordOnce(penalizeRelay || isError);
 		// Only genuine upstream-side truncation penalizes relay health.
 		// Client disconnects and clean upstream ends leave it untouched.
 		if (penalizeRelay && relayUrl && relayUrl !== "direct") {
@@ -134,6 +195,7 @@ export function pipeUpstreamStream(
 			const chunkSize =
 				typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
 			totalBytes += chunkSize;
+			lastForwardedByteAt = Date.now();
 
 			if (sniffThinking(chunk)) {
 				thinkingChunks++;
@@ -223,6 +285,7 @@ export function pipeUpstreamStream(
 
 	nodeStream.on("end", () => {
 		upstreamEnded = true;
+		if (hasTerminalEvent) recordOnce(false);
 		const elapsed = ((Date.now() - startAt) / 1000).toFixed(1);
 		if (!hasTerminalEvent && totalChunks > 0) {
 			// Clean upstream end without a detectable marker: keep the host

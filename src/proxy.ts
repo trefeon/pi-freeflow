@@ -19,6 +19,7 @@ import { getAliveCatalog } from "./catalog.ts";
 import {
 	ALLOWED_METHODS,
 	ALLOWED_PATH_PATTERN,
+	BASE_PORT_REPROBE_MS,
 	HOST,
 	KILO_CHAT_URL,
 	PATH_TRAVERSAL_PATTERN,
@@ -166,10 +167,18 @@ export function getActiveRequests(): number {
  * Fetch the full health snapshot from a running daemon.
  * `activeRequests` is undefined on daemons older than the busy-tracking
  * feature (1.9.0) — callers treat that as "cannot verify usage".
+ * `sseDegraded`/`sseRate`/`lastBytesAt` are undefined on daemons older than
+ * the failed-SSE window — callers treat missing as "not degraded".
  */
 export async function getDaemonHealth(
 	port: number,
-): Promise<{ version: string | null; activeRequests: number | undefined } | null> {
+): Promise<{
+	version: string | null;
+	activeRequests: number | undefined;
+	sseRate: number | undefined;
+	sseDegraded: boolean | undefined;
+	lastBytesAt: number | undefined;
+} | null> {
 	if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
 	try {
 		const res = await fetch(`http://${HOST}:${port}/_health`, {
@@ -183,14 +192,22 @@ export async function getDaemonHealth(
 					? data.version
 					: "";
 			const ar = "activeRequests" in data ? data.activeRequests : undefined;
-			return { version: v, activeRequests: typeof ar === "number" ? ar : undefined };
+			const sr = "sseRate" in data ? data.sseRate : undefined;
+			const sd = "sseDegraded" in data ? data.sseDegraded : undefined;
+			const lb = "lastBytesAt" in data ? data.lastBytesAt : undefined;
+			return {
+				version: v,
+				activeRequests: typeof ar === "number" ? ar : undefined,
+				sseRate: typeof sr === "number" ? sr : undefined,
+				sseDegraded: typeof sd === "boolean" ? sd : undefined,
+				lastBytesAt: typeof lb === "number" ? lb : undefined,
+			};
 		}
 		return null;
 	} catch {
 		return null;
 	}
 }
-
 /** Version of the daemon on `port`; "" when alive but pre-version-field, null when not alive. */
 export async function getDaemonVersion(port: number): Promise<string | null> {
 	const h = await getDaemonHealth(port);
@@ -807,8 +824,10 @@ export function startProxy(
 				server.once("error", async (err: NodeJS.ErrnoException) => {
 					if (settled) return;
 					if (err.code === "EADDRINUSE") {
-						// Re-check if the base port is alive (attached master race)
-						if (await isProxyAlive(basePort)) {
+						// Cold-start race: a sibling may be binding the base port
+						// right now. Re-probe it for up to 3s before accepting a
+						// walked port so parallel startups converge on :28180.
+						if (await reprobeBasePortAlive(basePort, BASE_PORT_REPROBE_MS)) {
 							settled = true;
 							log(
 								"info",
@@ -836,7 +855,11 @@ export function startProxy(
 					} catch {}
 					const addr = server.address();
 					const realPort = addr && typeof addr === "object" ? addr.port : port;
-					log("info", `proxy listening on http://${HOST}:${realPort}`);
+					if (realPort !== basePort) {
+						log("warn", `base port ${basePort} busy — proxy listening on walked port http://${HOST}:${realPort}`);
+					} else {
+						log("info", `proxy listening on http://${HOST}:${realPort}`);
+					}
 					resolve({ server, port: realPort });
 				});
 			};
@@ -844,4 +867,17 @@ export function startProxy(
 			tryListen(basePort);
 		},
 	);
+}
+
+/**
+ * Poll the base port until it answers or the budget expires. Returns true as
+ * soon as the port is alive (caller attaches instead of walking).
+ */
+export async function reprobeBasePortAlive(port: number, timeoutMs: number): Promise<boolean> {
+	const deadline = Date.now() + Math.max(0, timeoutMs);
+	for (;;) {
+		if (await isProxyAlive(port)) return true;
+		if (Date.now() >= deadline) return false;
+		await new Promise<void>((r) => setTimeout(r, 200));
+	}
 }

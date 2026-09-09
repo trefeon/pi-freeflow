@@ -8,6 +8,7 @@ import { ALL_MODELS } from "./models.ts";
 import { getActiveRelayState, getRelayHealth, isRelayHealthy } from "./relay-state.ts";
 import { getLastActivityAt, getLeaseCount, getLeaseSnapshot } from "./lease.ts";
 import { PKG_VERSION, PORT } from "./config.ts";
+import { getLastForwardedByteAt, getSseStats } from "./stream-pipe.ts";
 
 export interface HealthRelayInfo {
 	url: string;
@@ -33,6 +34,16 @@ export interface HealthData {
 	leases: Record<string, number>;
 	/** Last time any request was proxied (request-touch for legacy clients). */
 	lastActivityAt: number;
+	/** Failed-SSE rolling window: failures in the last 20 streams. */
+	sseFailed: number;
+	/** Streams recorded in the current rolling window (max 20). */
+	sseTotal: number;
+	/** Failure rate over the window (0 when empty). */
+	sseRate: number;
+	/** True when the window holds enough samples and the rate exceeds 50%. */
+	sseDegraded: boolean;
+	/** Last time any stream byte was forwarded (busy-bypass quiet check), 0 when no stream yet. */
+	lastBytesAt: number;
 }
 
 /**
@@ -53,6 +64,7 @@ export function getHealthData(portOverride?: number, activeRequests = 0): Health
 			consecutiveFailures: h?.consecutiveFailures ?? 0,
 		};
 	});
+	const sse = getSseStats();
 	return {
 		port: portOverride ?? PORT,
 		active: state.url || "",
@@ -65,6 +77,11 @@ export function getHealthData(portOverride?: number, activeRequests = 0): Health
 		clients: getLeaseCount(),
 		leases: getLeaseSnapshot(),
 		lastActivityAt: getLastActivityAt(),
+		sseFailed: sse.failures,
+		sseTotal: sse.total,
+		sseRate: sse.rate,
+		sseDegraded: sse.degraded,
+		lastBytesAt: getLastForwardedByteAt(),
 	};
 }
 

@@ -210,6 +210,10 @@ export const DAEMON_GC_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_GC_MS
 export const DAEMON_GRACE_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_GRACE_MS");
 /** Max time a client waits for a freshly spawned daemon to answer /_health (ms). */
 export const DAEMON_READY_TIMEOUT_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_READY_TIMEOUT_MS");
+/** Timeout for a single loopback control call (attach/heartbeat/detach) (ms). */
+export const DAEMON_CONTROL_TIMEOUT_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_CONTROL_TIMEOUT_MS");
+/** Client watchdog tick: how often /_health is polled for version + failed-SSE rate (ms). */
+export const DAEMON_WATCHDOG_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_WATCHDOG_MS");
 
 function envMs(name: string, fallback: number): number {
 	const raw = process.env[name];
@@ -220,12 +224,32 @@ function envMs(name: string, fallback: number): number {
 	return fallback;
 }
 
+const IS_WINDOWS_HOST = process.platform === "win32";
 export const DAEMON_SPAWN_ENABLED = process.env[DAEMON_SPAWN_ENV] !== "0";
 export const DAEMON_TTL_MS = envMs(DAEMON_TTL_MS_ENV, 30_000);
-export const DAEMON_HEARTBEAT_MS = envMs(DAEMON_HEARTBEAT_MS_ENV, 10_000);
+export const DAEMON_HEARTBEAT_MS = envMs(DAEMON_HEARTBEAT_MS_ENV, IS_WINDOWS_HOST ? 8_000 : 10_000);
 export const DAEMON_GC_MS = envMs(DAEMON_GC_MS_ENV, 5_000);
-export const DAEMON_GRACE_MS = envMs(DAEMON_GRACE_MS_ENV, 10_000);
+export const DAEMON_GRACE_MS = envMs(DAEMON_GRACE_MS_ENV, IS_WINDOWS_HOST ? 15_000 : 10_000);
 export const DAEMON_READY_TIMEOUT_MS = envMs(DAEMON_READY_TIMEOUT_MS_ENV, 5_000);
+export const DAEMON_CONTROL_TIMEOUT_MS = envMs(DAEMON_CONTROL_TIMEOUT_MS_ENV, IS_WINDOWS_HOST ? 3_000 : 1_500);
+export const DAEMON_WATCHDOG_MS = envMs(DAEMON_WATCHDOG_MS_ENV, 5_000);
+/** Failed-SSE rolling window (streams) and the failure rate that marks a daemon degraded. */
+export const WATCHDOG_SSE_WINDOW = 20;
+export const WATCHDOG_SSE_FAIL_RATE = 0.5;
+/** Minimum samples before the failed-SSE rate can trigger recovery (avoids single-sample flapping). */
+export const WATCHDOG_SSE_MIN_SAMPLES = 5;
+/** Respawn backoff: min(2s * 2^n, 60s) + jitter. */
+export const RECOVERY_BACKOFF_BASE_MS = 2_000;
+export const RECOVERY_BACKOFF_CAP_MS = 60_000;
+/** Breaker: 5 straight failures inside 5min halts respawn for 10min (in-process fallback meanwhile). */
+export const BREAKER_FAILURES = 5;
+export const BREAKER_WINDOW_MS = 5 * 60_000;
+export const BREAKER_HALT_MS = 10 * 60_000;
+/** Busy bypass: a busy daemon is replaced only after 5min continuous busy with zero forwarded bytes for 60s+. */
+export const BUSY_BYPASS_CONTINUOUS_MS = 5 * 60_000;
+export const BUSY_BYPASS_QUIET_MS = 60_000;
+/** Re-probe of the base port before accepting a walked port (ms). */
+export const BASE_PORT_REPROBE_MS = 3_000;
 export const MAX_BODY_BYTES = 32 * 1024 * 1024;
 /** Default timeout for upstream headers while proxying a request. */
 export const UPSTREAM_HEADER_TIMEOUT_MS = 300_000;

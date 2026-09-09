@@ -5,9 +5,14 @@
  */
 
 import { spawn } from "node:child_process";
+import { execSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { getClientPort } from "./client.ts";
 import { refreshCatalog, setAliveCatalog } from "./catalog.ts";
-import { DEBUG_STATE_FILE, HOST, LOG_FILE, PORT, RELAY_STATE_FILE } from "./config.ts";
+import { DAEMON_SPAWN_ENV, DEBUG_STATE_FILE, HOST, LOG_FILE, PORT, RELAY_STATE_FILE } from "./config.ts";
 import {
 	compareVersions,
 	fetchLatestVersion,
@@ -62,6 +67,168 @@ import type {
 export function updateStatusBar(ui?: ExtensionUIContext): void {
 	if (!ui) return;
 	ui.setStatus("freeflow", formatRelayStatusLabel(getActiveRelayState()) ?? undefined);
+}
+
+export const STARTUP_TASK_NAME = "pi-freeflow-daemon";
+export const STARTUP_SERVICE_NAME = "pi-freeflow.service";
+
+export interface StartupPlan {
+	platform: string;
+	taskName: string;
+	command: string;
+	filePath: string;
+	fileContent: string;
+	undo: string;
+}
+
+function daemonEntryForStartup(scriptOverride?: string): string {
+	if (scriptOverride) return scriptOverride;
+	try {
+		return path.join(path.dirname(fileURLToPath(import.meta.url)), "daemon.ts");
+	} catch {
+		return path.join("src", "daemon.ts");
+	}
+}
+
+/**
+ * Build the single-shot login-startup plan without touching the system.
+ * Windows → logon Scheduled Task (schtasks /sc onlogon, single run at logon).
+ * Linux/macOS → user systemd unit (Type=oneshot, WantedBy=default.target).
+ * Pure (testable): all paths/commands are derived from the overrides.
+ */
+export function getStartupPlan(opts?: {
+	platform?: string;
+	homeDir?: string;
+	execPath?: string;
+	scriptPath?: string;
+}): StartupPlan {
+	const platform = opts?.platform ?? process.platform;
+	const home = opts?.homeDir ?? os.homedir();
+	const exec = opts?.execPath ?? process.execPath;
+	const script = daemonEntryForStartup(opts?.scriptPath);
+	const quoted = `"${exec}" --experimental-strip-types "${script}"`;
+	if (platform === "win32") {
+		const command = `schtasks /create /tn "${STARTUP_TASK_NAME}" /tr "${quoted.replace(/"/g, "'")}" /sc onlogon /rl limited /f`;
+		return {
+			platform,
+			taskName: STARTUP_TASK_NAME,
+			command,
+			filePath: `Scheduled Task \\${STARTUP_TASK_NAME} (logon trigger, single-shot)`,
+			fileContent: command,
+			undo: `schtasks /delete /tn "${STARTUP_TASK_NAME}" /f`,
+		};
+	}
+	const filePath = path.join(home, ".config", "systemd", "user", STARTUP_SERVICE_NAME);
+	const fileContent = [
+		"[Unit]",
+		"Description=pi-freeflow proxy daemon (single-shot at login)",
+		"After=default.target",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		`ExecStart=${quoted}`,
+		"RemainAfterExit=yes",
+		"",
+		"[Install]",
+		"WantedBy=default.target",
+		"",
+	].join("\n");
+	return {
+		platform,
+		taskName: STARTUP_SERVICE_NAME,
+		command: `systemctl --user enable ${STARTUP_SERVICE_NAME}`,
+		filePath,
+		fileContent,
+		undo: `systemctl --user disable ${STARTUP_SERVICE_NAME} && rm "${filePath}"`,
+	};
+}
+
+/**
+ * Install the login-startup hook (single-shot, idempotent). Returns whether a
+ * change was made plus the exact undo text for the caller to display.
+ * Refuses when DAEMON_SPAWN=0. Never throws — failures are returned.
+ */
+export function installStartupHook(opts?: {
+	platform?: string;
+	homeDir?: string;
+	execPath?: string;
+	scriptPath?: string;
+}): { ok: boolean; changed: boolean; undo: string; detail: string } {
+	if (process.env[DAEMON_SPAWN_ENV] === "0") {
+		return { ok: false, changed: false, undo: "", detail: "refused: daemon spawn is disabled (DAEMON_SPAWN=0)" };
+	}
+	const plan = getStartupPlan(opts);
+	try {
+		if (plan.platform === "win32") {
+			try {
+				const q = execSync(`schtasks /query /tn "${STARTUP_TASK_NAME}"`, { encoding: "utf8", timeout: 5000, windowsHide: true }) as string;
+				if (q && q.includes(STARTUP_TASK_NAME)) {
+					execSync(plan.command, { timeout: 10_000, stdio: "ignore", windowsHide: true });
+					return { ok: true, changed: false, undo: plan.undo, detail: `already installed — refreshed logon task "${STARTUP_TASK_NAME}" (undo: ${plan.undo})` };
+				}
+			} catch {}
+			execSync(plan.command, { timeout: 10_000, stdio: "ignore", windowsHide: true });
+			return { ok: true, changed: true, undo: plan.undo, detail: `installed logon task "${STARTUP_TASK_NAME}" (undo: ${plan.undo})` };
+		}
+		const dir = path.dirname(plan.filePath);
+		fs.mkdirSync(dir, { recursive: true });
+		let existing = "";
+		try {
+			existing = fs.readFileSync(plan.filePath, "utf8");
+		} catch {}
+		if (existing === plan.fileContent) {
+			return { ok: true, changed: false, undo: plan.undo, detail: `already installed — ${plan.filePath} up to date (undo: ${plan.undo})` };
+		}
+		fs.writeFileSync(plan.filePath, plan.fileContent, "utf8");
+		try {
+			execSync("systemctl --user daemon-reload", { timeout: 10_000, stdio: "ignore" });
+			execSync(plan.command, { timeout: 10_000, stdio: "ignore" });
+		} catch {}
+		return { ok: true, changed: true, undo: plan.undo, detail: `installed ${plan.filePath} (undo: ${plan.undo})` };
+	} catch (e) {
+		return { ok: false, changed: false, undo: plan.undo, detail: `install failed: ${String(e)} (undo: ${plan.undo})` };
+	}
+}
+
+/**
+ * Remove the login-startup hook (idempotent). Returns the undo/redo text.
+ * Refuses when DAEMON_SPAWN=0, matching install.
+ */
+export function uninstallStartupHook(opts?: {
+	platform?: string;
+	homeDir?: string;
+	execPath?: string;
+	scriptPath?: string;
+}): { ok: boolean; changed: boolean; undo: string; detail: string } {
+	if (process.env[DAEMON_SPAWN_ENV] === "0") {
+		return { ok: false, changed: false, undo: "", detail: "refused: daemon spawn is disabled (DAEMON_SPAWN=0)" };
+	}
+	const plan = getStartupPlan(opts);
+	try {
+		if (plan.platform === "win32") {
+			try {
+				execSync(plan.undo, { timeout: 10_000, stdio: "ignore", windowsHide: true });
+				return { ok: true, changed: true, undo: plan.command, detail: `removed logon task "${STARTUP_TASK_NAME}" (re-install: ${plan.command})` };
+			} catch {
+				return { ok: true, changed: false, undo: plan.command, detail: `already removed — no logon task "${STARTUP_TASK_NAME}" found` };
+			}
+		}
+		let existed = false;
+		try {
+			fs.accessSync(plan.filePath, fs.constants.F_OK);
+			existed = true;
+		} catch {}
+		if (!existed) {
+			return { ok: true, changed: false, undo: plan.command, detail: `already removed — no unit file at ${plan.filePath}` };
+		}
+		try {
+			execSync(`systemctl --user disable ${STARTUP_SERVICE_NAME}`, { timeout: 10_000, stdio: "ignore" });
+		} catch {}
+		fs.rmSync(plan.filePath, { force: true });
+		return { ok: true, changed: true, undo: plan.command, detail: `removed ${plan.filePath} (re-install: ${plan.command})` };
+	} catch (e) {
+		return { ok: false, changed: false, undo: plan.undo, detail: `uninstall failed: ${String(e)}` };
+	}
 }
 
 function spawnWithProgress(
@@ -160,7 +327,7 @@ export function createCommandSpec(
 ): Omit<RegisteredCommand, "name"> {
 	return {
 		description:
-			"Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test <target> | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno",
+			"Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test <target> | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno | install-startup | uninstall-startup",
 		getArgumentCompletions: (prefix: string) =>
 			[
 				"auto",
@@ -183,6 +350,8 @@ export function createCommandSpec(
 				"deploy vercel",
 				"deploy cloudflare",
 				"deploy deno",
+				"install-startup",
+				"uninstall-startup",
 				"refresh",
 				"models",
 				"logs",
@@ -968,6 +1137,12 @@ export function createCommandSpec(
 						await doDeploy(pf);
 					}
 				}
+			} else if (sub === "install-startup") {
+				const r = installStartupHook();
+				ctx.ui.notify(r.detail, r.ok ? "info" : "warning");
+			} else if (sub === "uninstall-startup") {
+				const r = uninstallStartupHook();
+				ctx.ui.notify(r.detail, r.ok ? "info" : "warning");
 			} else {
 				const currentMode = (relayState.mode || "auto").toUpperCase();
 				const activeLabel = shortRelayLabel(relayState.url, relayState.relays);
