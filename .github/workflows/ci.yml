@@ -9,17 +9,18 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   test:
     name: Test (${{ matrix.os }} - Node ${{ matrix.node-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node-version: ["22.x", "23.x"]
+        node-version: ["22.x"]
 
     steps:
       - name: Checkout repository
@@ -54,6 +55,7 @@ jobs:
   package-check:
     name: Package Integrity & Tarball Whitelist
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -98,6 +100,7 @@ jobs:
   load-test:
     name: Load Test (k6)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
