@@ -250,7 +250,7 @@ cat ~/.pi/agent/pi-freeflow.log | tail -n 20
 /freeflow logs
 cat ~/.pi/agent/pi-freeflow.log | tail -n 50
 
-# debug toggle
+# debug toggle (full debug is on by default for complete error reports; `off` restores info)
 /freeflow debug on
 ```
 

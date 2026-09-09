@@ -24,7 +24,7 @@ All commands are available inside the OMP or Pi TUI via `/freeflow`:
 
 ## Logging
 
-Logs are written to `~/.pi/agent/pi-freeflow.log` with auto-rotation at 10MB (10 files). Each entry includes a request correlation ID for end-to-end tracing.
+Logs are written to `~/.pi/agent/pi-freeflow.log` with auto-rotation at 10MB (10 files). Each entry includes a request correlation ID for end-to-end tracing. Full debug logging is on by default so error reports can include complete request lifecycles (toggle with `/freeflow debug off`).
 
 ## Troubleshooting
 

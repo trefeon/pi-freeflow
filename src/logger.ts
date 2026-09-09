@@ -128,7 +128,8 @@ export function getMinLogLevel(): number {
 		return LOG_LEVEL_ORDER[dbg.level];
 	}
 
-	const raw = (process.env.FREEFLOW_LOG_LEVEL || "info").toLowerCase();
+	const rawEnv = process.env.FREEFLOW_LOG_LEVEL;
+	const raw = (typeof rawEnv === "string" ? rawEnv : "").toLowerCase();
 
 	if (isEmittedLogLevel(raw)) {
 		return LOG_LEVEL_ORDER[raw as LogLevel];
@@ -142,7 +143,14 @@ export function getMinLogLevel(): number {
 		return LOG_LEVEL_ORDER.debug;
 	}
 
-	return LOG_LEVEL_ORDER.info;
+	// Fresh installs default to full debug so users can attach complete
+	// request lifecycles when reporting errors (10MB rotation bounds volume).
+	// An explicit persisted off state or env level above still wins, so
+	// /freeflow debug off keeps working on every platform.
+	if (dbg !== null) {
+		return LOG_LEVEL_ORDER.info;
+	}
+	return LOG_LEVEL_ORDER.debug;
 }
 
 export function shouldLog(level: LogLevel): boolean {

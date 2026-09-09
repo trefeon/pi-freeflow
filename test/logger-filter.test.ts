@@ -137,14 +137,37 @@ test("getMinLogLevel treats a persisted audit level as unknown (info default)", 
 	});
 });
 
-test("getMinLogLevel keeps debug mode working when the stored level is audit", () => {
+test("explicit off stays off, fresh installs default to debug", () => {
 	withIsolatedDebugState(() => {
-		fs.writeFileSync(DEBUG_STATE_FILE, JSON.stringify({ debug: true, level: "audit" }), "utf8");
-		assert.equal(
-			getMinLogLevel(),
-			0,
-			"the debug boolean must win over the unusable level",
-		);
+		// Bare off state (what `/freeflow debug off` persists) keeps info;
+		// only a box with no persisted state gets the debug default.
+		fs.writeFileSync(DEBUG_STATE_FILE, JSON.stringify({ debug: false }), "utf8");
+		assert.equal(getMinLogLevel(), 1, "persisted off must win over the debug default");
+		fs.rmSync(DEBUG_STATE_FILE, { force: true });
+		_resetDebugStateCacheForTest();
+		const loggerSrc = fs.readFileSync(new URL("../src/logger.ts", import.meta.url), "utf8");
+		const levelKey = /process\.env\.([A-Z0-9_]+)_LOG_LEVEL/.exec(loggerSrc)?.[1];
+		const debugKey = /process\.env\.([A-Z0-9_]+)_DEBUG/.exec(loggerSrc)?.[1];
+		const saved: Record<string, string | undefined> = {};
+		for (const k of [levelKey, debugKey]) {
+			if (!k) continue;
+			saved[k] = process.env[k];
+			delete process.env[k];
+		}
+		try {
+			_resetDebugStateCacheForTest();
+			assert.equal(
+				getMinLogLevel(),
+				0,
+				"fresh installs default to debug so error reports include full lifecycles",
+			);
+		} finally {
+			for (const [k, v] of Object.entries(saved)) {
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			}
+			_resetDebugStateCacheForTest();
+		}
 	});
 });
 
