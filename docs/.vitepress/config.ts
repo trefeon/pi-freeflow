@@ -2,12 +2,13 @@ import { defineConfig } from 'vitepress'
 
 export default defineConfig({
   title: 'pi-freeflow Docs',
-  description: '24 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.',
+  description: '26 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.',
   themeConfig: {
     sidebar: [
       { text: 'Home', link: '/' },
       { text: 'Architecture', link: '/pages/architecture' },
       { text: 'Model Catalog', link: '/pages/models' },
+      { text: 'Stealth Models Watchlist', link: '/pages/stealth-models' },
       { text: 'Multi-Cloud Relays', link: '/pages/relays' },
       { text: 'Commands & Troubleshooting', link: '/pages/commands' },
     ],

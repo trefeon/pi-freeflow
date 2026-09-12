@@ -218,11 +218,13 @@ test("mergeCatalog drops paid upstream ids like claude-fable-5-1 (issue #6)", ()
 
 test("isFreeCatalogId accepts -free, :free, /free and known ids, rejects paid and dead", () => {
 	assert.equal(isFreeCatalogId("mimo-v2.5-free"), true);
-	assert.equal(isFreeCatalogId("thinkingmachines/inkling:free"), true);
+	assert.equal(isFreeCatalogId("thinkingmachines/inkling-small:free"), true);
+	assert.equal(isFreeCatalogId("nex-agi/nex-n2.5-pro:free"), true);
 	assert.equal(isFreeCatalogId("lab/new-model/free"), true);
 	assert.equal(isFreeCatalogId("big-pickle"), true);
 	assert.equal(isFreeCatalogId("claude-fable-5-1"), false);
 	assert.equal(isFreeCatalogId("hy3-free"), false);
+	assert.equal(isFreeCatalogId("thinkingmachines/inkling:free"), false);
 	assert.equal(isFreeCatalogId(""), false);
 });
 

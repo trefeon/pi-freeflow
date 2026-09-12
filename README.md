@@ -1,6 +1,6 @@
 # pi-freeflow 🌊
 
-> **24 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.**
+> **26 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.**
 
 Thin by design: model list + dumb relay + log. Host `pi-ai` owns thinking, normalization & provider magic. We just make it free, fast, and unbreakable.
 
@@ -18,7 +18,7 @@ Join devs bypassing rate limits with their own relay pools. BYO, add as many as 
 
 | Feature | Description | Value | Cost |
 | :--- | :--- | :--- | :--- |
-| **24 Curated Free Models** | 7 OpenCode Zen + 17 KiloCode Gateway models, up to 1M context & 512K output | Ceiling Unlocked | **$0** |
+| **26 Curated Free Models** | 7 OpenCode Zen + 19 KiloCode Gateway models, up to 1M context & 512K output | Ceiling Unlocked | **$0** |
 | **BYO Relay Pool** | Round-robin load balancing across your Cloudflare Workers & Vercel Edges | Zero Rate Limits | **$0** (your free tiers) |
 | **Adaptive Health & Error Detection** | Auto-cooldown on 429 rate limits, 504 timeouts, and socket drops | 0ms Wasted Latency | **$0** |
 | **Stream Truncation Resilience** | Stateful SSE terminal tracking (`response.failed` / `response.incomplete` injection) | Zero Host Crashes | **$0** |
@@ -32,7 +32,7 @@ Philosophy: **Thin by design.** We only ship model list + relay proxy + log. Hos
 
 ---
 
-### 24 Curated Models, One Command
+### 26 Curated Models, One Command
 
 ```bash
 /model → freeflow → pick
@@ -51,7 +51,7 @@ Optimized for deep reasoning, long-horizon coding & autonomous agentic workflows
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 | `ling-3.0-flash-fin-free` | Inclusion AI | **262K** (262.144) | **131K** (131.072) | `minimal … xhigh` | ❌ |
 
-#### KiloCode Gateway (17 Models), OpenRouter Compatible
+#### KiloCode Gateway (19 Models), OpenRouter Compatible
 Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI aliases supported.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
@@ -70,8 +70,10 @@ Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI alia
 | `openrouter` (`openrouter/free`) | OpenRouter Free | **200K** (200.000) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
 | `content-safety` (`nvidia/...:free`) | NVIDIA | **128K** (128.000) | **8K** (8.192) | ❌ *(non-thinking)* | ✅ |
 | `ling-3.0-flash-fin` (`inclusionai/ling-3.0-flash-fin:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
-| `inkling` (`thinkingmachines/inkling:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
 | `ling-3.0-flash-sante` (`inclusionai/ling-3.0-flash-sante:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
+| `nex-n2.5-pro` (`nex-agi/nex-n2.5-pro:free`) | Nex AGI | **262K** (262.144) | **235K** (235.929) | `minimal…xhigh`\* | ✅ |
+| `nex-n2.5-mini` (`nex-agi/nex-n2.5-mini:free`) | Nex AGI | **262K** (262.144) | **235K** (235.929) | `minimal…xhigh`\* | ✅ |
+| `ling-3.0-flash-vl` (`inclusionai/ling-3.0-flash-vl:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ✅ |
 | `inkling-small` (`thinkingmachines/inkling-small:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
 
 \* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.
@@ -340,7 +342,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
 src/
 ├── index.ts          # extension entry, lifecycle hooks
-├── models.ts         # 24-model catalog definitions
+├── models.ts         # 26-model catalog definitions
 ├── catalog.ts        # model catalog cache (24h disk)
 ├── proxy.ts          # local proxy server (127.0.0.1:28180)
 ├── relay.ts          # relay selection & round-robin

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.12.0
+
+### Minor Changes
+
+- Free-model picker grows from 24 to 26: adds Nex N2.5 Pro, Nex N2.5 Mini, and Ling 3.0 Flash VL, and removes the discontinued Inkling entry. A new Stealth Models Watchlist docs page tracks masked preview IDs users ask about.
+
 ## 1.11.2
 
 ### Patch Changes

@@ -34,6 +34,10 @@ pnpm-debug.log*
 relays.backup.json
 relays.local.json
 pi-freeflow-relay-state.json
+.catalog-cache.json
+.debug-state.json
+.update-cache.json
+.onboarded
 
 # ── Internal Docs & Scratch / Test Scripts ────────────────────────────
 devdocs/

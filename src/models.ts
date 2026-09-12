@@ -1,9 +1,9 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 24 verified free models:
+ * Defines the 26 verified free models:
  * - 7 OpenCode Zen models (2 Responses API + 5 Chat Completions)
- * - 17 KiloCode Keyless Gateway models (16 OpenRouter format + 1 Standard format)
+ * - 19 KiloCode Keyless Gateway models (18 OpenRouter format + 1 Standard format)
  */
 
 import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
@@ -290,11 +290,21 @@ export const KILO_MODELS: ModelDef[] = [
 	thinkingLevelMap: KILO_REASONING_MAP,
 },
 {
-	id: "thinkingmachines/inkling:free",
-	name: "Inkling (1M)",
+	id: "nex-agi/nex-n2.5-pro:free",
+	name: "Nex N2.5 Pro",
 	reasoning: true,
-	contextWindow: 1_048_576,
-	maxTokens: 262_144,
+	contextWindow: 262_144,
+	maxTokens: 235_929,
+	input: ["text", "image"],
+	thinkingFormat: "openrouter",
+	thinkingLevelMap: KILO_REASONING_MAP,
+},
+{
+	id: "nex-agi/nex-n2.5-mini:free",
+	name: "Nex N2.5 Mini",
+	reasoning: true,
+	contextWindow: 262_144,
+	maxTokens: 235_929,
 	input: ["text", "image"],
 	thinkingFormat: "openrouter",
 	thinkingLevelMap: KILO_REASONING_MAP,
@@ -319,6 +329,16 @@ export const KILO_MODELS: ModelDef[] = [
 		thinkingFormat: "openrouter",
 		thinkingLevelMap: KILO_REASONING_MAP,
 	},
+	{
+		id: "inclusionai/ling-3.0-flash-vl:free",
+		name: "Ling 3.0 Flash VL",
+		reasoning: true,
+		contextWindow: 262_144,
+		maxTokens: 32_768,
+		input: ["text", "image"],
+		thinkingFormat: "openrouter",
+		thinkingLevelMap: KILO_REASONING_MAP,
+	},
 ];
 
 /**
@@ -329,7 +349,6 @@ export const KILO_MODELS: ModelDef[] = [
  * - Hy3 = Tencent Hunyuan (not Alibaba Qwen) → removed qwen3-coder alias
  */
 export const MODEL_ALIASES: Record<string, string> = {
-	// Kilo Gateway — slash-free & colon-free clean aliases (one per model)
 	"dots-3-note-preview": "dots-studio/dots-3-note-preview:free",
 	"step-3.7-flash": "stepfun/step-3.7-flash:free",
 	"nemotron-3-nano-omni": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
@@ -341,7 +360,9 @@ export const MODEL_ALIASES: Record<string, string> = {
 	"content-safety": "nvidia/nemotron-3.5-content-safety:free",
 	"ling-3.0-flash-fin": "inclusionai/ling-3.0-flash-fin:free",
 	"ling-3.0-flash-sante": "inclusionai/ling-3.0-flash-sante:free",
-	"inkling": "thinkingmachines/inkling:free",
+	"ling-3.0-flash-vl": "inclusionai/ling-3.0-flash-vl:free",
+	"nex-n2.5-pro": "nex-agi/nex-n2.5-pro:free",
+	"nex-n2.5-mini": "nex-agi/nex-n2.5-mini:free",
 	"inkling-small": "thinkingmachines/inkling-small:free",
 	// provider-prefixed short aliases (slash-normalized)
 	"laguna-s-2.1:free": "poolside/laguna-s-2.1:free",
@@ -357,7 +378,6 @@ export function resolveCanonicalModelId(id: string): string {
 	const clean = (id || "").trim();
 	return MODEL_ALIASES[clean] || clean;
 }
-
 /**
  * Set of all KiloCode model IDs (including aliases) for fast lookup
  */
@@ -369,7 +389,7 @@ export const KILO_MODEL_IDS = new Set<string>([
 ]);
 
 /**
- * Combined list of all 24 static free models (canonical)
+ * Combined list of all 26 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS];
 
