@@ -34,7 +34,17 @@ import { isDebugEnabled, log } from "./logger.ts";
 import { KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
 import { relayFetch } from "./relay.ts";
-import { getActiveRelayState } from "./relay-state.ts";
+import { getActiveRelayState, orderedRelayCandidates } from "./relay-state.ts";
+import {
+	issuerRelayFor,
+	rejectedReasoningCount,
+	rememberIssuerRelay,
+	rememberRejectedReasoning,
+	responsesConversationKey,
+	stripRejectedReasoning,
+	stripReasoningEncryption,
+	isReasoningCallerMismatch,
+} from "./responses.ts";
 import { pipeUpstreamStream } from "./stream-pipe.ts";
 
 
@@ -402,6 +412,74 @@ function upstreamTimeoutError(): Error & { code: string } {
 }
 
 /**
+ * Recover from upstream rejecting a replayed reasoning blob as foreign.
+ *
+ * Upstream binds each reasoning `encrypted_content` blob to the service
+ * instance that issued it. When the conversation is later served by a different
+ * instance the whole replayed history is rejected with a 400, which the relay
+ * pool never retries (400 is not a roll status) and the host repeats until the
+ * session dies. Measured on 2026-09-13: same relay returned 200 and 400 one
+ * second apart, the direct path returned the same 400, and a 45s burst hit ten
+ * conversations.
+ *
+ * The rejected blob cannot be identified from the response, so this drops every
+ * blob, retries once, and then remembers the hashes of the blobs that were in
+ * the failing body: later turns drop only those and keep whatever the current
+ * instance issued, so the conversation keeps its recent reasoning.
+ *
+ * The 400 body is inspected through a clone: a successful streaming response
+ * (the normal path) is never consumed here.
+ */
+async function retryWithoutReasoningEncryption(
+	response: Response,
+	sentBody: Buffer,
+	resend: (body: Buffer) => Promise<Response>,
+	reqId: string,
+	conversationKey: string | null,
+): Promise<Response> {
+	if (response.status !== 400) return response;
+	if ((response.headers.get("content-type") ?? "").includes("text/event-stream")) {
+		return response;
+	}
+	let errorText: string;
+	try {
+		errorText = await response.clone().text();
+	} catch {
+		return response;
+	}
+	if (!isReasoningCallerMismatch(errorText)) return response;
+
+	const portable = stripReasoningEncryption(sentBody);
+	if (!portable) {
+		log(
+			"warn",
+			"upstream rejected caller-bound reasoning but the request carries no encrypted_content to strip",
+			{ status: 400 },
+			reqId,
+		);
+		return response;
+	}
+
+	log(
+		"warn",
+		"upstream rejected caller-bound reasoning (blobs issued by another instance); retrying with encrypted_content stripped",
+		{ status: 400, tracked: conversationKey !== null },
+		reqId,
+	);
+	const retried = await resend(portable);
+	if (retried.ok && conversationKey) {
+		const remembered = rememberRejectedReasoning(sentBody, conversationKey);
+		log(
+			"info",
+			`conversation will drop ${remembered} rejected reasoning blob(s) on later turns`,
+			undefined,
+			reqId,
+		);
+	}
+	return retried;
+}
+
+/**
  * Start the local HTTP proxy daemon.
  * Implements master/worker single-port reuse: if port 28180 is already held by a live
  * parent or sibling OMP session, resolves immediately with { server: null, port: 28180 }.
@@ -633,38 +711,116 @@ export function startProxy(
 
 						try {
 							if (parsedBody) {
-								const relayBody = Buffer.concat(bodyChunks);
-								// Header-wait timeout + client-disconnect abort; the
-								// timer is cleared once headers arrive so streams are
-								// not killed at the timeout ceiling. Aborts caused by
-								// our own timeout are tagged FF_INTERNAL_ABORT so
-								// stream-pipe never penalizes the relay for them.
-								const relayController = new AbortController();
-								const relayTimeoutId = setTimeout(
-									() => relayController.abort(upstreamTimeoutError()),
-									UPSTREAM_HEADER_TIMEOUT_MS,
+								const requestBody = Buffer.concat(bodyChunks);
+								// Reasoning `encrypted_content` is bound to the caller that
+								// requested it, and a relay roll changes that caller. A
+								// conversation already rejected for foreign blobs keeps its
+								// history portable from then on.
+								const conversationKey = responsesConversationKey(parsedBody);
+								const responsesRequest = target.pathname.endsWith("/responses");
+								// Per-conversation affinity: reasoning blobs are only readable
+								// by the backend that issued them, so stay on the issuing relay
+								// while it is healthy.
+								const issuer = responsesRequest && conversationKey !== null
+									? issuerRelayFor(conversationKey)
+									: undefined;
+								const candidates = orderedRelayCandidates(
+									typeof issuer === "string" ? issuer : undefined,
 								);
-								const abortRelayOnClientGone = () => {
-									if (!res.writableEnded) relayController.abort();
-								};
-								res.once("close", abortRelayOnClientGone);
-								req.once("error", abortRelayOnClientGone);
-								let response: Response;
-								try {
-									response = await relayFetch(
-										fullUrl,
-										{
-											method: req.method || "POST",
-											headers: relayHeaders,
-											body: relayBody,
-											signal: relayController.signal,
-										},
+								const servingRelay = candidates[0] ?? null;
+								// Affinity cannot be honored (issuer cooling, dropped from the
+								// pool, or the path changed relay<->direct): the next backend
+								// cannot read this history, so send it portable instead of
+								// letting upstream reject the whole request.
+								const issuerChanged = issuer !== undefined && issuer !== servingRelay;
+								// Drop only the blobs upstream already rejected, so everything
+								// the current backend issued still flows verbatim.
+								const stripRejected = responsesRequest &&
+									conversationKey !== null &&
+									rejectedReasoningCount(conversationKey) > 0;
+								const bodyForUpstream = issuerChanged
+									? (stripReasoningEncryption(requestBody) ?? requestBody)
+									: stripRejected
+										? (stripRejectedReasoning(requestBody, conversationKey) ?? requestBody)
+										: requestBody;
+								if (issuerChanged && conversationKey !== null) {
+									// These blobs belong to a backend this conversation is
+									// leaving, so never replay them again.
+									rememberRejectedReasoning(requestBody, conversationKey);
+									log(
+										"info",
+										`reasoning issuer changed (${issuer ?? "direct"} -> ${servingRelay ?? "direct"}); sending history without caller-bound reasoning`,
+										undefined,
 										reqId,
 									);
-								} finally {
-									clearTimeout(relayTimeoutId);
-									res.off("close", abortRelayOnClientGone);
-									req.off("error", abortRelayOnClientGone);
+								}
+
+								// One attempt, with its own header-wait timeout and
+								// client-disconnect abort; the timer is cleared once headers
+								// arrive so streams are not killed at the timeout ceiling.
+								// Aborts caused by our own timeout are tagged
+								// FF_INTERNAL_ABORT so stream-pipe never penalizes the relay.
+								let servedIssuer: string | null = null;
+								let issuerReported = false;
+								const sendViaRelay = async (payload: Buffer): Promise<Response> => {
+									const relayController = new AbortController();
+									const relayTimeoutId = setTimeout(
+										() => relayController.abort(upstreamTimeoutError()),
+										UPSTREAM_HEADER_TIMEOUT_MS,
+									);
+									const abortRelayOnClientGone = () => {
+										if (!res.writableEnded) relayController.abort();
+									};
+									res.once("close", abortRelayOnClientGone);
+									req.once("error", abortRelayOnClientGone);
+									try {
+										return await relayFetch(
+											fullUrl,
+											{
+												method: req.method || "POST",
+												headers: relayHeaders,
+												body: payload,
+												signal: relayController.signal,
+											} as unknown as RequestInit,
+											reqId,
+											{
+												preferred: typeof issuer === "string" ? issuer : undefined,
+												onServed: (relay) => {
+													servedIssuer = relay;
+													issuerReported = true;
+												},
+											},
+										);
+									} finally {
+										clearTimeout(relayTimeoutId);
+										res.off("close", abortRelayOnClientGone);
+										req.off("error", abortRelayOnClientGone);
+									}
+								};
+
+								let response = await sendViaRelay(bodyForUpstream);
+								// Retry must stay available on every responses request: even a
+								// proactively stripped body can still carry a blob the current
+								// instance cannot read.
+								if (responsesRequest) {
+									response = await retryWithoutReasoningEncryption(
+										response,
+										requestBody,
+										sendViaRelay,
+										reqId,
+										conversationKey,
+									);
+								}
+								// Record the backend that actually served this turn. Reading
+								// the sticky active relay here would be wrong now that
+								// affinity deliberately leaves it untouched.
+								if (
+									responsesRequest &&
+									conversationKey !== null &&
+									response.ok &&
+									issuerReported
+								) {
+									rememberIssuerRelay(conversationKey, servedIssuer);
 								}
 
 								if (isStream && response.ok && response.body) {
@@ -713,6 +869,33 @@ export function startProxy(
 					// Direct path — the relay already parsed/forwarded raw; send the buffered bytes unchanged
 					const directBody = Buffer.concat(bodyChunks);
 
+					// Same backend-bound blobs as the relay path: leaving the issuing
+					// relay for the direct route (or vice versa) makes the history
+					// unreadable, so send it portable instead.
+					const directConversationKey = responsesConversationKey(parsedBody);
+					const directResponsesRequest = target.pathname.endsWith("/responses");
+					const directIssuer = directResponsesRequest && directConversationKey !== null
+						? issuerRelayFor(directConversationKey)
+						: undefined;
+					const directIssuerChanged = directIssuer !== undefined && directIssuer !== null;
+					const directStripRejected = directResponsesRequest &&
+						directConversationKey !== null &&
+						rejectedReasoningCount(directConversationKey) > 0;
+					const directBodyForUpstream = directIssuerChanged
+						? (stripReasoningEncryption(directBody) ?? directBody)
+						: directStripRejected
+							? (stripRejectedReasoning(directBody, directConversationKey) ?? directBody)
+							: directBody;
+					if (directIssuerChanged && directConversationKey !== null) {
+						rememberRejectedReasoning(directBody, directConversationKey);
+						log(
+							"info",
+							`reasoning issuer changed (${directIssuer} -> direct); sending history without caller-bound reasoning`,
+							undefined,
+							reqId,
+						);
+					}
+
 					if (isDebugEnabled()) {
 						log(
 							"debug",
@@ -723,30 +906,51 @@ export function startProxy(
 					}
 
 					const fwd = sanitizeHeaders(req.headers, target.hostname);
-					if (directBody.length > 0) {
-						fwd["content-length"] = String(directBody.byteLength);
-					}
 					fwd["connection"] = "keep-alive";
 
-					const controller = new AbortController();
-					const timeoutId = setTimeout(() => controller.abort(upstreamTimeoutError()), UPSTREAM_HEADER_TIMEOUT_MS);
-					const onClientClose = () => {
-						if (!res.writableEnded) controller.abort();
+					const sendDirect = async (payload: Buffer): Promise<Response> => {
+						const headers = { ...fwd };
+						if (payload.length > 0) {
+							headers["content-length"] = String(payload.byteLength);
+						}
+						const controller = new AbortController();
+						const timeoutId = setTimeout(() => controller.abort(upstreamTimeoutError()), UPSTREAM_HEADER_TIMEOUT_MS);
+						const onClientClose = () => {
+							if (!res.writableEnded) controller.abort();
+						};
+						const onReqError = () => controller.abort();
+						res.on("close", onClientClose);
+						req.on("error", onReqError);
+						try {
+							return await fetch(target.href, {
+								method: req.method,
+								headers,
+								body: payload.length > 0 ? payload : undefined,
+								signal: controller.signal,
+							} as unknown as RequestInit);
+						} finally {
+							clearTimeout(timeoutId);
+							res.off("close", onClientClose);
+							req.off("error", onReqError);
+						}
 					};
-					const onReqError = () => controller.abort();
-					res.on("close", onClientClose);
-					req.on("error", onReqError);
 
 					try {
-						const upstreamRes = await fetch(target.href, {
-							method: req.method,
-							headers: fwd,
-							body: directBody.length > 0 ? directBody : undefined,
-							signal: controller.signal,
-						} as unknown as RequestInit);
-						clearTimeout(timeoutId);
-						res.off("close", onClientClose);
-						req.off("error", onReqError);
+						let upstreamRes = await sendDirect(directBodyForUpstream);
+						if (directResponsesRequest) {
+							upstreamRes = await retryWithoutReasoningEncryption(
+								upstreamRes,
+								directBody,
+								sendDirect,
+								reqId,
+								directConversationKey,
+							);
+						}
+						// The direct route is its own backend: remember it so a later
+						// switch back to relays ships a portable history.
+						if (directResponsesRequest && directConversationKey !== null && upstreamRes.ok) {
+							rememberIssuerRelay(directConversationKey, null);
+						}
 						if (upstreamRes.status >= 400) {
 							log("warn", `direct upstream ${upstreamRes.status} for model ${String(parsedBody?.model ?? "?")} ${target.pathname}`, { status: upstreamRes.status, model: parsedBody?.model, path: target.pathname }, reqId);
 						}
@@ -792,9 +996,6 @@ export function startProxy(
 							res.end();
 						}
 					} catch (proxyErr) {
-						clearTimeout(timeoutId);
-						res.off("close", onClientClose);
-						req.off("error", onReqError);
 						log("error", "proxy socket error", { error: String(proxyErr) }, reqId);
 						if (!res.headersSent) {
 							res.writeHead(502, { "content-type": "application/json" });

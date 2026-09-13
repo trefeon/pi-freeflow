@@ -695,6 +695,24 @@ export function getOrderedRelayUrls(): string[] {
 }
 
 /**
+ * Candidate relay order for one request, with an optional preferred relay
+ * hoisted to the front. Used for per-conversation affinity: reasoning
+ * `encrypted_content` is only readable by the backend that issued it, so a
+ * conversation stays on its issuing relay while that relay is healthy.
+ * A cooling (recently failed/429) preferred relay is left where the health
+ * partition already placed it — reviving a rate-limited egress helps nobody.
+ */
+export function orderedRelayCandidates(preferredRelay?: string): string[] {
+	const ordered = getOrderedRelayUrls();
+	const preferred = (preferredRelay ?? "").trim();
+	if (!preferred) return ordered;
+	const index = ordered.indexOf(preferred);
+	if (index <= 0) return ordered;
+	if (!isRelayHealthy(preferred)) return ordered;
+	return [ordered[index], ...ordered.slice(0, index), ...ordered.slice(index + 1)];
+}
+
+/**
  * Shared status-widget label: the active relay line shown in the host status
  * bar. Returns null when the widget should be cleared (hidden, direct mode,
  * or an empty pool with no explicit OFF mode).

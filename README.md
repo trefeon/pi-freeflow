@@ -295,6 +295,9 @@ unregisters it; the daemon keeps serving the rest and retires itself automatical
 once the last client disconnects and no client re-attaches within a short grace window.
 To stop it manually, run `/freeflow kill` — the next freeflow use starts it again.
 
+**Why did my session stop with "reasoning `encrypted_content` was not issued to this caller"?**
+Reasoning models on the Responses API sign each thinking block for the upstream backend that produced it, and only that backend can read it back. When a later turn reaches a different backend, the replayed thinking blocks are rejected, and the host keeps re-sending the same history, so the session cannot continue on its own. pi-freeflow now handles this two ways: it keeps each conversation on the relay that issued its reasoning while that relay is healthy, and when the relay must change anyway (rate limit, relay removed or redeployed, direct-mode switch) it sends that turn's history without the signed thinking blocks, so the new backend accepts it immediately instead of rejecting the request. As a last resort it retries once without the blocks, then remembers which blocks were rejected and drops only those on later turns, keeping everything the current backend can read. Messages, tool calls and tool results are always preserved.
+
 **Where's the normalizer?**
 Deleted in 1.3.0. If zai/qwen/deepseek thinking broke before, it's fixed now because host handles it.
 

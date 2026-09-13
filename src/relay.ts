@@ -7,7 +7,7 @@ import { Buffer } from "node:buffer";
 import { isDebugEnabled, log } from "./logger.ts";
 import {
 	getActiveRelayState,
-	getOrderedRelayUrls,
+	orderedRelayCandidates,
 	getStatusUi,
 	markRelayFailure,
 	markRelaySuccess,
@@ -39,35 +39,55 @@ export function isRetriableStatus(status: number): boolean {
 	);
 }
 /**
+ * Per-conversation reasoning affinity. Callers sending caller-bound reasoning
+ * pass the relay that issued it; `onServed` reports the relay that actually
+ * produced the response (`null` = direct fallback).
+ */
+export interface RelayAffinity {
+	preferred?: string;
+	onServed?: (relay: string | null) => void;
+}
+
+/**
  * Fetch a target URL through the active relay pool with rolling failover and direct fallback.
  *
  * @param url Full upstream destination URL (e.g. https://opencode.ai/zen/v1/chat/completions)
  * @param opts Standard fetch RequestInit options
  * @param reqId Optional correlation request ID for end-to-end tracing
+ * @param affinity Per-conversation affinity: `preferred` is tried first when it
+ *        is healthy (the caller is expected to send a body that relay can read),
+ *        and `onServed` reports which relay actually produced the response —
+ *        `null` for the direct fallback — so the caller does not have to infer
+ *        the issuer from mutable global state.
  */
 export async function relayFetch(
 	url: string,
 	opts: RequestInit = {},
 	reqId?: string,
+	affinity: RelayAffinity = {},
 ): Promise<Response> {
 	const rid = reqId || randomUUID().slice(0, 8);
 	const relayState = getActiveRelayState();
 
 	if (!relayState.enabled) {
 		log("debug", `relayFetch: direct (relay disabled) -> ${url}`, undefined, rid);
+		affinity.onServed?.(null);
 		return fetch(url, opts as unknown as RequestInit);
 	}
-	const candidates = getOrderedRelayUrls();
+	const candidates = orderedRelayCandidates(affinity.preferred);
 
 	if (candidates.length === 0) {
 		// Empty pool: skip straight to upstream instead of logging a misleading
 		// "relays bypassed/exhausted" WARN on every request.
 		log("debug", `relayFetch: direct (empty relay pool) -> ${url}`, undefined, rid);
+		affinity.onServed?.(null);
 		return fetch(url, opts as unknown as RequestInit);
 	}
 
 	let lastResponse: Response | null = null;
 	let lastError: unknown = null;
+	/** Relay that produced `lastResponse`, for accurate issuer reporting. */
+	let lastResponseRelay: string | null = null;
 	const u = new URL(url);
 	const relayTarget = `${u.protocol}//${u.host}`;
 	const relayPath = `${u.pathname}${u.search}`;
@@ -161,6 +181,7 @@ export async function relayFetch(
 			if (res.status === 413) {
 				lastResponse?.body?.cancel().catch(() => {});
 				lastResponse = res;
+				lastResponseRelay = targetUrl;
 				log(
 					"warn",
 					`relay ${targetUrl} hit HTTP 413 payload limit in ${elapsed}s — trying next path`,
@@ -192,6 +213,7 @@ export async function relayFetch(
 				markRelayFailure(targetUrl, 404, "Deployment or route not found on relay host");
 				lastResponse?.body?.cancel().catch(() => {});
 				lastResponse = res;
+				lastResponseRelay = targetUrl;
 				log(
 					"warn",
 					`relay ${targetUrl} returned edge 404 (deployment missing or route not found) — rolling to next relay`,
@@ -212,6 +234,7 @@ export async function relayFetch(
 				markRelayFailure(targetUrl, res.status);
 				lastResponse?.body?.cancel().catch(() => {});
 				lastResponse = res;
+				lastResponseRelay = targetUrl;
 				log(
 					"warn",
 					`relay ${targetUrl} returned HTTP ${res.status} in ${elapsed}s — rolling to next relay`,
@@ -233,7 +256,17 @@ export async function relayFetch(
 
 			// SUCCESS or non-retriable client error (e.g. 200, 404):
 			// If we switched to a different relay because previous failed, update sticky active relay!
-			if (relayState.url !== targetUrl) {
+			//
+			// Exception: a winner that is the caller's preferred (affinity) relay
+			// was reached on the first attempt, so the sticky primary never failed
+			// a roll and must not be rewritten. Without this, two conversations
+			// pinned to different issuers would flip the machine-wide primary on
+			// every turn, churning the state file and re-shuffling every other
+			// session's candidate order.
+			const affinityServed =
+				Boolean(affinity.preferred) &&
+				targetUrl.trim() === (affinity.preferred ?? "").trim();
+			if (relayState.url !== targetUrl && !affinityServed) {
 				log("info", `active relay auto-switched to ${targetUrl}`, {
 					previous: relayState.url,
 				}, rid);
@@ -255,6 +288,7 @@ export async function relayFetch(
 			}
 
 			updateRelayStatusUi(targetUrl);
+			affinity.onServed?.(targetUrl);
 			return res;
 		} catch (err) {
 			// Client abort: do not mark the relay failed — the client cancelled the
@@ -294,6 +328,7 @@ export async function relayFetch(
 		// lastResponse holds an unread body that would otherwise leak its socket
 		// until GC; the salvage path below still needs it, so only cancel here.
 		lastResponse?.body?.cancel().catch(() => {});
+		affinity.onServed?.(null);
 		return directRes;
 	} catch (directErr) {
 		const directElapsed = ((Date.now() - directStart) / 1000).toFixed(1);
@@ -302,6 +337,9 @@ export async function relayFetch(
 			error: String(directErr),
 		}, rid);
 		if (lastResponse) {
+			// Salvaged relay response: report the relay that produced it so the
+			// caller keeps accurate affinity.
+			affinity.onServed?.(lastResponseRelay);
 			return lastResponse;
 		}
 		throw directErr || lastError;
