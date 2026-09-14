@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.0
+
+### Minor Changes
+
+- 39a06b9: Carry a relay pool between machines: `/freeflow export` saves the relays to a file and `/freeflow import` loads them back, adding to the current pool by default or swapping it whole on confirmation.
+
 ## 1.12.1
 
 ### Patch Changes
