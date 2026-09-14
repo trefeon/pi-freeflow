@@ -36,10 +36,16 @@ import {
 } from "./logger.ts";
 import { probeRelay } from "./probe.ts";
 import {
+	buildRelayExport,
 	ensureRelay,
+	EXPORT_DEFAULT_FILENAME,
+	EXPORT_MAX_BYTES,
 	findRelay,
 	getActiveRelayState,
 	getRelayHealth,
+	loadRelayState,
+	parseRelayImport,
+	planRelayImport,
 	removeRelay,
 	setActiveRelayState,
 	setRelayLabel,
@@ -327,7 +333,7 @@ export function createCommandSpec(
 ): Omit<RegisteredCommand, "name"> {
 	return {
 		description:
-			"Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test <target> | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno | install-startup | uninstall-startup",
+			"Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test <target> | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno | install-startup | uninstall-startup",
 		getArgumentCompletions: (prefix: string) =>
 			[
 				"auto",
@@ -344,6 +350,8 @@ export function createCommandSpec(
 				"label",
 				"rename",
 				"remove",
+				"export",
+				"import",
 				"test",
 				"url",
 				"deploy",
@@ -644,6 +652,183 @@ export function createCommandSpec(
 				});
 				persist();
 				ctx.ui.notify(`Removed: [${shortRelayLabel(match.url, relayState.relays)}] ${match.url}`, "info");
+			};
+			const classifyImportFailure = (filePath: string, raw: string): string => {
+				let parsed: unknown = null;
+				try {
+					parsed = JSON.parse(raw);
+				} catch (e) {
+					return `Relay file ${filePath} is not valid JSON (${(e as Error).message}). Nothing changed.`;
+				}
+				const version = parsed !== null && typeof parsed === "object" && "version" in parsed
+					? parsed.version
+					: undefined;
+				if (typeof version !== "undefined" && version !== 1) {
+					return `Relay file ${filePath} uses version ${String(version)}, this version understands version 1. Update then try again. Nothing changed.`;
+				}
+				return `Relay file ${filePath} is not a relay export (missing relay list). Nothing changed.`;
+			};
+
+			const runExport = async (pathArg?: string, includeSecrets = false) => {
+				let state: RelayState;
+				try {
+					state = getActiveRelayState();
+				} catch {
+					state = loadRelayState();
+				}
+				const artifact = buildRelayExport(state, { includeSecrets });
+				const count = artifact.state.relays.length;
+				let target = pathArg ? path.resolve(pathArg) : path.resolve(EXPORT_DEFAULT_FILENAME);
+				if (!pathArg) {
+					const choice = await ctx.ui.select("Share relays (export file)", [
+						`Export to ${target}`,
+						"Choose another path…",
+						"Cancel",
+					]);
+					if (!choice || choice === "Cancel") return;
+					if (choice === "Choose another path…") {
+						const picked = (await ctx.ui.input("Export path:", target))?.trim();
+						if (!picked) return;
+						target = path.resolve(picked);
+					}
+				}
+				if (fs.existsSync(target)) {
+					if (typeof ctx.ui.confirm === "function") {
+						const ok = await ctx.ui.confirm(
+							"Export relays",
+							`File already exists: ${target}\nOverwrite it?`,
+						);
+						if (!ok) {
+							ctx.ui.notify("Export cancelled — existing file left alone", "warning");
+							return;
+						}
+					}
+				}
+				try {
+					fs.writeFileSync(target, JSON.stringify(artifact, null, 2));
+				} catch (e) {
+					ctx.ui.notify(`Could not write relay file ${target}: ${(e as Error).message}.`, "error");
+					return;
+				}
+				updateStatusBar(ctx.ui);
+				flash();
+				ctx.ui.notify(
+					includeSecrets
+						? `Exported ${count} relay(s) to ${target} WITH passwords included — keep this file private.`
+						: `Exported ${count} relay(s) to ${target} (passwords stripped — file is safe to share).`,
+					"info",
+				);
+			};
+
+			const runImport = async (
+				pathArg: string | undefined,
+				mode: "merge" | "replace",
+				dryRun: boolean,
+			) => {
+				const filePath = (pathArg || "").trim();
+				if (!filePath) {
+					ctx.ui.notify("Usage: /freeflow import <path> [--merge|--replace] [--dry-run] — path is required.", "warning");
+					return;
+				}
+				let byteSize = 0;
+				try {
+					const st = fs.statSync(filePath);
+					if (!st.isFile()) {
+						ctx.ui.notify(`Could not read relay file ${filePath}: not a regular file.`, "error");
+						return;
+					}
+					byteSize = st.size;
+				} catch (e) {
+					const code = e !== null && typeof e === "object" && "code" in e ? e.code : undefined;
+					if (code === "ENOENT") {
+						ctx.ui.notify(`Relay file not found: ${filePath} — check the path and try again.`, "warning");
+					} else {
+						ctx.ui.notify(`Could not read relay file ${filePath}: ${(e as Error).message}.`, "error");
+					}
+					return;
+				}
+				if (byteSize > EXPORT_MAX_BYTES) {
+					ctx.ui.notify(`Relay file ${filePath} is too large (${byteSize} bytes; limit ${EXPORT_MAX_BYTES} bytes). Nothing changed.`, "warning");
+					return;
+				}
+				let raw: string;
+				try {
+					raw = fs.readFileSync(filePath, "utf8");
+				} catch (e) {
+					ctx.ui.notify(`Could not read relay file ${filePath}: ${(e as Error).message}.`, "error");
+					return;
+				}
+				let fragment: Pick<RelayState, "mode" | "enabled" | "url" | "relays" | "hideWidget">;
+				let parseSkipped: Array<{ index: number; url: string; reason: string }> = [];
+				try {
+					const parsed = parseRelayImport(raw);
+					fragment = parsed.fragment;
+					parseSkipped = parsed.skipped;
+				} catch {
+					ctx.ui.notify(classifyImportFailure(filePath, raw), "warning");
+					return;
+				}
+				if (!fragment || !Array.isArray(fragment.relays) || fragment.relays.length === 0) {
+					if (parseSkipped.length > 0) {
+						ctx.ui.notify(`Relay file ${filePath} holds no usable relay addresses (${parseSkipped.length} skipped: ${parseSkipped[0].reason}). Nothing changed.`, "warning");
+					} else {
+						ctx.ui.notify(`Relay file ${filePath} holds no usable relay addresses (0 skipped). Nothing changed.`, "warning");
+					}
+					return;
+				}
+				const plan = planRelayImport(loadRelayState(), fragment, { mode });
+				const skipped = [...parseSkipped];
+				for (const s of plan.skipped) {
+					if (!skipped.some((x) => x.index === s.index && x.url === s.url)) skipped.push(s);
+				}
+				const skippedCount = skipped.length;
+				const reasons = skippedCount > 0
+					? skipped.map((s) => s.reason).filter((r, i, arr) => arr.indexOf(r) === i).join("; ")
+					: "none";
+				const plannedActive = plan.next.url
+					? `[${shortRelayLabel(plan.next.url, plan.next.relays)}]`
+					: "none";
+				if (dryRun) {
+					if (mode === "replace") {
+						ctx.ui.notify(`DRY RUN — replace from ${filePath}: would install ${plan.added}, would remove ${plan.removed}, would skip ${skippedCount} (${reasons}). Active relay would be ${plannedActive}. Nothing changed.`, "info");
+					} else {
+						ctx.ui.notify(`DRY RUN — merge from ${filePath}: would add ${plan.added}, would update short name on ${plan.updated}, would skip ${skippedCount} (${reasons}). Active and mode unchanged. Nothing changed.`, "info");
+					}
+					return;
+				}
+				if (mode === "replace") {
+					ctx.ui.notify(`Replace from ${filePath}: will install ${plan.added}, remove ${plan.removed}, skip ${skippedCount} (${reasons}). Active relay will be ${plannedActive}.`, "info");
+					if (typeof ctx.ui.confirm === "function") {
+						const ok = await ctx.ui.confirm(
+							"Replace all relays?",
+							`Install ${plan.added} relay(s) from ${filePath} and remove ${plan.removed} existing? This cannot be undone.`,
+						);
+						if (!ok) {
+							ctx.ui.notify("Replace cancelled — relay list unchanged.", "warning");
+							return;
+						}
+					}
+				}
+				applyRelayState((s) => planRelayImport(s, fragment, { mode }).next);
+				persist();
+				flash();
+				if (mode === "replace") {
+					const activeName = relayState.url
+						? `[${shortRelayLabel(relayState.url, relayState.relays)}]`
+						: "none";
+					ctx.ui.notify(`Replaced relay list from ${filePath}: installed ${plan.added}, skipped ${skippedCount}. Active relay is now ${activeName}.`, "info");
+				} else {
+					ctx.ui.notify(`Merge from ${filePath}: added ${plan.added}, updated short name on ${plan.updated}, skipped ${skippedCount}. Relay list now holds ${relayState.relays.length}.`, "info");
+				}
+				const withoutPassword = relayState.relays.filter((r) => !r.auth).length;
+				if (withoutPassword > 0) {
+					ctx.ui.notify(`${withoutPassword} relay(s) have no password — reconnect each one before use.`, "warning");
+				}
+				for (const s of skipped) {
+					const shown = s.url || `#${s.index + 1}`;
+					const reason = s.reason.endsWith(".") ? s.reason : `${s.reason}.`;
+					ctx.ui.notify(`Skipped ${shown}: ${reason}`, "warning");
+				}
 			};
 
 			if (sub === "auto") {
@@ -1102,6 +1287,47 @@ export function createCommandSpec(
 				} else {
 					ctx.ui.notify(`✗ ${shortRelayLabel(matched.url, relayState.relays)} failed: ${probe.error || `HTTP ${probe.status}`}`, "error");
 				}
+			} else if (sub === "export") {
+				const tokens = rest.trim() ? rest.trim().split(/\s+/) : [];
+				let target: string | undefined;
+				let includeSecrets = false;
+				for (const t of tokens) {
+					if (t === "--include-secrets") {
+						includeSecrets = true;
+					} else if (t.startsWith("--")) {
+						ctx.ui.notify(`Unknown flag ${t} — usage: /freeflow export [path] [--include-secrets].`, "warning");
+						return;
+					} else if (target === undefined) {
+						target = t;
+					}
+				}
+				await runExport(target, includeSecrets);
+			} else if (sub === "import") {
+				const tokens = rest.trim() ? rest.trim().split(/\s+/) : [];
+				let target: string | undefined;
+				let sawMerge = false;
+				let sawReplace = false;
+				let dryRun = false;
+				for (const t of tokens) {
+					if (t === "--merge") {
+						sawMerge = true;
+					} else if (t === "--replace") {
+						sawReplace = true;
+					} else if (t === "--dry-run") {
+						dryRun = true;
+					} else if (t.startsWith("--")) {
+						ctx.ui.notify(`Unknown flag ${t} — usage: /freeflow import <path> [--merge|--replace] [--dry-run].`, "warning");
+						return;
+					} else if (target === undefined) {
+						target = t;
+					}
+				}
+				if (sawMerge && sawReplace) {
+					ctx.ui.notify("Both --merge and --replace given — showing a merge preview. Nothing changed.", "info");
+					await runImport(target, "merge", true);
+					return;
+				}
+				await runImport(target, sawReplace ? "replace" : "merge", dryRun);
 			} else if (sub === "url") {
 				const input =
 					rest ||
@@ -1152,6 +1378,8 @@ export function createCommandSpec(
 					"Switch active relay…",
 					"Rename / Set relay short name…",
 					"Remove relay…",
+					"Share relays (export file)…",
+					"Load relays from file (import)…",
 					"List saved relays",
 					"Deploy Vercel relay…",
 					"Deploy Cloudflare relay…",
@@ -1170,6 +1398,12 @@ export function createCommandSpec(
 					await editRelayLabelMenu();
 				} else if (choice === "Remove relay…") {
 					await removeRelayMenu();
+				} else if (choice === "Share relays (export file)…") {
+					await runExport(undefined, false);
+				} else if (choice === "Load relays from file (import)…") {
+					const picked = (await ctx.ui.input("Relay file path:", EXPORT_DEFAULT_FILENAME))?.trim();
+					if (!picked) return;
+					await runImport(picked, "merge", false);
 				} else if (choice === "List saved relays") {
 					showList();
 				} else if (choice === "Deploy Vercel relay…") {

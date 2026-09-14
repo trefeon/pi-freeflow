@@ -1,8 +1,8 @@
-# pi-freeflow 🌊
+# pi-freeflow
 
-> **26 free models. Up to 1M context. Zero API keys. Infinite scale via your own relay pool.**
+> 26 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
-Thin by design: model list + dumb relay + log. Host `pi-ai` owns thinking, normalization & provider magic. We just make it free, fast, and unbreakable.
+Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
 [![npm version](https://img.shields.io/npm/v/pi-freeflow?style=flat-square&color=00E5FF)](https://www.npmjs.com/package/pi-freeflow)
 [![npm downloads](https://img.shields.io/npm/dm/pi-freeflow?style=flat-square)](https://www.npmjs.com/package/pi-freeflow)
@@ -10,36 +10,185 @@ Thin by design: model list + dumb relay + log. Host `pi-ai` owns thinking, norma
 [![Pi](https://img.shields.io/badge/Powered%20by-Pi-7c3aed?style=flat-square)](https://github.com/badlogic/pi-ai)
 [![Oh My Pi](https://img.shields.io/badge/Compatible-OMP-black?style=flat-square)](https://github.com/coder/oh-my-pi)
 
-Join devs bypassing rate limits with their own relay pools. BYO, add as many as you need.
+---
+
+### What you get
+
+| Feature | What it does | Cost |
+| :--- | :--- | :--- |
+| **26 free models** | 7 from OpenCode Zen, 19 from KiloCode Gateway, context windows up to 1M. Full list below. | **$0** |
+| **Relay pool** | Route requests through your own Cloudflare Workers and Vercel Edge relays. Requests rotate across the pool. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your platforms' free tiers |
+| **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
+| **Short model names** | Every model has a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`. | **$0** |
+| **Shared local proxy** | One daemon on `127.0.0.1:28180` serves every session on the machine, so parallel subagents reuse it instead of opening their own connections. | **$0** |
+| **Logs you can read** | `~/.pi/agent/pi-freeflow.log`, rotated at 10MB. Tail it with `/freeflow logs`. | **$0** |
 
 ---
 
-### Features at a Glance
+### Install
 
-| Feature | Description | Value | Cost |
-| :--- | :--- | :--- | :--- |
-| **26 Curated Free Models** | 7 OpenCode Zen + 19 KiloCode Gateway models, up to 1M context & 512K output | Ceiling Unlocked | **$0** |
-| **BYO Relay Pool** | Round-robin load balancing across your Cloudflare Workers & Vercel Edges | Zero Rate Limits | **$0** (your free tiers) |
-| **Adaptive Health & Error Detection** | Auto-cooldown on 429 rate limits, 504 timeouts, and socket drops | 0ms Wasted Latency | **$0** |
-| **Stream Truncation Resilience** | Stateful SSE terminal tracking (`response.failed` / `response.incomplete` injection) | Zero Host Crashes | **$0** |
-| **Smart Model Aliasing** | Clean slash-free & colon-free CLI model names compatible with thinking selectors | DX Optimized | **$0** |
-| **Auto-Enabled on Session** | Relay stays enabled in `auto` mode on session start and model switch | Zero Friction | **$0** |
-| **Interactive CLI Management** | 10+ `/freeflow` subcommands (`status`, `list`, `use`, `add`, `label`, `remove`, `deploy`, `logs`, `debug`) | Full Control | **$0** |
-| **Dumb Proxy That Never Breaks** | `127.0.0.1:28180`, host-normalized, pathname-guarded `/v1/models` | 100% Uptime | **$0** |
-| **Observable Real Logs** | `~/.pi/agent/pi-freeflow.log`, 10MB auto-rotation, real-time debug toggle | Observable | **$0** |
+**On Oh My Pi (OMP):**
+```bash
+omp plugin install pi-freeflow
+# or local dev (repo checkout)
+omp plugin link /path/to/pi-freeflow
+```
 
-Philosophy: **Thin by design.** We only ship model list + relay proxy + log. Host owns thinking & normalization.
+**On Pi:**
+```bash
+pi install npm:pi-freeflow
+```
+
+> Both commands fetch the same npm package from the registry. pi-freeflow
+> is an extension loaded by the host, not a standalone CLI. It works on OMP
+> and Pi only (they share the extension API).
+
+### Pick a model
+
+**OMP, interactive:**
+```bash
+omp
+/model → freeflow → muse-spark-1.2-contributor-free (1M) → max
+```
+
+**OMP, one shot:**
+```bash
+omp -p --model freeflow/muse-spark-1.2-contributor-free "build me a SaaS"
+omp -p --model freeflow/step-3.7-flash:high "solve this bug"   # alias + thinking level
+```
+
+**Pi, interactive:**
+```bash
+pi
+/model → freeflow → pick
+```
+
+**Pi, one shot:**
+```bash
+pi -p --model freeflow/step-3.7-flash:high "solve this bug"
+```
+
+Model IDs accept a full canonical ID, a short alias (see the tables below),
+and an optional `:effort` suffix (`:minimal` through `:xhigh`, `:max` where
+supported). The host resolves the rest.
+
+### Add relays
+
+The default setup talks to upstream directly. Add relays when shared IPs start
+hitting rate limits. The fastest path is guided deploy: run
+`/freeflow deploy cloudflare` (or `deno`, `vercel`), paste your platform token
+once when asked, and the relay is created and added to your pool. The token
+stays in memory and is never written to disk.
+
+Manual fallback per platform:
+
+**Option A: Cloudflare Workers, auto deploy**
+```bash
+/freeflow deploy cloudflare  # prompts token in-memory, auto-adds to pool
+```
+Manual fallback: `dash.cloudflare.com` → Workers → Create → Deploy → Edit code → paste the canonical worker source (see below) → Deploy → `/freeflow add https://your.workers.dev cf-worker-1`
+
+**Option B: Vercel Edge Relay, auto deploy**
+```bash
+/freeflow deploy vercel  # prompts token in-memory, auto-adds to pool
+# or shorthand: /freeflow deploy
+```
+Manual fallback: push 2 files (`api/relay.js` + `vercel.json`) to GitHub, then Import on `vercel.com`, then `/freeflow add https://your.vercel.app vercel-relay-1`
+
+For `api/relay.js`, use the canonical worker source (see below); `vercel.json` stays:
+
+```json
+{ "rewrites": [{ "source": "/(.*)", "destination": "/api/relay" }] }
+```
+
+**Option C: Deno Deploy, auto deploy**
+```bash
+/freeflow deploy deno  # prompts token in-memory, auto-adds to pool
+```
+Manual fallback: `dash.deno.com` → New Project → Playground → paste the canonical worker source (see below) → Deploy → `/freeflow add https://your-project.deno.dev deno-relay-1`
+
+**Canonical worker source (all platforms)**
+
+The relay worker template is generated per deployment by `/freeflow deploy`, with one shared core adapted for Vercel, Cloudflare, and Deno. Deployed relays accept requests from any pi-freeflow user by default, while only forwarding to an allowlist (`https://opencode.ai`, `https://api.kilo.ai`) with private-host and path checks.
+
+```js
+// Minimal Cloudflare illustration. Prefer /freeflow deploy: the generated
+// worker is the hardened source for all three platforms.
+// This example omits the private-host guard, path validation, and auth.
+const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
+export default {
+  async fetch(req) {
+    const target = req.headers.get("x-relay-target");
+    const relayPath = req.headers.get("x-relay-path") || "/";
+    if (!target || !ALLOWED_TARGETS.includes(target.replace(/\/$/, ""))) {
+      return new Response(JSON.stringify({ error: "Forbidden target" }), { status: 403 });
+    }
+    const headers = new Headers(req.headers);
+    headers.delete("x-relay-target"); headers.delete("x-relay-path"); headers.delete("host");
+    return fetch(target.replace(/\/$/, "") + relayPath, { method: req.method, headers, body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined });
+  },
+};
+```
+
+**Verify your pool:**
+```bash
+/freeflow status        # active relay, pool status, candidates
+/freeflow list          # every relay with health status
+/freeflow logs          # tail -25
+```
+
+### Carry your pool to another machine
+
+```bash
+/freeflow export                        # save pool to ./freeflow-relays.json
+/freeflow export backup/team.json       # save to a path you choose
+/freeflow import backup/team.json       # add its relays to this machine (merge)
+/freeflow import backup/team.json --replace --dry-run  # preview a full swap first
+```
+
+Merge is the default and never deletes anything. Replace swaps the whole pool
+and always asks first. Passwords stay out of the file unless you pass
+`--include-secrets`; a file without passwords still imports, and you re-enter
+each password once afterwards.
 
 ---
 
-### 26 Curated Models, One Command
+### Commands reference (`/freeflow`)
+
+The same command set works identically in OMP and Pi:
+
+```bash
+/freeflow status                  # View active relay, pool status, and candidates
+/freeflow list                    # List all relays with real-time health badges
+/freeflow use <url|index|label>   # Switch active relay
+/freeflow url <url>               # Set the active relay URL directly
+/freeflow add <url> [label]       # Add new relay to the pool
+/freeflow label <index|url> <name># Assign a friendly label to a relay
+/freeflow remove <index|url|label># Remove a relay from the pool
+/freeflow test <index|url|label>  # Probe a relay for reachability and latency
+/freeflow on | off | auto         # Toggle relay mode (auto = enabled for freeflow)
+/freeflow deploy <platform>       # Guided relay deploy: vercel|cloudflare|deno, token in-memory, auto-adds
+/freeflow logs [lines]            # Inspect recent proxy logs
+/freeflow trace [req-id]          # Tail logs filtered by request correlation ID
+/freeflow refresh                 # Reload the model catalog from live upstreams
+/freeflow update                  # Check for and install a package update
+/freeflow debug on | off          # Toggle full HTTP lifecycle debug logging
+/freeflow kill                    # Stop the shared proxy daemon now (restarts on next use)
+/freeflow export [path] [--include-secrets]  # Save the relay pool to a file (default freeflow-relays.json; passwords left out unless asked)
+/freeflow import <path> [--merge|--replace] [--dry-run]  # Load a relay pool from a file (merge is default; replace asks first; dry-run previews only)
+```
+
+---
+
+### 26 models, one command
 
 ```bash
 /model → freeflow → pick
 ```
 
-#### OpenCode Zen (7 Models), Responses & Chat API
-Optimized for deep reasoning, long-horizon coding & autonomous agentic workflows.
+#### OpenCode Zen (7 models), Responses and Chat API
+
+Good defaults for long coding sessions and agentic work.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -51,8 +200,9 @@ Optimized for deep reasoning, long-horizon coding & autonomous agentic workflows
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 | `ling-3.0-flash-fin-free` | Inclusion AI | **262K** (262.144) | **131K** (131.072) | `minimal … xhigh` | ❌ |
 
-#### KiloCode Gateway (19 Models), OpenRouter Compatible
-Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI aliases supported.
+#### KiloCode Gateway (19 models), OpenRouter compatible
+
+Keyless access. Short aliases work for every row (the full ID is in parentheses).
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -80,211 +230,43 @@ Keyless access with `Bearer kilo-free`. Clean slash-free and colon-free CLI alia
 
 ---
 
-### How It Works: BYO Relays, Zero Rate Limits
-
-```
-You → 127.0.0.1:28180 (dumb proxy, host-normalized) → x-relay-target → N egress IPs (your pool) → opencode.ai / api.kilo.ai
-                                     ↑ host already normalized thinking → proxy just forwards
-```
-
-1. **Per-Request Round-Robin**: 10 parallel subagents hit N different egress IPs (your pool size). No thundering herd.
-2. **Adaptive Health & Error Cooldown**: Relays hitting 429, 504, or socket disconnects enter temporary cooldown (30-90s) and automatically move behind healthy candidates. Healthy relays handle traffic with 0ms wasted delay.
-3. **Seamless 429 Roll**: `429 / 408 / 502 / 503 / 504 / 520-530` → instant roll to next relay, never 429 to agent.
-4. **Stream Truncation Resilience**: Stateful SSE terminal tracking prevents fatal unhandled stream closed errors when connections drop.
-5. **Direct Fallback Safety Net**: If all relays in the pool are exhausted, transparent direct fetch to upstream.
-6. **Zero Subagent Connect Errors**: 24h `DISK_CACHE_ONLY` model catalog avoids subagents hammering remote catalogs.
-
-You bring the relays (free tiers). We bring the rolling.
-
----
-
-### Interactive Commands Reference (`/freeflow`)
-
-Manage your relay pool directly from the OMP / Pi terminal:
-
-```bash
-/freeflow status                  # View active relay, pool status, and candidates
-/freeflow list                    # List all relays with real-time health badges (✓ / ⚠️ [cooling])
-/freeflow use <url|index|label>   # Switch active relay
-/freeflow url <url>               # Set the active relay URL directly
-/freeflow add <url> [label]       # Add new relay to the pool
-/freeflow label <index|url> <name># Assign a friendly label to a relay
-/freeflow remove <index|url|label># Remove a relay from the pool
-/freeflow test <index|url|label>  # Probe a relay for reachability (HTTP 200 + latency)
-/freeflow on | off | auto         # Toggle relay mode (auto = enabled for freeflow)
-/freeflow deploy <platform>       # Guided relay deploy: vercel|cloudflare|deno — token in-memory, auto-adds (Vercel 1M/mo recommended)
-/freeflow logs [lines]            # Inspect recent proxy logs
-/freeflow trace [req-id]          # Tail logs filtered by request correlation ID
-/freeflow refresh                 # Reload the model catalog from live upstreams
-/freeflow update                  # Check for and install a package update
-/freeflow debug on | off          # Toggle full HTTP lifecycle debug logging
-/freeflow kill                    # Stop the shared proxy daemon now (restarts on next use)
-```
-
----
-
-### Quick Start in 30 Seconds
-
-**On Oh My Pi (OMP):**
-```bash
-omp plugin install pi-freeflow
-# or local dev (repo checkout)
-omp plugin link /path/to/pi-freeflow
-```
-
-**On Pi:**
-```bash
-pi install npm:pi-freeflow
-```
-
-> Both commands fetch the **same npm package** from the registry — pi-freeflow
-> is an extension loaded by the host, not a standalone CLI. It works on **OMP
-> and Pi only** (they share the extension API).
-
-#### 2. Pick a Model
-
-**OMP — interactive:**
-```bash
-omp
-/model → freeflow → muse-spark-1.2-contributor-free (1M) → max
-```
-
-**OMP — one-shot CLI:**
-```bash
-omp -p --model freeflow/muse-spark-1.2-contributor-free "build me a SaaS"
-omp -p --model freeflow/step-3.7-flash:high "solve this bug"   # alias + thinking level
-```
-
-**Pi — interactive:**
-```bash
-pi
-/model → freeflow → pick
-```
-
-**Pi — one-shot CLI:**
-```bash
-pi -p --model freeflow/step-3.7-flash:high "solve this bug"
-```
-
-> Model IDs accept a full canonical ID, a short alias (see the tables above),
-> and an optional `:effort` suffix (`:minimal` … `:xhigh`, `:max` where
-> supported). The host resolves the rest — you only type `freeflow/<name>`.
-
-#### 3. Manage Your Relay Pool (OMP & Pi both)
-
-```bash
-/freeflow status     # active relay, pool status, candidates
-/freeflow list       # relays with health badges
-/freeflow add <url> [label]
-/freeflow deploy     # guided deploy: vercel|cloudflare|deno
-/freeflow logs [n]   # tail proxy logs
-```
-
-These slash commands work **identically in OMP and Pi** — the extension
-registers the same `/freeflow` command set in both hosts.
-#### 4. Add Your Free Relays (Scale Infinitely)
-
-Default ships direct. Add relays via `/freeflow add <url> [label]`.
-
-**Zero setup?** Run `/freeflow deploy cloudflare` (or `deno`, `vercel`), paste your platform token once, and the relay is created and activated for you. Manual snippets below.
-
-**Option A: Cloudflare Workers (100k req/day, no 25s timeout) — Auto Deploy**
-```bash
-/freeflow deploy cloudflare  # prompts token in-memory, auto-adds to pool
-```
-*Manual fallback:* `dash.cloudflare.com` → Workers → Create → Deploy → Edit code → paste the canonical worker source (see "Canonical worker source" below) → Deploy → `/freeflow add https://your.workers.dev cf-worker-1`
-
-**Option B: Vercel Edge Relay (1M req/mo) — Auto Deploy**
-```bash
-/freeflow deploy vercel  # prompts token in-memory, auto-adds to pool
-# or shorthand: /freeflow deploy
-```
-*Manual fallback:* Push 2 files (`api/relay.js` + `vercel.json`) to GitHub $\to$ Import on `vercel.com` $\to$ `/freeflow add https://your.vercel.app vercel-relay-1`
-
-For `api/relay.js`, use the canonical worker source (see below); `vercel.json` stays:
-
-```json
-{ "rewrites": [{ "source": "/(.*)", "destination": "/api/relay" }] }
-```
-
-**Option C: Deno Deploy (100k req/day) — Auto Deploy**
-```bash
-/freeflow deploy deno  # prompts token in-memory, auto-adds to pool
-```
-*Manual fallback:* `dash.deno.com` → New Project → Playground → paste the canonical worker source (see below) → Deploy → `/freeflow add https://your-project.deno.dev deno-relay-1`
-
-**Canonical worker source (all platforms)**
-
-The relay worker template is generated per deployment by `/freeflow deploy` and lives in [`src/deploy.ts`](src/deploy.ts): one hardened core plus thin Vercel / Cloudflare / Deno wrappers. Deployed relays are public by default for seamless migration across proxy tools (such as 9router), while enforcing the target allowlist (`https://opencode.ai`, `https://api.kilo.ai`), SSRF/private-host guard, relay-path validation, and a header denylist.
-
-```js
-// Minimal Cloudflare illustration. Prefer /freeflow deploy: the generated
-// worker (src/deploy.ts) is the signed/hardened source for all three
-// platforms. This example omits the SSRF guard, path validation, and auth.
-const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
-export default {
-  async fetch(req) {
-    const target = req.headers.get("x-relay-target");
-    const relayPath = req.headers.get("x-relay-path") || "/";
-    if (!target || !ALLOWED_TARGETS.includes(target.replace(/\/$/, ""))) {
-      return new Response(JSON.stringify({ error: "Forbidden target" }), { status: 403 });
-    }
-    const headers = new Headers(req.headers);
-    headers.delete("x-relay-target"); headers.delete("x-relay-path"); headers.delete("host");
-    return fetch(target.replace(/\/$/, "") + relayPath, { method: req.method, headers, body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined });
-  },
-};
-```
-
-**Verify your pool:**
-```bash
-/freeflow status        # relay-A 1/N (ON) → candidates:N
-/freeflow list          # lists all relays with health status
-/freeflow logs          # tail -25
-cat ~/.pi/agent/pi-freeflow.log | tail -n 20
-```
-
----
-
-### Logs & Debugging
+### Logs and debugging
 
 ```bash
 /freeflow logs
 cat ~/.pi/agent/pi-freeflow.log | tail -n 50
 
-# debug toggle (full debug is on by default for complete error reports; `off` restores info)
+# full debug logging is on by default; `off` restores info level
 /freeflow debug on
 ```
-
-Log rotation at 10MB. Clean, parseable, real-time HTTP lifecycle tracking.
 
 ---
 
 ### Design
 
-This package stays thin. It ships three things: a model catalog, a relay proxy, and a log. There is no build step. Zero runtime dependencies — uses native Node.js global fetch. Thinking and prompt normalization stay with the host (`pi-ai`).
+This package stays thin. It ships three things: a model catalog, a relay proxy, and a log. There is no build step and zero runtime dependencies. Thinking and prompt normalization stay with the host (`pi-ai`).
 
-Current size: about 11.3k lines including tests. The full suite (sandboxed, mocked network) and typecheck pass before every release — see CHANGELOG.md.
+About 19k lines including tests. The full suite (sandboxed, network-mocked) and typecheck pass before every release. See CHANGELOG.md.
 
 ---
 
 ### FAQ
 
 **Do I need API keys?**
-No. Kilo uses `Bearer kilo-free`, OpenCode free models are anonymous (no header needed).
+No. Kilo uses a shared free credential and OpenCode free models need no header. You never paste a key.
 
-**What if all relays are 429?**
-Proxy tries direct. If that is also 429, Pi shows the rate limit. That number is the global upstream cap; without relays you would hit the same wall.
+**What if all relays hit rate limits?**
+The proxy tries direct upstream. If that is also rate-limited, the host shows the limit. That number is the shared upstream cap; without relays you would hit the same wall sooner.
 
-**Can I use without relays?**
-Yes. `/freeflow off` → direct. Add relays later to scale.
+**Can I use it without relays?**
+Yes. `/freeflow off` talks direct. Add relays later when you need them.
 
 **What happens when I update to a new version?**
 The local proxy daemon is shared across sessions on port 28180. On upgrade, the new extension
-detects a stale daemon (mismatched internal version) and replaces it automatically — no manual
-kill, no restart of other sessions required. Replacement only happens when the running daemon is
+detects a stale daemon (an older version still running) and replaces it automatically, with no manual
+kill and no restart of other sessions. Replacement only happens when the running daemon is
 idle: sessions with in-flight requests are never interrupted (busy or newer daemons are reused
-with a log note instead). If a daemon cannot be replaced (e.g. port held by an unrelated process),
+with a log note instead). If a daemon cannot be replaced (for example the port is held by an unrelated process),
 it falls back to reusing it with a warning. To disable replacement entirely, set the no-kill env
 to `1` before starting a session.
 
@@ -293,41 +275,35 @@ Nothing visible to your other sessions. The proxy daemon is a separate backgroun
 process shared by every OMP/Pi session on the machine. Closing one session just
 unregisters it; the daemon keeps serving the rest and retires itself automatically
 once the last client disconnects and no client re-attaches within a short grace window.
-To stop it manually, run `/freeflow kill` — the next freeflow use starts it again.
+To stop it manually, run `/freeflow kill`. The next freeflow use starts it again.
 
-**Why did my session stop with "reasoning `encrypted_content` was not issued to this caller"?**
-Reasoning models on the Responses API sign each thinking block for the upstream backend that produced it, and only that backend can read it back. When a later turn reaches a different backend, the replayed thinking blocks are rejected, and the host keeps re-sending the same history, so the session cannot continue on its own. pi-freeflow now handles this two ways: it keeps each conversation on the relay that issued its reasoning while that relay is healthy, and when the relay must change anyway (rate limit, relay removed or redeployed, direct-mode switch) it sends that turn's history without the signed thinking blocks, so the new backend accepts it immediately instead of rejecting the request. As a last resort it retries once without the blocks, then remembers which blocks were rejected and drops only those on later turns, keeping everything the current backend can read. Messages, tool calls and tool results are always preserved.
+**Why did my long session stop with a "reasoning was not issued to this caller" error?**
+The upstream backend signs each thinking block so only the backend that produced it can read it back. When a later turn reaches a different backend, the old blocks get rejected and the session stalls. pi-freeflow keeps each conversation on the relay that produced its thinking while that relay is healthy. When the relay has to change anyway (rate limit, relay removed, direct-mode switch), that turn is sent without the old thinking blocks so the new backend accepts it, and only the rejected blocks are dropped afterwards. Messages, tool calls, and tool results are always kept.
 
-**Where's the normalizer?**
-Deleted in 1.3.0. If zai/qwen/deepseek thinking broke before, it's fixed now because host handles it.
-
-**Why is context free?**
-We use OpenCode Zen & Kilo free tiers. You pay only with your own Cloudflare/Vercel free tiers for egress.
 **Why is it installed via npm?**
-The npm package is the **distribution channel** only — both hosts resolve it internally:
+The npm package is the distribution channel only. Both hosts resolve it internally:
 `omp plugin install pi-freeflow` and `pi install npm:pi-freeflow` install the same
-package from the npm registry. pi-freeflow is an **extension, not a standalone CLI** —
-the host (OMP or Pi) loads and runs it. A plain `npm install` just downloads the
+package from the npm registry. pi-freeflow is an extension, not a standalone CLI.
+The host (OMP or Pi) loads and runs it. A plain `npm install` just downloads the
 files; it is not a supported way to run the extension.
 
 **Which hosts can use it?**
-Oh My Pi (OMP) and Pi only. They share the same extension API
-(`extensions/index.ts` declares both `omp` and `pi` extension entries), so one
-package serves both. Other AI agents (OpenCode, KiloCode, Cursor, ...) have their
+Oh My Pi (OMP) and Pi only. They share the same extension API, so one
+package serves both. Other AI agents (OpenCode, KiloCode, Cursor, and similar) have their
 own plugin systems and do not load this extension.
 
 ---
 
 ### Contributing
 
-Contributions welcome — bug fixes, new relay platforms, model additions, docs improvements.
+Contributions welcome: bug fixes, new relay platforms, model additions, docs improvements.
 
 #### Prerequisites
 
 - **Node.js ≥ 22.19.0** (uses `--experimental-strip-types`, no build step)
 - **pnpm** (package manager)
 
-#### Setup & Verify
+#### Setup and verify
 
 ```bash
 git clone https://github.com/trefeon/pi-freeflow
@@ -335,12 +311,12 @@ cd pi-freeflow
 pnpm install
 
 # run all three before opening a PR
-pnpm test        # full suite; sandboxed + network-mocked
+pnpm test        # full suite; sandboxed and network-mocked
 pnpm typecheck   # tsc --noEmit, must pass clean
 pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
 
-#### Project Structure
+#### Project structure
 
 ```
 src/
@@ -348,9 +324,9 @@ src/
 ├── models.ts         # 26-model catalog definitions
 ├── catalog.ts        # model catalog cache (24h disk)
 ├── proxy.ts          # local proxy server (127.0.0.1:28180)
-├── relay.ts          # relay selection & round-robin
+├── relay.ts          # relay selection and round-robin
 ├── relay-state.ts    # relay pool state, health tracking
-├── stream-pipe.ts    # SSE stream piping & truncation resilience
+├── stream-pipe.ts    # SSE stream piping and truncation resilience
 ├── commands.ts       # /freeflow CLI subcommands
 ├── deploy.ts         # guided relay deploy (vercel/cloudflare/deno)
 ├── config.ts         # constants, whitelists, paths, and runtime settings
@@ -369,7 +345,7 @@ test/
 - **Keep model IDs clean.** Slash-free, colon-free aliases for CLI compatibility. See existing patterns in `models.ts`.
 - **One concern per PR.** Bug fix? One PR. New relay platform? Separate PR. Easier to review, faster to merge.
 
-#### Reporting Issues
+#### Reporting issues
 
 Found a bug or want a feature? [Open an issue](https://github.com/trefeon/pi-freeflow/issues) with:
 - What happened vs what you expected
@@ -381,4 +357,3 @@ Found a bug or want a feature? [Open an issue](https://github.com/trefeon/pi-fre
 ### License
 
 MIT © trefeon
-
