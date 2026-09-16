@@ -275,6 +275,7 @@ export function _resetRecoveryForTest(): void {
 export type HealthForRecovery = {
 	version: string | null;
 	activeRequests?: number | undefined;
+	sseRate?: number | undefined;
 	sseDegraded?: boolean | undefined;
 	lastBytesAt?: number | undefined;
 } | null;
