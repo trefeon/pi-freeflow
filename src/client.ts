@@ -49,6 +49,7 @@ import {
 	startProxy,
 } from "./proxy.ts";
 import { compareVersions } from "./update-checker.ts";
+import type { DaemonHealthSnapshot } from "./health.ts";
 
 const CLIENT_ID = randomUUID();
 
@@ -272,13 +273,8 @@ export function _resetRecoveryForTest(): void {
 	busySince = 0;
 }
 
-export type HealthForRecovery = {
-	version: string | null;
-	activeRequests?: number | undefined;
-	sseRate?: number | undefined;
-	sseDegraded?: boolean | undefined;
-	lastBytesAt?: number | undefined;
-} | null;
+/** Recovery-decision shape; canonical definition lives in health.ts. */
+export type HealthForRecovery = DaemonHealthSnapshot;
 
 /**
  * Watchdog decision matrix (pure, testable). Recover when the daemon is gone,

@@ -47,6 +47,21 @@ export interface HealthData {
 }
 
 /**
+ * Wire subset of HealthData fetched from a running daemon over loopback.
+ * Single source of truth for the recovery-decision shape (client.ts
+ * HealthForRecovery) and the fetch shape (proxy.ts getDaemonHealth): each
+ * field's type follows HealthData, so a rename there breaks here at compile
+ * time instead of silently desyncing a hand-duplicated copy.
+ * Fields stay optional — older daemons predate them — and version is nullable
+ * for unversioned responses. The key list must match what getDaemonHealth parses.
+ */
+export type DaemonHealthSnapshot = {
+	[K in "activeRequests" | "sseRate" | "sseDegraded" | "lastBytesAt"]?: HealthData[K] | undefined;
+} & {
+	version: string | null;
+} | null;
+
+/**
  * Collect current health snapshot.
  * @param portOverride - actual listening port (defaults to config PORT)
  * @param activeRequests - in-flight proxied requests (defaults to 0 for callers that do not track)

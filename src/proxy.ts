@@ -11,6 +11,7 @@ import { execSync } from "node:child_process";
 import * as http from "node:http";
 import * as https from "node:https";
 import { handleHealthRequest, isLoopbackIP } from "./health.ts";
+import type { DaemonHealthSnapshot } from "./health.ts";
 import { registerClient, renewClient, touchActivity, unregisterClient } from "./lease.ts";
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
@@ -182,13 +183,7 @@ export function getActiveRequests(): number {
  */
 export async function getDaemonHealth(
 	port: number,
-): Promise<{
-	version: string | null;
-	activeRequests: number | undefined;
-	sseRate: number | undefined;
-	sseDegraded: boolean | undefined;
-	lastBytesAt: number | undefined;
-} | null> {
+): Promise<DaemonHealthSnapshot> {
 	if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
 	try {
 		const res = await fetch(`http://${HOST}:${port}/_health`, {
