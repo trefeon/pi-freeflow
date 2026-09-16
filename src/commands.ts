@@ -20,6 +20,7 @@ import {
 	isLinkedInstall,
 	getLocalVersion,
 } from "./update-checker.ts";
+import { isCommandAvailable, selectGlobalUpdatePlan } from "./updater.ts";
 import {
 	deployCloudflareWorker,
 	deployDenoRelay,
@@ -951,15 +952,26 @@ export function createCommandSpec(
 							} else {
 								ctx.ui.notify(`Update available: v${local} → v${latest} — updating…`, "info");
 								let code = await spawnWithProgress("omp", ["plugin", "update", "pi-freeflow"], ctx);
+								let manual = "npm i -g pi-freeflow@latest";
 								if (code !== 0) {
-									ctx.ui.notify(`omp update exited ${code}, trying npm…`, "info");
-									code = await spawnWithProgress("npm", ["i", "-g", "pi-freeflow@latest"], ctx);
+									const plan = selectGlobalUpdatePlan({
+										npmAvailable: isCommandAvailable("npm"),
+										bunAvailable: isCommandAvailable("bun"),
+									});
+									if (plan !== null && plan.cmd !== "npm") {
+										manual = plan.manual;
+										ctx.ui.notify(`omp update exited ${code}, npm not found — trying ${plan.manual}…`, "info");
+										code = await spawnWithProgress(plan.cmd, plan.args, ctx);
+									} else {
+										ctx.ui.notify(`omp update exited ${code}, trying npm…`, "info");
+										code = await spawnWithProgress("npm", ["i", "-g", "pi-freeflow@latest"], ctx);
+									}
 								}
 								if (code === 0) {
 									ctx.ui.notify(`Updated to ${latest}, restart OMP`, "info");
 								} else {
 									ctx.ui.notify(
-										`Update failed (exit ${code}) — try manually: npm i -g pi-freeflow@latest`,
+										`Update failed (exit ${code}) — try manually: ${manual}`,
 										"warning",
 									);
 								}
