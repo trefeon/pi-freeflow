@@ -348,6 +348,7 @@ export function handleControlRequest(
 		return true;
 	}
 	if (isShutdown) {
+		log("info", "control /_shutdown received — closing proxy");
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify({ ok: true }));
 		setTimeout(() => {

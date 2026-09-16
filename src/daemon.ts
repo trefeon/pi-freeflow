@@ -99,10 +99,10 @@ export async function runDaemon(): Promise<void> {
 	process.on("SIGTERM", () => retire("SIGTERM"));
 	process.on("SIGINT", () => retire("SIGINT"));
 	process.on("uncaughtException", (err) => {
-		log("error", "daemon uncaughtException", { error: String(err), stack: (err as Error)?.stack });
+		log("error", "daemon uncaughtException", { error: String(err), stack: (err as Error)?.stack, activeRequests: getActiveRequests() });
 	});
 	process.on("unhandledRejection", (reason) => {
-		log("error", "daemon unhandledRejection", { error: String(reason) });
+		log("error", "daemon unhandledRejection", { error: String(reason), activeRequests: getActiveRequests() });
 	});
 	setShutdownShouldExit(true);
 	try {
