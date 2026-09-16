@@ -1,11 +1,11 @@
 /**
- * Global package-manager selection for the /freeflow update command.
+ * Global and host package-manager selection for the /freeflow update command.
  *
- * The update flow first tries the host plugin manager. When that is not
- * available it falls back to a global package install. npm is preferred when
- * present; on machines where only bun is installed (npm missing from PATH)
- * the same update runs through the equivalent bun command instead of failing
- * with a manual-install note.
+ * The update flow tries the host plugin managers first and only then falls
+ * back to a global package install. npm is preferred among global managers
+ * when present; on machines where only bun is installed (npm missing from
+ * PATH) the same update runs through the equivalent bun command instead of
+ * failing with a manual-install note.
  */
 
 import { spawnSync } from "node:child_process";
@@ -36,6 +36,39 @@ export function selectGlobalUpdatePlan(opts: {
 	if (opts.bunAvailable)
 		return { cmd: "bun", args: ["add", "-g", "pi-freeflow@latest"], manual: BUN_MANUAL };
 	return null;
+}
+
+export interface HostUpdateStep {
+	/** Binary to run. */
+	cmd: string;
+	/** Arguments to run it with. */
+	args: string[];
+	/** Exact command the user can run by hand if the automated step fails. */
+	manual: string;
+}
+
+/**
+ * Host plugin-manager steps in try-order; the caller runs them and stops at
+ * the first exit 0. Neither host offers an `update` action for registry
+ * plugins — omp updates by reinstall (`plugin install pkg@latest`) and pi
+ * updates the named package (`update <source>`) — so those are the steps.
+ * No reliable signal names the host running this extension, hence the fixed
+ * omp → pi order.
+ */
+export function selectHostUpdateSteps(opts: {
+	ompAvailable: boolean;
+	piAvailable: boolean;
+}): HostUpdateStep[] {
+	const steps: HostUpdateStep[] = [];
+	if (opts.ompAvailable)
+		steps.push({
+			cmd: "omp",
+			args: ["plugin", "install", "pi-freeflow@latest"],
+			manual: "omp plugin install pi-freeflow@latest",
+		});
+	if (opts.piAvailable)
+		steps.push({ cmd: "pi", args: ["update", "pi-freeflow"], manual: "pi update pi-freeflow" });
+	return steps;
 }
 
 /**
