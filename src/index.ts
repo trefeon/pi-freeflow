@@ -16,7 +16,7 @@ import {
 	refreshCatalog,
 	setAliveCatalog,
 } from "./catalog.ts";
-import { ensureDaemon as ensureClientDaemon, getClientPort, hasFallbackServer, stopHeartbeat } from "./client.ts";
+import { ensureDaemon as ensureClientDaemon, ensureProxyReady, getClientPort, hasFallbackServer, stopHeartbeat } from "./client.ts";
 import { createCommandSpec, stopLogsFollow, updateStatusBar } from "./commands.ts";
 import { HOST, ONBOARDED_FLAG_FILE, PORT } from "./config.ts";
 import { logInfo, logWarn } from "./logger.ts";
@@ -183,13 +183,26 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			buildProviderConfig(models, actualPort),
 		);
 	};
-	const ensureDaemon = async (): Promise<void> => {
-		try {
-			const port = await ensureClientDaemon();
+	const ensureDaemon = async (ui?: ExtensionUIContext): Promise<void> => {
+		const reattach = (port: number): void => {
 			if (port !== actualPort) {
 				actualPort = port;
 				registerCatalog(getAliveCatalog());
 				logInfo(`Re-attached to proxy daemon on http://${HOST}:${port}`);
+			}
+		};
+		try {
+			reattach(await ensureClientDaemon());
+			// Health probe before requests: one bounded respawn retry, then an
+			// explicit proxy-down notice instead of per-model connect failures.
+			const ready = await ensureProxyReady(actualPort);
+			if (!ready.ok) {
+				logWarn(ready.reason);
+				try {
+					ui?.notify?.(ready.reason, "error");
+				} catch {}
+			} else {
+				reattach(ready.port);
 			}
 		} catch (e) {
 			logWarn("proxy daemon re-attach failed", { error: String(e) });
@@ -241,7 +254,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	}
 
 	pi.on?.("session_start", async (_event, ctx: ExtensionContext) => {
-		await ensureDaemon();
+		await ensureDaemon(ctx.ui);
 		const freshRelayState = resolveRelayState();
 		setStatusUi(ctx.ui);
 		try { bindWidgetClick(ctx.ui); } catch {}
@@ -290,7 +303,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		try { checkForUpdateInBackground(ctx.ui as unknown as ExtensionUIContext); } catch {}
 	});
 	pi.on?.("model_select", async (event, ctx: ExtensionContext) => {
-		await ensureDaemon();
+		await ensureDaemon(ctx.ui);
 		const freshRelayState = resolveRelayState();
 		setStatusUi(ctx.ui);
 		try { bindWidgetClick(ctx.ui); } catch {}

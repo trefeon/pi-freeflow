@@ -11,6 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type * as http from "node:http";
@@ -31,6 +32,7 @@ import {
 	DAEMON_WATCHDOG_MS_ENV,
 	HOST,
 	LEGACY_PORT,
+	LOG_FILE,
 	NO_KILL_ENV,
 	PKG_VERSION,
 	PORT,
@@ -47,6 +49,7 @@ import {
 	startProxy,
 } from "./proxy.ts";
 import { compareVersions } from "./update-checker.ts";
+import type { DaemonHealthSnapshot } from "./health.ts";
 
 const CLIENT_ID = randomUUID();
 
@@ -179,7 +182,7 @@ async function beatOnce(port: number): Promise<void> {
 	if (ensuring) return;
 	const result = await controlCall(port, "/_client/heartbeat", { id: CLIENT_ID });
 	if (result === "gone") {
-		void ensureDaemon();
+		void ensureDaemon().catch((e) => logWarn("heartbeat respawn failed", { error: String(e) }));
 	} else if (result === "unknown") {
 		// Daemon restarted since attach: re-register our lease.
 		await attachTo(port);
@@ -270,12 +273,8 @@ export function _resetRecoveryForTest(): void {
 	busySince = 0;
 }
 
-export type HealthForRecovery = {
-	version: string | null;
-	activeRequests?: number | undefined;
-	sseDegraded?: boolean | undefined;
-	lastBytesAt?: number | undefined;
-} | null;
+/** Recovery-decision shape; canonical definition lives in health.ts. */
+export type HealthForRecovery = DaemonHealthSnapshot;
 
 /**
  * Watchdog decision matrix (pure, testable). Recover when the daemon is gone,
@@ -331,7 +330,9 @@ async function triggerRecovery(port: number, why: string): Promise<void> {
 		}
 		const ver = health?.version ?? PKG_VERSION;
 		await killStaleDaemon(port, ver, "proxy daemon");
-	} catch {}
+	} catch (e) {
+		logWarn("watchdog pre-respawn probe failed", { error: String(e) });
+	}
 	await ensureDaemon();
 }
 
@@ -367,7 +368,7 @@ export async function watchdogCheck(port: number): Promise<void> {
 		return;
 	}
 	if (health && (health.activeRequests ?? 0) > 0 && !isStuckBusy(busySince, health.lastBytesAt ?? 0)) return;
-	void triggerRecovery(port, health === null ? "daemon gone" : health.version !== PKG_VERSION ? `stale v${health.version}` : "failed-SSE degraded");
+	void triggerRecovery(port, health === null ? "daemon gone" : health.version !== PKG_VERSION ? `stale v${health.version}` : "failed-SSE degraded").catch((e) => logWarn("watchdog recovery failed", { error: String(e) }));
 }
 
 async function shouldReplaceDaemon(port: number, remoteVer: string): Promise<boolean> {
@@ -426,6 +427,135 @@ async function killStaleDaemon(
 	return false;
 }
 
+/**
+ * Open the shared log file for the detached daemon's stdout/stderr so a
+ * native abort or crash leaves its reason on disk instead of vanishing into
+ * stdio "ignore". Returns the fd, or null when the file is unavailable
+ * (the spawn then falls back to ignore).
+ */
+export function openDaemonLogFd(): number | null {
+	try {
+		fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+		return fs.openSync(LOG_FILE, "a");
+	} catch {
+		return null;
+	}
+}
+
+export type DarkHolderProbe = {
+	/** True when GET /v1/models answers on the port. */
+	alive: boolean;
+	/** Full /_health snapshot, or null when the holder answers nothing. */
+	health: HealthForRecovery;
+};
+
+/**
+ * Pure decision: reclaim a base port whose holder answers neither /v1/models
+ * nor /_health. A live daemon — stale, busy, even mid-stream — always answers
+ * both from its event loop, so a dark holder cannot be serving traffic and
+ * replacing it cannot interrupt a real stream.
+ */
+export function shouldReclaimDarkHolder(probe: DarkHolderProbe): boolean {
+	if (probe.alive) return false;
+	if (probe.health !== null) return false;
+	return true;
+}
+
+/**
+ * Dislodge a dark holder from the base port so a fresh daemon can bind it.
+ * Returns true when a healthy proxy answers afterwards (attach to it);
+ * false when the caller should spawn fresh (port presumably free).
+ * Honors the no-kill env opt-out; a live holder is never touched here —
+ * the stale-replace path owns versioned daemons.
+ */
+async function reclaimDarkHolder(port: number): Promise<boolean> {
+	const alive = await isProxyAlive(port);
+	const health = alive ? null : await getDaemonHealth(port);
+	if (!shouldReclaimDarkHolder({ alive, health })) return true;
+	if (NO_KILL_ENV && process.env[NO_KILL_ENV] === "1") {
+		logInfo(
+			`proxy on :${port} answers neither health nor models — leaving it alone (replacement disabled by env)`,
+		);
+		return false;
+	}
+	logWarn(`proxy on :${port} holds the port but answers nothing — replacing dark holder`);
+	await killPortHolder(port);
+	for (let i = 0; i < 10; i++) {
+		await new Promise<void>((r) => setTimeout(r, 200));
+		if (await isProxyAlive(port)) return true;
+	}
+	return false;
+}
+
+function mentionsLoopback(text: string): boolean {
+	return text.includes("127.0.0.1") || text.includes("::1") || text.includes("localhost");
+}
+
+/**
+ * True when a fetch failure is a refused loopback connection — the local
+ * proxy is gone, not the upstream. Walks the undici cause chain, so both
+ * bare { code: "ECONNREFUSED" } errors and "fetch failed" wrappers classify.
+ */
+export function isLoopbackRefused(err: unknown): boolean {
+	let refused = false;
+	let loopback = false;
+	const seen = new Set<unknown>();
+	const stack: unknown[] = [err];
+	while (stack.length > 0) {
+		const cur = stack.pop();
+		if (typeof cur === "string") {
+			if (mentionsLoopback(cur)) loopback = true;
+			continue;
+		}
+		if (!cur || typeof cur !== "object" || seen.has(cur)) continue;
+		seen.add(cur);
+		const rec = cur as Record<string, unknown>;
+		if (rec.code === "ECONNREFUSED") refused = true;
+		if (typeof rec.message === "string" && mentionsLoopback(rec.message)) loopback = true;
+		if (typeof rec.host === "string" && mentionsLoopback(rec.host)) loopback = true;
+		if (typeof rec.address === "string" && mentionsLoopback(rec.address)) loopback = true;
+		if (rec.cause !== undefined) stack.push(rec.cause);
+	}
+	return refused && loopback;
+}
+
+/**
+ * Explicit proxy-down message: names the loopback port and the recovery
+ * action. Used wherever a refused loopback would otherwise surface as a
+ * per-model connect failure.
+ */
+export function proxyDownMessage(port: number): string {
+	return (
+		`pi-freeflow proxy is down on 127.0.0.1:${port} (connection refused) — ` +
+		`model requests cannot reach the local proxy until it is back. ` +
+		`Start a new session or run /freeflow to respawn it.`
+	);
+}
+
+export type ProxyReadiness = { ok: true; port: number } | { ok: false; port: number; reason: string };
+
+/**
+ * Health probe before requests: when the loopback answers, no respawn runs.
+ * When it refuses, one bounded respawn retry runs, then an explicit
+ * proxy-down result — never a silent per-model connect failure.
+ * The respawn seam defaults to the full daemon ensure; tests inject a fake.
+ */
+export async function ensureProxyReady(
+	port: number,
+	respawn: () => Promise<number> = ensureDaemon,
+): Promise<ProxyReadiness> {
+	if (await isProxyAlive(port)) return { ok: true, port };
+	let next = port;
+	try {
+		next = await respawn();
+	} catch (e) {
+		logWarn("proxy respawn failed", { error: String(e) });
+	}
+	if (await isProxyAlive(next)) return { ok: true, port: next };
+	if (next !== port && (await isProxyAlive(port))) return { ok: true, port };
+	return { ok: false, port, reason: proxyDownMessage(port) };
+}
+
 let lastSpawnAt = 0;
 const SPAWN_THROTTLE_MS = 2_000;
 
@@ -438,18 +568,28 @@ function spawnDaemonProcess(): void {
 	lastSpawnAt = now;
 	const script = daemonScriptPath();
 	const args = isBunRuntime() ? [script] : ["--experimental-strip-types", script];
+	// A native abort (OOM/crash) prints only to stderr — keep it on the log
+	// file instead of discarding it with stdio "ignore".
+	const logFd = openDaemonLogFd();
 	try {
 		const child = spawn(process.execPath, args, {
 			detached: true,
-			stdio: "ignore",
+			stdio: logFd === null ? "ignore" : ["ignore", logFd, logFd],
 			windowsHide: true,
 		});
 		child.unref();
+		logInfo(`spawned proxy daemon process (pid ${child.pid ?? "unknown"}) for :${PORT}`);
 		child.on("error", (err) => {
 			logWarn("daemon spawn failed", { error: String(err) });
 		});
 	} catch (e) {
 		logWarn("daemon spawn failed", { error: String(e) });
+	} finally {
+		if (logFd !== null) {
+			try {
+				fs.closeSync(logFd);
+			} catch {}
+		}
 	}
 }
 
@@ -531,6 +671,20 @@ export async function ensureDaemon(): Promise<number> {
 					return PORT;
 				}
 			} else {
+				// The spawn never answered: it crashed instantly or a dark holder owns
+				// the base port (bind fails, probes fail). Dislodge once and retry on
+				// the base port before falling through to a walked port the single
+				// registered baseUrl would never use.
+				if (await reclaimDarkHolder(PORT)) {
+					await attachTo(PORT);
+					return PORT;
+				}
+				lastSpawnAt = 0; // reclaim-attempted retry bypasses the spawn throttle
+				spawnDaemonProcess();
+				if (await waitForReady(PORT, DAEMON_READY_TIMEOUT_MS)) {
+					await attachTo(PORT);
+					return PORT;
+				}
 				logWarn("daemon spawn did not become ready — is the port blocked?");
 			}
 			// Fall through to the in-process fallback below — never hand the caller
