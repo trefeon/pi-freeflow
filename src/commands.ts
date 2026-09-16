@@ -20,7 +20,7 @@ import {
 	isLinkedInstall,
 	getLocalVersion,
 } from "./update-checker.ts";
-import { isCommandAvailable, selectGlobalUpdatePlan } from "./updater.ts";
+import { isCommandAvailable, selectGlobalUpdatePlan, selectHostUpdateSteps } from "./updater.ts";
 import {
 	deployCloudflareWorker,
 	deployDenoRelay,
@@ -951,24 +951,38 @@ export function createCommandSpec(
 								ctx.ui.notify(`Already on latest (v${local})`, "info");
 							} else {
 								ctx.ui.notify(`Update available: v${local} → v${latest} — updating…`, "info");
-								let code = await spawnWithProgress("omp", ["plugin", "update", "pi-freeflow"], ctx);
+								// Host plugin managers first (neither host has an `update` action for
+								// registry plugins: omp updates by reinstall, pi updates the named
+								// package). Global npm/bun is the last resort, not the default.
+								let code = 1;
 								let manual = "npm i -g pi-freeflow@latest";
+								let lastStep = "";
+								for (const step of selectHostUpdateSteps({
+									ompAvailable: isCommandAvailable("omp"),
+									piAvailable: isCommandAvailable("pi"),
+								})) {
+									if (lastStep !== "") ctx.ui.notify(`${lastStep} exited ${code} — trying ${step.manual}…`, "info");
+									code = await spawnWithProgress(step.cmd, step.args, ctx);
+									manual = step.manual;
+									lastStep = step.manual;
+									if (code === 0) break;
+								}
 								if (code !== 0) {
 									const plan = selectGlobalUpdatePlan({
 										npmAvailable: isCommandAvailable("npm"),
 										bunAvailable: isCommandAvailable("bun"),
 									});
-									if (plan !== null && plan.cmd !== "npm") {
+									if (plan !== null) {
+										ctx.ui.notify(
+											`${lastStep === "" ? "no host plugin manager found" : `${lastStep} exited ${code}`} — trying ${plan.manual}…`,
+											"info",
+										);
 										manual = plan.manual;
-										ctx.ui.notify(`omp update exited ${code}, npm not found — trying ${plan.manual}…`, "info");
 										code = await spawnWithProgress(plan.cmd, plan.args, ctx);
-									} else {
-										ctx.ui.notify(`omp update exited ${code}, trying npm…`, "info");
-										code = await spawnWithProgress("npm", ["i", "-g", "pi-freeflow@latest"], ctx);
 									}
 								}
 								if (code === 0) {
-									ctx.ui.notify(`Updated to ${latest}, restart OMP`, "info");
+									ctx.ui.notify(`Updated to ${latest} — restart your host app`, "info");
 								} else {
 									ctx.ui.notify(
 										`Update failed (exit ${code}) — try manually: ${manual}`,

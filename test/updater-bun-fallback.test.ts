@@ -8,6 +8,8 @@
  *    machines, neither leaves the previous manual hint in place.
  * 2. PATH probing: a shimmed binary on PATH reads available, an unknown or
  *    broken binary reads unavailable.
+ * 3. Host plugin-manager order: omp reinstall first, pi package update
+ *    second, empty when neither host binary applies.
  */
 
 import test from "node:test";
@@ -15,7 +17,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isCommandAvailable, selectGlobalUpdatePlan } from "../src/updater.ts";
+import { isCommandAvailable, selectGlobalUpdatePlan, selectHostUpdateSteps } from "../src/updater.ts";
 
 // ── 1. Manager preference ────────────────────────────────────────────────
 
@@ -83,4 +85,42 @@ test("isCommandAvailable follows PATH for working and broken shims", () => {
 		else process.env["PATH"] = prevPath;
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+// ── 3. Host plugin-manager order ───────────────────────────────────────────
+
+test("host steps try omp reinstall then pi update, empty when neither applies", () => {
+	assert.deepEqual(
+		selectHostUpdateSteps({ ompAvailable: true, piAvailable: true }),
+		[
+			{
+				cmd: "omp",
+				args: ["plugin", "install", "pi-freeflow@latest"],
+				manual: "omp plugin install pi-freeflow@latest",
+			},
+			{ cmd: "pi", args: ["update", "pi-freeflow"], manual: "pi update pi-freeflow" },
+		],
+		"omp reinstall first (update-by-reinstall is the manager semantic), pi package update second",
+	);
+	assert.deepEqual(
+		selectHostUpdateSteps({ ompAvailable: true, piAvailable: false }),
+		[
+			{
+				cmd: "omp",
+				args: ["plugin", "install", "pi-freeflow@latest"],
+				manual: "omp plugin install pi-freeflow@latest",
+			},
+		],
+		"omp-only machines keep the reinstall step (the old `plugin update` action never existed)",
+	);
+	assert.deepEqual(
+		selectHostUpdateSteps({ ompAvailable: false, piAvailable: true }),
+		[{ cmd: "pi", args: ["update", "pi-freeflow"], manual: "pi update pi-freeflow" }],
+		"pi-only machines must reach the pi package update, never a bare global install",
+	);
+	assert.deepEqual(
+		selectHostUpdateSteps({ ompAvailable: false, piAvailable: false }),
+		[],
+		"with no host manager the global npm/bun plan decides",
+	);
 });

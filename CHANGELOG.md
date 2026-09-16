@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.14.0
+
+### Minor Changes
+
+- c28b7b5: Local proxy recovers on its own: if the background proxy stops unexpectedly, the extension now notices the refused local connection and starts a fresh proxy within seconds instead of leaving every model failing until the next session; shutdowns and crashes are also recorded in the log so the cause is visible.
+
+### Patch Changes
+
+- /freeflow update now goes through the host plugin managers first — reinstall under OMP, package update under Pi — and only then falls back to a global install, using Bun when npm is missing. Previously the first step called an update action the plugin manager does not define, so managed installs always fell through to the wrong target.
+
 ## 1.13.0
 
 ### Minor Changes
