@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.15.2
+
+### Patch Changes
+
+- Relay traffic is now spent only on the free models the pool exists for: requests for other models go straight upstream even with the relay pool on, cutting relay bandwidth. Applies in automatic and always-on modes; relay-off behavior is unchanged.
+- The disabled-deployment rollover now triggers only on genuine hosting verdicts, so ordinary payment and quota refusals always surface immediately without cooling a healthy relay. Relay-list imports also no longer show a negative removal count when the file holds more relays than the current pool.
+
 ## 1.15.1
 
 ### Patch Changes
