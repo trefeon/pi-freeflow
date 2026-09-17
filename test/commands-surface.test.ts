@@ -15,6 +15,10 @@ import {
  resetAllRelayHealth,
  setActiveRelayState,
 } from "../src/relay-state.ts";
+import {
+ _resetUpstreamHealthForTest,
+ recordUpstreamFailure,
+} from "../src/upstream-health.ts";
 import type {
  ExtensionAPI,
  ExtensionContext,
@@ -280,6 +284,58 @@ test("command spec: /freeflow status banner shows mode, pool size and state file
    ),
    `expected status banner, got: ${JSON.stringify(notifications)}`,
   );
+ });
+});
+
+test("command spec: /freeflow status shows upstream open when nothing gated", async () => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  _resetUpstreamHealthForTest();
+  try {
+   setActiveRelayState(singleRelayState(), false);
+   const spec = createCommandSpec(mockApi);
+   const { ctx, notifications } = createMockContext();
+
+   await spec.handler("status", ctx);
+
+   assert.ok(
+    notifications.some((n) => n.message.includes("Upstream: zen open | kilo open")),
+    `expected open upstream line, got: ${JSON.stringify(notifications)}`,
+   );
+  } finally {
+   _resetUpstreamHealthForTest();
+  }
+ });
+});
+
+test("command spec: /freeflow status shows zen gated with fail count after free-tier 403s", async () => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  _resetUpstreamHealthForTest();
+  try {
+   const freeTierBody = JSON.stringify({
+    error: {
+     type: "FreeTierError",
+     message: "OpenCode's free tier can only be used from within OpenCode",
+    },
+   });
+   recordUpstreamFailure("zen", 403, freeTierBody);
+   recordUpstreamFailure("zen", 403, freeTierBody);
+   setActiveRelayState(singleRelayState(), false);
+   const spec = createCommandSpec(mockApi);
+   const { ctx, notifications } = createMockContext();
+
+   await spec.handler("status", ctx);
+
+   assert.ok(
+    notifications.some((n) =>
+     n.message.includes("Upstream: zen gated (2 fails) — new sessions degraded | kilo open"),
+    ),
+    `expected gated upstream line, got: ${JSON.stringify(notifications)}`,
+   );
+  } finally {
+   _resetUpstreamHealthForTest();
+  }
  });
 });
 

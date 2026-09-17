@@ -32,7 +32,7 @@ import {
 } from "./config.ts";
 
 import { isDebugEnabled, log } from "./logger.ts";
-import { KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
+import { getModelUpstream, KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
 import { relayFetch } from "./relay.ts";
 import { getActiveRelayState, orderedRelayCandidates } from "./relay-state.ts";
@@ -47,6 +47,16 @@ import {
 	isReasoningCallerMismatch,
 } from "./responses.ts";
 import { pipeUpstreamStream } from "./stream-pipe.ts";
+import {
+	decideZenChatRoute,
+	isUnprovenSession,
+	isUpstreamGated,
+	pickChatFailoverModel,
+	recordUpstreamFailure,
+	recordUpstreamSuccess,
+	sessionKeyOf,
+	withFreeTierHint,
+} from "./upstream-health.ts";
 
 
 let shutdownShouldExit = false;
@@ -102,6 +112,37 @@ export function isRelayEligibleModel(model: unknown): boolean {
 	if (model.trim() === "") return true;
 	const canonical = resolveCanonicalModelId(model.trim());
 	return MODEL_MAP.has(canonical) || KILO_MODEL_IDS.has(canonical);
+}
+
+/**
+ * Failing-over decision for a canonicalized request body. Returns failover
+ * with a Kilo model id only when every gate holds: Zen upstream model, chat
+ * completions path, Zen currently gated, session never proven working, the
+ * health machine routes this session to failover, and a healthy Kilo model
+ * is available. Anything else passes through untouched — responses requests
+ * always pass through, and proven sessions are never rerouted.
+ */
+export type ZenChatFailoverDecision =
+	| { action: "failover"; model: string }
+	| { action: "passthrough" };
+export function classifyZenChatFailover(
+	parsedBody: Record<string, unknown> | null,
+	pathname: string,
+): ZenChatFailoverDecision {
+	if (!parsedBody || typeof parsedBody.model !== "string") return { action: "passthrough" };
+	if (getModelUpstream(parsedBody.model) !== "opencode") return { action: "passthrough" };
+	if (!pathname.endsWith("/chat/completions")) return { action: "passthrough" };
+	if (!isUpstreamGated("zen")) return { action: "passthrough" };
+	if (!isUnprovenSession(parsedBody, pathname)) return { action: "passthrough" };
+	const route = decideZenChatRoute(parsedBody, pathname);
+	if (route === "canary") {
+		log("debug", "zen gated — canary chat session passes through to zen");
+		return { action: "passthrough" };
+	}
+	if (route !== "failover") return { action: "passthrough" };
+	const pick = pickChatFailoverModel();
+	if (!pick) return { action: "passthrough" };
+	return { action: "failover", model: pick };
 }
 
 /**
@@ -629,6 +670,19 @@ export function startProxy(
 				}
 			} catch {}
 
+			const sessionKey = sessionKeyOf(parsedBody);
+			// Zen free-tier gate failover: while fresh Zen chat sessions are gated
+			// upstream, new (never proven) chat sessions ride a healthy Kilo model
+			// on the same wire API via the existing Kilo branch. Proven sessions
+			// and responses requests pass through untouched.
+			const zenFailover = classifyZenChatFailover(parsedBody, target.pathname);
+			if (zenFailover.action === "failover" && parsedBody) {
+				const from = String(parsedBody.model);
+				parsedBody.model = zenFailover.model;
+				isKilo = true;
+				log("info", `zen gated — new chat session failed over ${from} -> ${zenFailover.model}`, { model: from, failover: zenFailover.model }, reqId);
+			}
+
 			const isStream = parsedBody?.stream === true;
 
 			// Stale-registration guard: responses-only models (muse-spark-*) must
@@ -677,6 +731,7 @@ export function startProxy(
 						res.off("close", abortKiloOnClientGone);
 						req.off("error", abortKiloOnClientGone);
 					}
+					if (response.ok) recordUpstreamSuccess("kilo", { sessionKey });
 
 					if (isStream && response.ok && response.body) {
 						const ct =
@@ -839,6 +894,16 @@ export function startProxy(
 								) {
 									rememberIssuerRelay(conversationKey, servedIssuer);
 								}
+								// Upstream degradation tracking: successes prove Zen reachable,
+								// 403 free-tier gates feed the health state machine (a 403 never
+								// rolls — it is a terminal upstream verdict, not a relay fault).
+								if (response.ok) {
+									recordUpstreamSuccess("zen", { sessionKey });
+								} else if (response.status === 403 && (response.headers.get("content-type") ?? "").includes("application/json")) {
+									try {
+										recordUpstreamFailure("zen", 403, await response.clone().text());
+									} catch {}
+								}
 
 								if (isStream && response.ok && response.body) {
 									const ct =
@@ -863,7 +928,7 @@ export function startProxy(
 									if (!response.ok) {
 										log("warn", `upstream ${response.status} for model ${String((parsedBody as Record<string, unknown> | null)?.model ?? "?")} via relay`, { status: response.status, model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url }, reqId);
 									}
-									const data = withRateLimitHint(response.status, await response.text());
+									const data = withFreeTierHint(response.status, withRateLimitHint(response.status, await response.text()));
 									const ct =
 										response.headers.get("content-type") ||
 										"application/json";
@@ -971,6 +1036,15 @@ export function startProxy(
 						if (upstreamRes.status >= 400) {
 							log("warn", `direct upstream ${upstreamRes.status} for model ${String(parsedBody?.model ?? "?")} ${target.pathname}`, { status: upstreamRes.status, model: parsedBody?.model, path: target.pathname }, reqId);
 						}
+						// Upstream degradation tracking, mirroring the relay path: successes
+						// prove Zen reachable, 403 free-tier gates feed the health machine.
+						if (upstreamRes.ok) {
+							recordUpstreamSuccess("zen", { sessionKey });
+						} else if (upstreamRes.status === 403 && (upstreamRes.headers.get("content-type") ?? "").includes("application/json")) {
+							try {
+								recordUpstreamFailure("zen", 403, await upstreamRes.clone().text());
+							} catch {}
+						}
 
 						// Natural 429: every relay plus direct is rate-limited — buffer the
 						// JSON error and attach the deploy hint instead of piping it
@@ -979,6 +1053,16 @@ export function startProxy(
 							const data = withRateLimitHint(429, await upstreamRes.text());
 							const ct429 = upstreamRes.headers.get("content-type") || "application/json";
 							res.writeHead(429, { "content-type": ct429 });
+							res.end(data);
+							return;
+						}
+						// Gated upstream: a 403 free-tier gate is a final answer, not a
+						// stream — buffer it and attach the recovery hint instead of
+						// piping it through as a stream body.
+						if (upstreamRes.status === 403) {
+							const data = withFreeTierHint(403, await upstreamRes.text());
+							const ct403 = upstreamRes.headers.get("content-type") || "application/json";
+							res.writeHead(403, { "content-type": ct403 });
 							res.end(data);
 							return;
 						}

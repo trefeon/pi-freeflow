@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.17.0
+
+### Minor Changes
+
+- Automatic upstream degradation: when the shared free-tier gateway starts refusing new sessions, new chat sessions seamlessly use a healthy fallback model on the same API, affected errors carry an actionable hint, in-progress chats are never rerouted, and normal routing resumes automatically on recovery. `/freeflow status` now shows live upstream state.
+
 ## 1.16.0
 
 ### Minor Changes

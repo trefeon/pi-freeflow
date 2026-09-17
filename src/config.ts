@@ -227,6 +227,20 @@ export function resolveOnboardedFlagPath(): string {
  }
 }
 
+export function resolveUpstreamHealthPath(): string {
+ try {
+  const override = dataDirOverride();
+  if (override) return path.join(override, "pi-freeflow-upstream-health.json");
+  return path.join(homedir(), ".pi", "agent", "pi-freeflow-upstream-health.json");
+ } catch {
+  return path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "..",
+   ".upstream-health.json",
+  );
+ }
+}
+
 export const RELAY_STATE_FILE = resolveRelayStatePath();
 export const LOG_FILE = resolveLogFilePath();
 export const CATALOG_CACHE_FILE = resolveCatalogCachePath();

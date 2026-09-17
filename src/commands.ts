@@ -36,6 +36,7 @@ import {
  saveDebugState,
 } from "./logger.ts";
 import { probeRelay } from "./probe.ts";
+import { getUpstreamHealth } from "./upstream-health.ts";
 import {
  buildRelayExport,
  ensureRelay,
@@ -923,7 +924,15 @@ export function createCommandSpec(
      : ""
      }`;
     const stateFileLine = `State file: ${RELAY_STATE_FILE}`;
-    ctx.ui.notify(`${modeLine} | ${poolLine}\n${stateFileLine}`, "info");
+    const upstreamLine = (["zen", "kilo"] as const)
+     .map((u) => {
+      const h = getUpstreamHealth(u);
+      return h.gated
+       ? `${u} gated (${h.consecutiveFreeTier403} fails) — new sessions degraded`
+       : `${u} open`;
+     })
+     .join(" | ");
+    ctx.ui.notify(`${modeLine} | ${poolLine}\n${stateFileLine}\nUpstream: ${upstreamLine}`, "info");
    } else if (sub === "kill" || sub === "stop" || sub === "shutdown") {
     const port = getClientPort() || PORT;
     try {
