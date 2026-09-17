@@ -62,7 +62,7 @@ To prevent network burst storms when multiple subagents boot simultaneously, the
 - **Location**: `~/.pi/agent/pi-freeflow-catalog-cache.json`
 - **TTL**: 24 hours (86,400,000 ms)
 - **Atomic Write**: Uses a temp file + `fs.renameSync` to prevent corruption under concurrent writes
-- **Boot Speed**: Subagents load all 26 models from disk cache in ~0.1ms
+- **Boot Speed**: Subagents load all 27 models from disk cache in ~0.1ms
 
 ## Stream Lifecycle Safety
 
