@@ -90,6 +90,21 @@ function withRateLimitHint(status: number, data: string): string {
 }
 
 /**
+ * Relay eligibility: only free-catalog models ride relay egress. Returns true
+ * when the model is a non-empty string present in MODEL_MAP or KILO_MODEL_IDS
+ * (Kilo traffic leaves via its own branch regardless), and when the model is
+ * missing/empty (e.g. GET /v1/models carries no body — preserve routing).
+ * Anything else (unknown/paid model ids, non-strings) goes direct upstream.
+ */
+export function isRelayEligibleModel(model: unknown): boolean {
+	if (model === undefined || model === null) return true;
+	if (typeof model !== "string") return false;
+	if (model.trim() === "") return true;
+	const canonical = resolveCanonicalModelId(model.trim());
+	return MODEL_MAP.has(canonical) || KILO_MODEL_IDS.has(canonical);
+}
+
+/**
  * Extract client IP address from incoming HTTP request.
  */
 export function getClientIP(req: http.IncomingMessage): string {
@@ -692,12 +707,18 @@ export function startProxy(
 						res.end(data);
 					}
 				} else {
-					// OpenCode routing — relay when enabled, else direct upstream
+					// OpenCode routing — relay egress is for free-catalog models
+					// only; unknown/paid models go direct upstream.
 					const relayState = getActiveRelayState();
-					const shouldUseRelay =
+					const relayPoolOn =
 						relayState.mode !== "off" &&
 						relayState.enabled !== false &&
 						Boolean(relayState.url || (relayState.relays && relayState.relays.length > 0));
+					const relayEligible = isRelayEligibleModel(parsedBody?.model);
+					const shouldUseRelay = relayPoolOn && relayEligible;
+					if (relayPoolOn && !relayEligible) {
+						log("info", `relay bypass for non-catalog model ${String(parsedBody?.model ?? "?")} — routing direct upstream`, { model: parsedBody?.model }, reqId);
+					}
 					if (shouldUseRelay) {
 						const fullUrl = `${UPSTREAM_OPENCODE}${req.url ?? "/"}`;
 						const activeHost = relayState.url
