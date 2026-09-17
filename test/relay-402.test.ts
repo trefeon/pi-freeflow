@@ -165,6 +165,35 @@ test("relay 402: Vercel edge headers roll even when the body is unreadable", asy
  });
 });
 
+test("relay 402: x-vercel-id alone never rolls a quota 402", async (t) => {
+ await withIsolatedRelayFiles(async () => {
+  setActiveRelayState(poolState(), false);
+  resetAllRelayHealth();
+  _resetRollNotifyForTest();
+
+  const cancelled: number[] = [];
+  const seenUrls: string[] = [];
+  const fetchMock = t.mock.method(globalThis, "fetch", async (input: unknown) => {
+   seenUrls.push(String(input));
+   // Vercel stamps x-vercel-id on EVERY function response, including a
+   // healthy relay forwarding a genuine upstream quota refusal.
+   return stubResponse(
+    402,
+    cancelled,
+    '{"error":{"code":"insufficient_quota","message":"payment required"}}',
+    { "x-vercel-id": "sin1::abc-123", server: "Vercel" },
+   );
+  });
+
+  const out = await relayFetch(UPSTREAM_URL, { method: "POST" }, "t402d");
+
+  assert.equal(out.status, 402, "quota 402 with routine Vercel headers must surface immediately");
+  assert.equal(fetchMock.mock.callCount(), 1, "routine Vercel headers must not trigger a roll");
+  assert.deepEqual(seenUrls, [RELAY_A], "must stop at the first relay");
+  assert.equal(isRelayHealthy(RELAY_A), true, "healthy relay must not cool down on a quota 402");
+ });
+});
+
 test("relay 402: isRetriableStatus(402) stays false (gated branch, never blanket-retriable)", () => {
  assert.equal(isRetriableStatus(402), false, "402 rolls only through the gated deployment-disabled branch");
 });

@@ -39,23 +39,18 @@ export function isRetriableStatus(status: number): boolean {
 	);
 }
 
-/** Vercel edge markers identifying a relay-host (not upstream) verdict. */
-function hasVercelEdgeMarkers(res: Response): boolean {
-	return (
-		Boolean(res.headers.get("x-vercel-error")) ||
-		Boolean(res.headers.get("x-vercel-id")) ||
-		res.headers.get("server")?.toLowerCase().includes("vercel") === true
-	);
-}
-
 /**
  * Gated 402 roll predicate: a 402 is a relay-host failure only when it
- * carries Vercel edge markers or a DEPLOYMENT_DISABLED body match.
+ * carries the Vercel edge-error marker or a DEPLOYMENT_DISABLED body match.
  * Generic 402s (payment/quota) carry neither and must surface immediately.
+ * Only x-vercel-error qualifies as an edge marker: Vercel stamps x-vercel-id
+ * on EVERY function response, so keying on it would misroll a genuine
+ * upstream quota 402 forwarded by a healthy Vercel-hosted relay — and
+ * wrongly cool that relay down.
  */
 function isRelayDeploymentDisabled(res: Response, bodyText: string | null): boolean {
 	if (res.status !== 402) return false;
-	if (hasVercelEdgeMarkers(res)) return true;
+	if (Boolean(res.headers.get("x-vercel-error"))) return true;
 	return bodyText !== null && bodyText.includes("DEPLOYMENT_DISABLED");
 }
 /**

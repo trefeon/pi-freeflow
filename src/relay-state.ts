@@ -1073,7 +1073,7 @@ export function planRelayImport(
 			},
 			added: installed.length,
 			updated: 0,
-			removed: current.relays.length - installed.length,
+			removed: Math.max(0, current.relays.length - installed.length),
 			skipped,
 		};
 	}
