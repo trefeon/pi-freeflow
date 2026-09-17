@@ -2,7 +2,7 @@
  * Configuration and path resolution for pi-freeflow
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,13 +11,13 @@ import { readFileSync } from "node:fs";
 // Package version — stale-daemon detection in the shared-port reuse path.
 let PKG_VERSION = "0.0.0";
 try {
-	const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "../package.json");
-	const raw: unknown = JSON.parse(readFileSync(pkgPath, "utf8"));
-	if (raw && typeof raw === "object" && "version" in raw) {
-		const v = raw.version;
-		if (typeof v === "string" && v) PKG_VERSION = v;
-	}
-} catch {}
+ const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "../package.json");
+ const raw: unknown = JSON.parse(readFileSync(pkgPath, "utf8"));
+ if (raw && typeof raw === "object" && "version" in raw) {
+  const v = raw.version;
+  if (typeof v === "string" && v) PKG_VERSION = v;
+ }
+} catch { }
 export { PKG_VERSION };
 
 // ── Upstream endpoints ──────────────────────────────────────────────
@@ -31,32 +31,73 @@ export const LEGACY_PORT = 18080;
 export const HOST = "127.0.0.1";
 
 export function resolvePort(): number {
-	const envPort = process.env.FREEFLOW_PORT;
-	if (envPort) {
-		const parsed = Number(envPort);
-		if (Number.isFinite(parsed) && parsed > 0 && parsed <= 65535) {
-			return parsed;
-		}
-	}
-	return DEFAULT_PORT;
+ const envPort = process.env.PI_FREEFLOW_PORT;
+ if (envPort) {
+  const parsed = Number(envPort);
+  if (Number.isFinite(parsed) && parsed > 0 && parsed <= 65535) {
+   return parsed;
+  }
+ }
+ return DEFAULT_PORT;
 }
 
 export const PORT = resolvePort();
 
 // ── OpenCode client headers ─────────────────────────────────────────
-export const OPENCODE_USER_AGENT = "opencode/latest/1.14.50/cli";
+export const OPENCODE_VERSION = "1.18.31";
+export const OPENCODE_USER_AGENT = `opencode/${OPENCODE_VERSION}`;
 export const OPENCODE_CLIENT = "cli";
-export const OPENCODE_PROJECT = "default";
-export const OPENCODE_SESSION = randomUUID();
+// OpenCode project ID: 40-character sha1 hex hash
+export const OPENCODE_PROJECT = createHash("sha1")
+ .update("git-remote:github.com/anomalyco/opencode")
+ .digest("hex");
+
+const ID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+let idTimestamp = 0;
+let idCounter = 0;
+
+/**
+ * Generate a 26-character Crockford/base62 OpenCode-compatible identifier.
+ * Matches packages/schema/src/identifier.ts in anomalyco/opencode:
+ * 12 hex characters encoding inverted (descending) or direct (ascending) timestamp,
+ * followed by 14 random base62 characters.
+ */
+export function createOpenCodeId(descending: boolean, timestamp = Date.now()): string {
+ if (timestamp !== idTimestamp) {
+  idTimestamp = timestamp;
+  idCounter = 0;
+ }
+ idCounter++;
+
+ const current = BigInt(timestamp) * 0x1000n + BigInt(idCounter);
+ const value = descending ? ~current : current;
+ const time = Array.from({ length: 6 }, (_, index) =>
+  Number((value >> BigInt(40 - 8 * index)) & 0xffn)
+   .toString(16)
+   .padStart(2, "0"),
+ ).join("");
+ const bytes = randomBytes(14);
+ return time + Array.from(bytes, (byte) => ID_CHARS[byte % 62]).join("");
+}
+
+export function createOpenCodeSessionId(): string {
+ return `ses_${createOpenCodeId(true)}`;
+}
+
+export function createOpenCodeRequestId(): string {
+ return `msg_${createOpenCodeId(false)}`;
+}
+
+export const OPENCODE_SESSION = createOpenCodeSessionId();
 
 export function opencodeHeaders(): Record<string, string> {
-	return {
-		"User-Agent": OPENCODE_USER_AGENT,
-		"x-opencode-client": OPENCODE_CLIENT,
-		"x-opencode-project": OPENCODE_PROJECT,
-		"x-opencode-session": OPENCODE_SESSION,
-		"x-opencode-request": randomUUID(),
-	};
+ return {
+  "User-Agent": OPENCODE_USER_AGENT,
+  "x-opencode-client": OPENCODE_CLIENT,
+  "x-opencode-project": OPENCODE_PROJECT,
+  "x-opencode-session": OPENCODE_SESSION,
+  "x-opencode-request": createOpenCodeRequestId(),
+ };
 }
 
 // ── Relay and Deployment constants ──────────────────────────────────
@@ -73,19 +114,19 @@ export const PATH_TRAVERSAL_PATTERN = /\.\./;
 export const ALLOWED_METHODS = new Set(["GET", "POST", "OPTIONS", "HEAD"]);
 
 export const STRIP_HEADERS = new Set([
-	"authorization",
-	"host",
-	"content-length",
-	"x-forwarded-for",
-	"x-forwarded-host",
-	"x-forwarded-proto",
-	"x-real-ip",
-	"x-client-ip",
-	"x-originate-ip",
-	"cookie",
-	"set-cookie",
-	"proxy-connection",
-	"proxy-authorization",
+ "authorization",
+ "host",
+ "content-length",
+ "x-forwarded-for",
+ "x-forwarded-host",
+ "x-forwarded-proto",
+ "x-real-ip",
+ "x-client-ip",
+ "x-originate-ip",
+ "cookie",
+ "set-cookie",
+ "proxy-connection",
+ "proxy-authorization",
 ]);
 
 /** Env override that re-roots ALL pi-freeflow data files (tests/CI sandbox).
@@ -93,97 +134,97 @@ export const STRIP_HEADERS = new Set([
 export const DATA_DIR_ENV = "PI_FREEFLOW_DATA_DIR";
 
 function dataDirOverride(): string | null {
-	const d = process.env[DATA_DIR_ENV];
-	return typeof d === "string" && d.trim() !== "" ? d : null;
+ const d = process.env[DATA_DIR_ENV];
+ return typeof d === "string" && d.trim() !== "" ? d : null;
 }
 
 export function resolveRelayStatePath(): string {
-	try {
-		const override = dataDirOverride();
-		if (override) return path.join(override, "pi-freeflow-relay-state.json");
-		return path.join(homedir(), ".pi", "agent", "pi-freeflow-relay-state.json");
-	} catch {
-		return path.join(
-			path.dirname(fileURLToPath(import.meta.url)),
-			"..",
-			".relay-state.json",
-		);
-	}
+ try {
+  const override = dataDirOverride();
+  if (override) return path.join(override, "pi-freeflow-relay-state.json");
+  return path.join(homedir(), ".pi", "agent", "pi-freeflow-relay-state.json");
+ } catch {
+  return path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "..",
+   ".relay-state.json",
+  );
+ }
 }
 
 export function resolveLogFilePath(): string {
-	try {
-		const override = dataDirOverride();
-		if (override) return path.join(override, "pi-freeflow.log");
-		return path.join(homedir(), ".pi", "agent", "pi-freeflow.log");
-	} catch {
-		return path.join(
-			path.dirname(fileURLToPath(import.meta.url)),
-			"..",
-			"pi-freeflow.log",
-		);
-	}
+ try {
+  const override = dataDirOverride();
+  if (override) return path.join(override, "pi-freeflow.log");
+  return path.join(homedir(), ".pi", "agent", "pi-freeflow.log");
+ } catch {
+  return path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "..",
+   "pi-freeflow.log",
+  );
+ }
 }
 
 export function resolveCatalogCachePath(): string {
-	try {
-		const override = dataDirOverride();
-		if (override) return path.join(override, "pi-freeflow-catalog-cache.json");
-		return path.join(
-			homedir(),
-			".pi",
-			"agent",
-			"pi-freeflow-catalog-cache.json",
-		);
-	} catch {
-		return path.join(
-			path.dirname(fileURLToPath(import.meta.url)),
-			"..",
-			".catalog-cache.json",
-		);
-	}
+ try {
+  const override = dataDirOverride();
+  if (override) return path.join(override, "pi-freeflow-catalog-cache.json");
+  return path.join(
+   homedir(),
+   ".pi",
+   "agent",
+   "pi-freeflow-catalog-cache.json",
+  );
+ } catch {
+  return path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "..",
+   ".catalog-cache.json",
+  );
+ }
 }
 
 export function resolveDebugStatePath(): string {
-	try {
-		const override = dataDirOverride();
-		if (override) return path.join(override, "pi-freeflow-debug.json");
-		return path.join(homedir(), ".pi", "agent", "pi-freeflow-debug.json");
-	} catch {
-		return path.join(
-			path.dirname(fileURLToPath(import.meta.url)),
-			"..",
-			".debug-state.json",
-		);
-	}
+ try {
+  const override = dataDirOverride();
+  if (override) return path.join(override, "pi-freeflow-debug.json");
+  return path.join(homedir(), ".pi", "agent", "pi-freeflow-debug.json");
+ } catch {
+  return path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "..",
+   ".debug-state.json",
+  );
+ }
 }
 
 export function resolveUpdateCachePath(): string {
-	try {
-		const override = dataDirOverride();
-		if (override) return path.join(override, "pi-freeflow-update.json");
-		return path.join(homedir(), ".pi", "agent", "pi-freeflow-update.json");
-	} catch {
-		return path.join(
-			path.dirname(fileURLToPath(import.meta.url)),
-			"..",
-			".update-cache.json",
-		);
-	}
+ try {
+  const override = dataDirOverride();
+  if (override) return path.join(override, "pi-freeflow-update.json");
+  return path.join(homedir(), ".pi", "agent", "pi-freeflow-update.json");
+ } catch {
+  return path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "..",
+   ".update-cache.json",
+  );
+ }
 }
 
 export function resolveOnboardedFlagPath(): string {
-	try {
-		const override = dataDirOverride();
-		if (override) return path.join(override, "pi-freeflow-onboarded");
-		return path.join(homedir(), ".pi", "agent", "pi-freeflow-onboarded");
-	} catch {
-		return path.join(
-			path.dirname(fileURLToPath(import.meta.url)),
-			"..",
-			".onboarded",
-		);
-	}
+ try {
+  const override = dataDirOverride();
+  if (override) return path.join(override, "pi-freeflow-onboarded");
+  return path.join(homedir(), ".pi", "agent", "pi-freeflow-onboarded");
+ } catch {
+  return path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "..",
+   ".onboarded",
+  );
+ }
 }
 
 export const RELAY_STATE_FILE = resolveRelayStatePath();
@@ -200,6 +241,8 @@ export const ALLOW_UNSAFE_RELAY_ENV = "PI_FREEFLOW_ALLOW_UNSAFE_RELAY";
 export const NO_KILL_ENV = ALLOW_UNSAFE_RELAY_ENV.replace("_ALLOW_UNSAFE_RELAY", "_NO_KILL");
 /** When "0", the extension never spawns a detached proxy daemon (tests/CI). */
 export const DAEMON_SPAWN_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_SPAWN");
+/** Explicit runtime executable path for daemon.ts (overrides process.execPath and PATH search). */
+export const DAEMON_RUNTIME_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_RUNTIME");
 /** Lease TTL for attached clients (ms); expired leases are dropped by the daemon GC. */
 export const DAEMON_TTL_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_TTL_MS");
 /** Client heartbeat interval (ms) — must stay well under the lease TTL. */
@@ -216,12 +259,12 @@ export const DAEMON_CONTROL_TIMEOUT_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "
 export const DAEMON_WATCHDOG_MS_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_WATCHDOG_MS");
 
 function envMs(name: string, fallback: number): number {
-	const raw = process.env[name];
-	if (raw) {
-		const parsed = Number(raw);
-		if (Number.isFinite(parsed) && parsed > 0) return parsed;
-	}
-	return fallback;
+ const raw = process.env[name];
+ if (raw) {
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+ }
+ return fallback;
 }
 
 const IS_WINDOWS_HOST = process.platform === "win32";
