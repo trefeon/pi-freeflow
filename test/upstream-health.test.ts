@@ -13,15 +13,18 @@ import { isKiloModel } from "../src/models.ts";
 import {
  _resetFreeTierHintForTest,
  _resetUpstreamHealthForTest,
- decideZenChatRoute,
+ decideZenRoute,
  getUpstreamHealth,
  isFreeTierGate,
  isUnprovenSession,
  isUpstreamGated,
- pickChatFailoverModel,
+ pickFailoverModel,
  recordUpstreamFailure,
  recordUpstreamSuccess,
+ rejectionFingerprint,
+ rememberGateRejection,
  sessionKeyOf,
+ wasGateRejected,
  withFreeTierHint,
 } from "../src/upstream-health.ts";
 
@@ -221,7 +224,7 @@ test("chat routing passes proven sessions through while gated", () => {
   recordUpstreamFailure("zen", 403, GATE_BODY);
   recordUpstreamFailure("zen", 403, GATE_BODY);
   assert.equal(
-   decideZenChatRoute(
+   decideZenRoute(
     {
      messages: [
       { role: "user", content: "hi" },
@@ -239,12 +242,12 @@ test("chat routing fails fresh sessions over while gated", () => {
  withIsolatedHealthFiles(() => {
   recordUpstreamFailure("zen", 403, GATE_BODY);
   recordUpstreamFailure("zen", 403, GATE_BODY);
-  const route = decideZenChatRoute(
+  const route = decideZenRoute(
    { messages: [{ role: "user", content: "hi" }] },
    "/v1/chat/completions",
   );
   assert.ok(route === "canary" || route === "failover");
-  const second = decideZenChatRoute(
+  const second = decideZenRoute(
    { messages: [{ role: "user", content: "hi" }] },
    "/v1/chat/completions",
   );
@@ -255,7 +258,7 @@ test("chat routing fails fresh sessions over while gated", () => {
 test("chat routing passes everything through while ungated", () => {
  withIsolatedHealthFiles(() => {
   assert.equal(
-   decideZenChatRoute(
+   decideZenRoute(
     { messages: [{ role: "user", content: "hi" }] },
     "/v1/chat/completions",
    ),
@@ -268,7 +271,7 @@ test("chat routing passes everything through while ungated", () => {
 
 test("failover model choice is a Kilo model", () => {
  withIsolatedHealthFiles(() => {
-  const id = pickChatFailoverModel();
+  const id = pickFailoverModel();
   assert.equal(typeof id, "string");
   assert.ok(id.length > 0);
   assert.equal(isKiloModel(id), true);
@@ -289,5 +292,49 @@ test("403 gate bodies gain a hint; everything else passes through byte-identical
   assert.equal(withFreeTierHint(403, PLAIN_TEXT_BODY), PLAIN_TEXT_BODY);
   const ok = JSON.stringify({ ok: true });
   assert.equal(withFreeTierHint(200, ok), ok);
+ });
+});
+
+// ── Gate-rejection memory (resume auto-fix) ─────────────────────────────
+
+test("gate rejections are remembered by key, then forgotten on recovery", () => {
+ withIsolatedHealthFiles(() => {
+  const body = { model: "muse-spark-1.3-contributor-free", input: "hi", prompt_cache_key: "sess-resume-1" };
+  assert.equal(wasGateRejected(body, "/v1/responses"), false);
+  rememberGateRejection(body, "/v1/responses", 403, GATE_BODY);
+  assert.equal(wasGateRejected(body, "/v1/responses"), true);
+  assert.equal(
+   wasGateRejected({ model: "muse-spark-1.3-contributor-free", input: "other" }, "/v1/responses"),
+   false,
+   "different sessions are unaffected",
+  );
+  recordUpstreamSuccess("zen", { canary: true });
+  assert.equal(wasGateRejected(body, "/v1/responses"), false, "recovery drops rejection memory");
+ });
+});
+
+test("keyless chat replays fingerprint by content; non-gates never prime", () => {
+ withIsolatedHealthFiles(() => {
+  const replay = {
+   model: "big-pickle",
+   messages: [
+    { role: "user", content: "first" },
+    { role: "assistant", content: "reply" },
+    { role: "user", content: "again" },
+   ],
+  };
+  assert.ok(typeof rejectionFingerprint(replay, "/v1/chat/completions") === "string");
+  assert.equal(rejectionFingerprint(null, "/v1/chat/completions"), null);
+  rememberGateRejection(replay, "/v1/chat/completions", 403, OTHER_403_BODY);
+  assert.equal(wasGateRejected(replay, "/v1/chat/completions"), false, "non-gate verdicts never prime");
+  rememberGateRejection(replay, "/v1/chat/completions", 500, GATE_BODY);
+  assert.equal(wasGateRejected(replay, "/v1/chat/completions"), false, "non-403 statuses never prime");
+  rememberGateRejection(replay, "/v1/chat/completions", 403, GATE_BODY);
+  assert.equal(wasGateRejected(replay, "/v1/chat/completions"), true);
+  assert.equal(
+   wasGateRejected({ model: "big-pickle", messages: [{ role: "user", content: "fresh" }] }, "/v1/chat/completions"),
+   false,
+   "different content hashes differently",
+  );
  });
 });

@@ -1,26 +1,30 @@
 /**
- * Zen upstream degradation: gate tracking, new-session chat failover, 403 hint.
+ * Zen upstream degradation: gate tracking, chat + responses failover, 403
+ * hint, canary recovery, and resume auto-fix (a session Zen just refused
+ * fails over on retry instead of replaying the refusal).
  *
- * Two consecutive 403 free-tier gates trip the Zen gate; afterwards new
- * (never proven) chat sessions fail over to a healthy Kilo model on the same
- * wire API while proven sessions and responses requests pass through.
- * Upstream is a stubbed global fetch (localhost seam passthrough) — no network.
+ * Two consecutive 403 free-tier gates trip the Zen gate; afterwards refused
+ * and fresh sessions fail over to a healthy Kilo model on the same wire API
+ * while working sessions pass through. Upstream is a stubbed global fetch
+ * (localhost seam passthrough) — no network.
  */
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-import { classifyZenChatFailover, startProxy } from "../src/proxy.ts";
+import { classifyZenFailover, startProxy } from "../src/proxy.ts";
 import {
- decideZenChatRoute,
+ decideZenRoute,
  _resetFreeTierHintForTest,
  _resetUpstreamHealthForTest,
  isUpstreamGated,
  recordUpstreamFailure,
  recordUpstreamSuccess,
+ rememberGateRejection,
  withFreeTierHint,
 } from "../src/upstream-health.ts";
+import { prepareResponsesFailoverBody } from "../src/responses.ts";
 import { isRetriableStatus } from "../src/relay.ts";
 import {
  getActiveRelayState,
@@ -33,6 +37,7 @@ import { KILO_MODEL_IDS, resolveCanonicalModelId } from "../src/models.ts";
 const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
 const TEST_PORT = 19291;
 const ZEN_MODEL = "mimo-v2.5-free";
+const RESPONSES_MODEL = "muse-spark-1.3-contributor-free";
 const GATE_BODY = JSON.stringify({
  error: {
   code: "FreeTierError",
@@ -97,17 +102,32 @@ function newChat(text = "hello"): Record<string, unknown> {
  return JSON.parse(chatBody(ZEN_MODEL, text));
 }
 
+function responsesBody(model: string, text: string, key?: string): string {
+ const body: Record<string, unknown> = {
+  model,
+  stream: false,
+  store: false,
+  input: text,
+ };
+ if (key !== undefined) body.prompt_cache_key = key;
+ return JSON.stringify(body);
+}
+
+function newResponses(text = "hello"): Record<string, unknown> {
+ return JSON.parse(responsesBody(RESPONSES_MODEL, text));
+}
+
 // ── Branch decision while ungated ────────────────────────────────────────────
 
 test("degrade: ungated zen chat passes through (kilo/responses/empty too)", () => {
  _resetUpstreamHealthForTest();
  assert.equal(isUpstreamGated("zen"), false);
  assert.deepEqual(
-  classifyZenChatFailover(newChat(), "/v1/chat/completions"),
+  classifyZenFailover(newChat(), "/v1/chat/completions"),
   { action: "passthrough" },
  );
  assert.deepEqual(
-  classifyZenChatFailover(
+  classifyZenFailover(
    JSON.parse(chatBody("nemotron-3-nano-omni", "hello")),
    "/v1/chat/completions",
   ),
@@ -115,15 +135,15 @@ test("degrade: ungated zen chat passes through (kilo/responses/empty too)", () =
   "kilo models never fail over",
  );
  assert.deepEqual(
-  classifyZenChatFailover(newChat(), "/v1/responses"),
+  classifyZenFailover(newChat(), "/v1/responses"),
   { action: "passthrough" },
   "responses-path routing always passes through",
  );
- assert.deepEqual(classifyZenChatFailover(null, "/v1/chat/completions"), {
+ assert.deepEqual(classifyZenFailover(null, "/v1/chat/completions"), {
   action: "passthrough",
  });
  assert.deepEqual(
-  classifyZenChatFailover({ model: 42 }, "/v1/chat/completions"),
+  classifyZenFailover({ model: 42 }, "/v1/chat/completions"),
   { action: "passthrough" },
  );
 });
@@ -140,11 +160,11 @@ test("degrade: two 403 gates trip zen; new chat fails over, proven passes throug
  assert.equal(isUpstreamGated("zen"), true);
 
  assert.equal(
-  decideZenChatRoute(newChat(), "/v1/chat/completions"),
+  decideZenRoute(newChat(), "/v1/chat/completions"),
   "canary",
   "first gated fresh session is the canary and passes through",
  );
- const decision = classifyZenChatFailover(newChat(), "/v1/chat/completions");
+ const decision = classifyZenFailover(newChat(), "/v1/chat/completions");
  assert.equal(decision.action, "failover");
  if (decision.action === "failover") {
   assert.ok(
@@ -155,7 +175,7 @@ test("degrade: two 403 gates trip zen; new chat fails over, proven passes throug
 
  recordUpstreamSuccess("zen", { sessionKey: "sess-proven" });
  assert.deepEqual(
-  classifyZenChatFailover(
+  classifyZenFailover(
    JSON.parse(chatBody(ZEN_MODEL, "hello again", "sess-proven")),
    "/v1/chat/completions",
   ),
@@ -170,15 +190,101 @@ test("degrade: two 403 gates trip zen; new chat fails over, proven passes throug
   { role: "user", content: "follow-up" },
  ];
  assert.deepEqual(
-  classifyZenChatFailover(multiTurn, "/v1/chat/completions"),
+  classifyZenFailover(multiTurn, "/v1/chat/completions"),
   { action: "passthrough" },
   "multi-turn continuations pass through while gated",
  );
+ assert.deepEqual(classifyZenFailover(newResponses(), "/v1/chat/completions"), {
+  action: "passthrough",
+ });
+ const respDecision = classifyZenFailover(newResponses(), "/v1/responses");
+ assert.equal(respDecision.action, "failover");
+ if (respDecision.action === "failover") {
+  assert.ok(
+   KILO_MODEL_IDS.has(resolveCanonicalModelId(respDecision.model)),
+   `responses failover target must be a Kilo model, got ${respDecision.model}`,
+  );
+ }
+});
+
+test("degrade: first gated fresh session is the canary, crossed bodies pass through", () => {
+ _resetUpstreamHealthForTest();
+ recordUpstreamFailure("zen", 403, GATE_BODY);
+ recordUpstreamFailure("zen", 403, GATE_BODY);
+ assert.equal(isUpstreamGated("zen"), true);
+ assert.deepEqual(classifyZenFailover(newChat(), "/v1/chat/completions"), {
+  action: "canary",
+ });
+ const respFirst = classifyZenFailover(newResponses(), "/v1/responses");
+ assert.equal(respFirst.action, "failover");
+ if (respFirst.action === "failover") {
+  assert.ok(
+   KILO_MODEL_IDS.has(resolveCanonicalModelId(respFirst.model)),
+   `responses failover target must be a Kilo model, got ${respFirst.model}`,
+  );
+ }
  assert.deepEqual(
-  classifyZenChatFailover(newChat(), "/v1/responses"),
+  classifyZenFailover(newChat(), "/v1/responses"),
   { action: "passthrough" },
-  "responses requests always pass through while gated",
+  "crossed bodies never fail over",
  );
+ recordUpstreamSuccess("zen", { canary: true });
+ assert.equal(isUpstreamGated("zen"), false, "canary success clears the gate");
+ _resetUpstreamHealthForTest();
+});
+
+test("degrade: refused sessions fail over on retry, even proven or multi-turn", () => {
+ _resetUpstreamHealthForTest();
+ recordUpstreamFailure("zen", 403, GATE_BODY);
+ recordUpstreamFailure("zen", 403, GATE_BODY);
+ assert.equal(isUpstreamGated("zen"), true);
+
+ const resumedChat = JSON.parse(chatBody(ZEN_MODEL, "resumed hello", "sess-resumed-chat"));
+ resumedChat.messages.push({ role: "assistant", content: "old reply" });
+ resumedChat.messages.push({ role: "user", content: "resumed hello" });
+ assert.deepEqual(
+  classifyZenFailover(resumedChat, "/v1/chat/completions"),
+  { action: "passthrough" },
+  "multi-turn replays pass through until refused",
+ );
+ rememberGateRejection(resumedChat, "/v1/chat/completions", 403, GATE_BODY);
+ const retry = classifyZenFailover(resumedChat, "/v1/chat/completions");
+ assert.equal(retry.action, "failover", "refused replay fails over on retry");
+
+ const keyed = JSON.parse(responsesBody(RESPONSES_MODEL, "resume me", "sess-resumed-resp"));
+ recordUpstreamSuccess("zen", { sessionKey: "sess-resumed-resp" });
+ assert.deepEqual(
+  classifyZenFailover(keyed, "/v1/responses"),
+  { action: "passthrough" },
+  "proven sessions pass through until refused",
+ );
+ rememberGateRejection(keyed, "/v1/responses", 403, GATE_BODY);
+ assert.equal(
+  classifyZenFailover(keyed, "/v1/responses").action,
+  "failover",
+  "proven-but-refused sessions fail over on retry",
+ );
+ _resetUpstreamHealthForTest();
+});
+
+test("degrade: responses failover bodies drop Zen-bound state", () => {
+ const fresh = newResponses();
+ prepareResponsesFailoverBody(fresh);
+ assert.equal(fresh.model, RESPONSES_MODEL);
+ assert.ok(!("previous_response_id" in fresh));
+
+ const resumed = newResponses();
+ resumed.previous_response_id = "resp_zen_123";
+ resumed.input = [
+  { type: "message", role: "user", content: "hi" },
+  { type: "reasoning", encrypted_content: "zen-blob", summary: [] },
+ ];
+ prepareResponsesFailoverBody(resumed);
+ assert.ok(!("previous_response_id" in resumed));
+ assert.ok(Array.isArray(resumed.input));
+ const [first, second] = resumed.input;
+ assert.ok(typeof first === "object" && first !== null && "type" in first && first.type === "message");
+ assert.ok(typeof second === "object" && second !== null && !("encrypted_content" in second));
 });
 
 test("degrade: non-gate failures never trip the zen gate", () => {
@@ -260,6 +366,13 @@ test("degrade e2e: gate x2 then new chat served as Kilo, proven stays on zen", a
      body,
     });
 
+   const postResponses = (body: string): Promise<Response> =>
+    fetch(`${localPrefix}/v1/responses`, {
+     method: "POST",
+     headers: { "content-type": "application/json" },
+     body,
+    });
+
    const provenFirst = await post(
     chatBody(ZEN_MODEL, "proven-e2e hello", "e2e-proven-1"),
    );
@@ -306,6 +419,28 @@ test("degrade e2e: gate x2 then new chat served as Kilo, proven stays on zen", a
     "zen",
     "proven sessions keep passing through to zen while gated",
    );
+
+   const respServed = await postResponses(
+    responsesBody(RESPONSES_MODEL, "e2e-resp-fresh"),
+   );
+   assert.equal(respServed.status, 200, "fresh responses fail over while gated");
+   const respBody: Record<string, unknown> = await respServed.json();
+   assert.equal(respBody.served_by, "kilo");
+   assert.ok(
+    KILO_MODEL_IDS.has(resolveCanonicalModelId(String(respBody.model))),
+    `responses failover must serve a Kilo model, got ${String(respBody.model)}`,
+   );
+
+   const resumed = JSON.parse(chatBody(ZEN_MODEL, "e2e resumed hello"));
+   resumed.messages.push({ role: "assistant", content: "old reply" });
+   resumed.messages.push({ role: "user", content: "e2e resumed hello" });
+   const resumedText = JSON.stringify(resumed);
+   const refused = await post(resumedText);
+   assert.equal(refused.status, 403, "resumed replay passes through until refused");
+   const healed = await post(resumedText);
+   assert.equal(healed.status, 200, "resumed retry fails over after the refusal");
+   const healedBody: Record<string, unknown> = await healed.json();
+   assert.equal(healedBody.served_by, "kilo");
   } finally {
    _resetUpstreamHealthForTest();
    _resetFreeTierHintForTest();

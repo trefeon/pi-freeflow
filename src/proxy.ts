@@ -23,6 +23,7 @@ import {
 	BASE_PORT_REPROBE_MS,
 	HOST,
 	KILO_CHAT_URL,
+	KILO_RESPONSES_URL,
 	PATH_TRAVERSAL_PATTERN,
 	MAX_BODY_BYTES,
 	PORT,
@@ -38,6 +39,7 @@ import { relayFetch } from "./relay.ts";
 import { getActiveRelayState, orderedRelayCandidates } from "./relay-state.ts";
 import {
 	issuerRelayFor,
+	prepareResponsesFailoverBody,
 	rejectedReasoningCount,
 	rememberIssuerRelay,
 	rememberRejectedReasoning,
@@ -48,13 +50,15 @@ import {
 } from "./responses.ts";
 import { pipeUpstreamStream } from "./stream-pipe.ts";
 import {
-	decideZenChatRoute,
+	decideZenRoute,
 	isUnprovenSession,
 	isUpstreamGated,
-	pickChatFailoverModel,
+	pickFailoverModel,
 	recordUpstreamFailure,
 	recordUpstreamSuccess,
+	rememberGateRejection,
 	sessionKeyOf,
+	wasGateRejected,
 	withFreeTierHint,
 } from "./upstream-health.ts";
 
@@ -116,31 +120,44 @@ export function isRelayEligibleModel(model: unknown): boolean {
 
 /**
  * Failing-over decision for a canonicalized request body. Returns failover
- * with a Kilo model id only when every gate holds: Zen upstream model, chat
- * completions path, Zen currently gated, session never proven working, the
- * health machine routes this session to failover, and a healthy Kilo model
- * is available. Anything else passes through untouched — responses requests
- * always pass through, and proven sessions are never rerouted.
+ * with a Kilo model id when a healthy Kilo model is available and either the
+ * session already ate a gate 403 (retried/resumed refusals fail over at once,
+ * even ungated — replaying a known refusal can never succeed), or every gate
+ * holds: Zen upstream model, a path whose body shape matches (chat bodies on
+ * chat completions, responses bodies on responses — Kilo serves both natively
+ * but a crossed body would 400), Zen currently gated, session never proven
+ * working, and the health machine routes this session to failover. Canary
+ * sessions pass through carrying the recovery probe; anything else passes
+ * through untouched — working sessions are never rerouted.
  */
-export type ZenChatFailoverDecision =
+export type ZenFailoverDecision =
 	| { action: "failover"; model: string }
+	| { action: "canary" }
 	| { action: "passthrough" };
-export function classifyZenChatFailover(
+export function classifyZenFailover(
 	parsedBody: Record<string, unknown> | null,
 	pathname: string,
-): ZenChatFailoverDecision {
+): ZenFailoverDecision {
 	if (!parsedBody || typeof parsedBody.model !== "string") return { action: "passthrough" };
 	if (getModelUpstream(parsedBody.model) !== "opencode") return { action: "passthrough" };
-	if (!pathname.endsWith("/chat/completions")) return { action: "passthrough" };
-	if (!isUpstreamGated("zen")) return { action: "passthrough" };
-	if (!isUnprovenSession(parsedBody, pathname)) return { action: "passthrough" };
-	const route = decideZenChatRoute(parsedBody, pathname);
-	if (route === "canary") {
-		log("debug", "zen gated — canary chat session passes through to zen");
-		return { action: "passthrough" };
+	const isChatPath = pathname.endsWith("/chat/completions");
+	const isResponsesPath = pathname.endsWith("/responses");
+	if (!isChatPath && !isResponsesPath) return { action: "passthrough" };
+	if (isChatPath && !Array.isArray(parsedBody.messages)) return { action: "passthrough" };
+	if (isResponsesPath && parsedBody.input === undefined) return { action: "passthrough" };
+	if (!wasGateRejected(parsedBody, pathname)) {
+		if (!isUpstreamGated("zen")) return { action: "passthrough" };
+		if (!isUnprovenSession(parsedBody, pathname)) return { action: "passthrough" };
+		const route = decideZenRoute(parsedBody, pathname);
+		if (route === "canary") {
+			log("debug", "zen gated — canary session passes through to zen");
+			return { action: "canary" };
+		}
+		if (route !== "failover") return { action: "passthrough" };
+	} else {
+		log("debug", "zen refused this session before — failing over to Kilo");
 	}
-	if (route !== "failover") return { action: "passthrough" };
-	const pick = pickChatFailoverModel();
+	const pick = pickFailoverModel();
 	if (!pick) return { action: "passthrough" };
 	return { action: "failover", model: pick };
 }
@@ -671,16 +688,20 @@ export function startProxy(
 			} catch {}
 
 			const sessionKey = sessionKeyOf(parsedBody);
-			// Zen free-tier gate failover: while fresh Zen chat sessions are gated
-			// upstream, new (never proven) chat sessions ride a healthy Kilo model
-			// on the same wire API via the existing Kilo branch. Proven sessions
-			// and responses requests pass through untouched.
-			const zenFailover = classifyZenChatFailover(parsedBody, target.pathname);
+			// Zen free-tier gate failover: refused or fresh Zen sessions ride a
+			// healthy Kilo model on the same wire API via the existing Kilo branch.
+			// Working sessions pass through untouched; canary sessions pass through
+			// carrying the recovery probe (their success clears the gate). Responses
+			// bodies are scrubbed of Zen-bound state (chain pointer, reasoning blobs)
+			// Kilo cannot honor before the model swap.
+			const zenFailover = classifyZenFailover(parsedBody, target.pathname);
+			const isCanary = zenFailover.action === "canary";
 			if (zenFailover.action === "failover" && parsedBody) {
 				const from = String(parsedBody.model);
 				parsedBody.model = zenFailover.model;
+				if (target.pathname.endsWith("/responses")) prepareResponsesFailoverBody(parsedBody);
 				isKilo = true;
-				log("info", `zen gated — new chat session failed over ${from} -> ${zenFailover.model}`, { model: from, failover: zenFailover.model }, reqId);
+				log("info", `zen gated — session failed over ${from} -> ${zenFailover.model}`, { model: from, failover: zenFailover.model }, reqId);
 			}
 
 			const isStream = parsedBody?.stream === true;
@@ -712,9 +733,13 @@ export function startProxy(
 					res.once("close", abortKiloOnClientGone);
 					req.once("error", abortKiloOnClientGone);
 					let response: Response;
+					// Kilo serves both wire APIs natively: responses-shaped bodies go to
+					// its responses endpoint, chat bodies to chat completions. Sending a
+					// responses body to the chat URL (or vice versa) would 400.
+					const kiloUrl = target.pathname.endsWith("/responses") ? KILO_RESPONSES_URL : KILO_CHAT_URL;
 					try {
 						response = await relayFetch(
-							KILO_CHAT_URL,
+							kiloUrl,
 							{
 								method: "POST",
 								headers: {
@@ -898,10 +923,12 @@ export function startProxy(
 								// 403 free-tier gates feed the health state machine (a 403 never
 								// rolls — it is a terminal upstream verdict, not a relay fault).
 								if (response.ok) {
-									recordUpstreamSuccess("zen", { sessionKey });
+									recordUpstreamSuccess("zen", { sessionKey, canary: isCanary });
 								} else if (response.status === 403 && (response.headers.get("content-type") ?? "").includes("application/json")) {
 									try {
-										recordUpstreamFailure("zen", 403, await response.clone().text());
+										const gateText = await response.clone().text();
+										recordUpstreamFailure("zen", 403, gateText);
+										rememberGateRejection(parsedBody, target.pathname, 403, gateText);
 									} catch {}
 								}
 
@@ -1039,10 +1066,12 @@ export function startProxy(
 						// Upstream degradation tracking, mirroring the relay path: successes
 						// prove Zen reachable, 403 free-tier gates feed the health machine.
 						if (upstreamRes.ok) {
-							recordUpstreamSuccess("zen", { sessionKey });
+							recordUpstreamSuccess("zen", { sessionKey, canary: isCanary });
 						} else if (upstreamRes.status === 403 && (upstreamRes.headers.get("content-type") ?? "").includes("application/json")) {
 							try {
-								recordUpstreamFailure("zen", 403, await upstreamRes.clone().text());
+								const gateText = await upstreamRes.clone().text();
+								recordUpstreamFailure("zen", 403, gateText);
+								rememberGateRejection(parsedBody, target.pathname, 403, gateText);
 							} catch {}
 						}
 

@@ -1,5 +1,11 @@
 # Changelog
 
+ ## 1.17.1
+
+ ### Patch Changes
+
+ - Assistant and subagent requests now stay working when the shared free-tier gateway refuses sessions: retried and resumed conversations automatically continue on a healthy fallback model instead of repeating the refusal, and normal routing resumes on its own once the gateway recovers.
+
 ## 1.17.0
 
 ### Minor Changes

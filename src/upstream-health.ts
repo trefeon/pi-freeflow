@@ -3,13 +3,12 @@
  *
  * Tracks OpenCode Zen free-tier gating (HTTP 403 FreeTierError: the free
  * tier can only be used from within OpenCode) in a small persisted state
- * machine. While gated, fresh Zen chat sessions fail over to a healthy
- * Kilo model on the same wire API; proven sessions keep their upstream and
- * a periodic canary probes for recovery. Zen responses requests fast-fail
- * with an actionable hint instead of burning retries.
+ * machine. While gated, fresh Zen sessions fail over to a healthy Kilo
+ * model on the same wire API (chat and responses both); proven sessions
+ * keep their upstream and a periodic canary probes for recovery.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { getAliveCatalog } from "./catalog.ts";
@@ -28,9 +27,9 @@ export interface UpstreamHealthSnapshot {
 }
 
 export const GATE_ENTER_AFTER = 2;
-export const FALLBACK_KILO_CHAT_MODEL = "stepfun/step-3.7-flash:free";
+export const FALLBACK_KILO_MODEL = "stepfun/step-3.7-flash:free";
 
-export type ZenChatRoute = "passthrough" | "failover" | "canary";
+export type ZenRoute = "passthrough" | "failover" | "canary";
 
 /** Free-tier gate marker: the free tier only works from inside OpenCode. */
 const GATE_CODE_MARKER = "FreeTierError";
@@ -43,9 +42,9 @@ const FREE_TIER_HINT =
 
 const GATE_ENTER_MESSAGE =
 	"OpenCode's free tier is only available inside OpenCode right now — " +
-	"new chats here will use a fallback model until it recovers.";
+	"new sessions here will use a fallback model until it recovers.";
 const GATE_CLEAR_MESSAGE =
-	"OpenCode's free tier is available again — new chats here are using it.";
+	"OpenCode's free tier is available again — new sessions here are using it.";
 
 /** Established session keys live a day; the table is capped and pruned on save. */
 const SESSION_TTL_MS = 24 * 60 * 60 * 1_000;
@@ -79,6 +78,17 @@ function cleanGate(): GateState {
 
 const gates = new Map<UpstreamName, GateState>();
 const sessions = new Map<string, number>();
+/**
+ * Gate-rejection memory: fingerprints of sessions Zen just refused with a
+ * free-tier gate 403. A retried or resumed session that matches is failed
+ * over immediately instead of replaying the refusal — this is what heals
+ * resumed conversations (multi-turn replays, stale keys) without touching
+ * working traffic. Memory-only (a daemon restart costs one 403 re-prime)
+ * and dropped wholesale when the gate clears.
+ */
+const rejected = new Map<string, number>();
+const REJECTED_TTL_MS = 60 * 60 * 1_000;
+const MAX_REJECTED = 1_000;
 let loaded = false;
 let lastSaveAt = 0;
 let lastGateNotifyAt = 0;
@@ -225,6 +235,71 @@ export function sessionKeyOf(parsedBody: unknown): string | null {
 }
 
 /**
+ * Fingerprint of one request for gate-rejection memory: the stable session
+ * key when the caller sent one, else a hash of model + path + conversation
+ * content (chat messages or responses input). Keyless chat replays hash by
+ * content, so a resumed conversation matches its own refused attempt.
+ */
+export function rejectionFingerprint(parsedBody: unknown, pathname: string): string | null {
+	if (typeof parsedBody !== "object" || parsedBody === null) return null;
+	const key = sessionKeyOf(parsedBody);
+	if (key) return `k:${key}`;
+	const rec = parsedBody as Record<string, unknown>;
+	const content = Array.isArray(rec.messages) ? rec.messages : rec.input;
+	if (content === undefined) return null;
+	const model = typeof rec.model === "string" ? rec.model : "?";
+	return (
+		"h:" +
+		createHash("sha256")
+			.update(`${model}|${String(pathname)}|${JSON.stringify(content)}`, "utf8")
+			.digest("hex")
+	);
+}
+
+function pruneRejected(now: number): void {
+	for (const [fp, expiresAt] of rejected) {
+		if (expiresAt <= now) rejected.delete(fp);
+	}
+	while (rejected.size > MAX_REJECTED) {
+		const oldest = rejected.keys().next();
+		if (oldest.done) break;
+		rejected.delete(oldest.value);
+	}
+}
+
+/**
+ * Remember a session Zen just refused, so its retry fails over instead of
+ * replaying the refusal. Only free-tier gate verdicts prime — anything else
+ * passes through untouched.
+ */
+export function rememberGateRejection(
+	parsedBody: unknown,
+	pathname: string,
+	status: number,
+	bodyText: unknown,
+): void {
+	if (!isFreeTierGate(status, bodyText)) return;
+	const fp = rejectionFingerprint(parsedBody, pathname);
+	if (!fp) return;
+	const now = Date.now();
+	pruneRejected(now);
+	rejected.set(fp, now + REJECTED_TTL_MS);
+}
+
+/** True when this session already ate a gate 403 and its retry should fail over. */
+export function wasGateRejected(parsedBody: unknown, pathname: string): boolean {
+	const fp = rejectionFingerprint(parsedBody, pathname);
+	if (!fp) return false;
+	const expiresAt = rejected.get(fp);
+	if (expiresAt === undefined) return false;
+	if (expiresAt <= Date.now()) {
+		rejected.delete(fp);
+		return false;
+	}
+	return true;
+}
+
+/**
  * True for sessions with no proven history: responses bodies whose key was
  * never established, chat bodies with at most one message and no known key.
  * Fails open (false) for missing bodies.
@@ -241,10 +316,10 @@ export function isUnprovenSession(parsedBody: unknown, pathname: string): boolea
 }
 
 /**
- * Chat routing while degraded: proven sessions and ungated traffic pass
+ * Session routing while degraded: proven sessions and ungated traffic pass
  * through; gated fresh sessions get one canary per window, else failover.
  */
-export function decideZenChatRoute(parsedBody: unknown, pathname: string): ZenChatRoute {
+export function decideZenRoute(parsedBody: unknown, pathname: string): ZenRoute {
 	ensureLoaded();
 	if (!gateOf("zen").gated) return "passthrough";
 	if (!isUnprovenSession(parsedBody, pathname)) return "passthrough";
@@ -259,14 +334,14 @@ export function decideZenChatRoute(parsedBody: unknown, pathname: string): ZenCh
 }
 
 /** First healthy Kilo model id, else the built-in Kilo fallback. */
-export function pickChatFailoverModel(): string {
+export function pickFailoverModel(): string {
 	try {
 		const hit = getAliveCatalog().find(
 			(m) => (m as { source?: string }).source === "kilo" && typeof m.id === "string" && m.id.length > 0,
 		);
 		if (hit) return hit.id;
 	} catch { }
-	return FALLBACK_KILO_CHAT_MODEL;
+	return FALLBACK_KILO_MODEL;
 }
 
 /**
@@ -288,6 +363,12 @@ export function recordUpstreamSuccess(
 	const g = gateOf(upstream);
 	if (opts?.canary === true) {
 		g.lastCanaryAt = now;
+		// A canary success proves Zen serves fresh sessions again, so remembered
+		// refusals are stale whether or not the gate flag was set.
+		if (rejected.size > 0) {
+			rejected.clear();
+			dirty = true;
+		}
 		if (g.gated) {
 			g.gated = false;
 			g.consecutiveFreeTier403 = 0;
@@ -383,6 +464,7 @@ export function withFreeTierHint(status: number, data: string): string {
 export function _resetUpstreamHealthForTest(): void {
 	gates.clear();
 	sessions.clear();
+	rejected.clear();
 	loaded = false;
 	lastSaveAt = 0;
 	lastGateNotifyAt = 0;

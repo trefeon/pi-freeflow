@@ -150,6 +150,25 @@ export function stripReasoningEncryption(raw: Buffer): Buffer | null {
 }
 
 /**
+ * Make a Zen responses body safe to serve from Kilo after failover: drop
+ * the server-side chain pointer Kilo cannot resolve and every caller-bound
+ * reasoning blob Kilo cannot read. Fresh sessions carry neither, so this is
+ * a no-op for them; resumed histories lose cached reasoning for one turn
+ * instead of failing the whole request.
+ */
+export function prepareResponsesFailoverBody(parsedBody: Record<string, unknown>): void {
+	delete parsedBody.previous_response_id;
+	const input = parsedBody.input;
+	if (!Array.isArray(input)) return;
+	for (const item of input) {
+		if (typeof item !== "object" || item === null) continue;
+		const record = item as Record<string, unknown>;
+		if (typeof record[ENCRYPTED_CONTENT] !== "string") continue;
+		delete record[ENCRYPTED_CONTENT];
+	}
+}
+
+/**
  * Remove only the blobs this conversation already had rejected, keeping every
  * blob the current caller issued. Returns null when nothing was rejected yet or
  * no rejected blob is present on this request.
