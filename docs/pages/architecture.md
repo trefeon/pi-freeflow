@@ -34,7 +34,7 @@ src/
 ├── health.ts          # Loopback-only /health endpoint handler
 ├── index.ts           # Extension bootstrap, provider registration, lifecycle hooks
 ├── logger.ts          # Structured, leveled, rotating file logger (10MB x 10)
-├── models.ts          # 26 curated free model definitions and upstream mappings
+├── models.ts          # 27 curated free model definitions and upstream mappings
 ├── probe.ts           # Relay reachability probe (HTTP 200 + latency)
 ├── proxy.ts           # Loopback HTTP proxy server on 28180 with master/worker reuse
 ├── relay.ts           # Multi-cloud relay fetch with failover and direct fallback

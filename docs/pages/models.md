@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **26 curated free models** across two upstream providers: **OpenCode Zen** and **KiloCode Gateway**.
+pi-freeflow provides unified access to **27 curated free models** across two upstream providers: **OpenCode Zen** and **KiloCode Gateway**.
 
 ## Upstream Protocol Distinction
 
@@ -11,16 +11,21 @@ pi-freeflow provides unified access to **26 curated free models** across two ups
 
 ### OpenCode Zen — Chat Completions (`/v1/chat/completions`)
 - **Endpoint**: `https://opencode.ai/zen/v1/chat/completions`
-- **Models**: 6 models (MiMo, Nemotron, Laguna, Big Pickle, Ling, etc.)
+- **Models**: 5 models (MiMo, Nemotron, Big Pickle, Ling, etc.)
 - **Config**: `api: "openai-completions"`, supports reasoning effort
+
+### OpenCode Zen — Messages API (`/v1/messages`)
+- **Endpoint**: `https://opencode.ai/zen/v1/messages`
+- **Models**: `union-alpha` (Union Alpha Free, 262,144 context, 131,072 max output, vision)
+- **Config**: `api: "anthropic-messages"`, no effort levels — the host sends a plain Anthropic body
 
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: `Authorization: Bearer kilo-free` (keyless, 200 req/hr per IP)
 - **Models**: 19 models with OpenRouter-style thinking format
-## 26 Model Specifications
+## 27 Model Specifications
 
-### OpenCode Zen (7 models)
+### OpenCode Zen (8 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -31,6 +36,7 @@ pi-freeflow provides unified access to **26 curated free models** across two ups
 | `nemotron-3-ultra-free` | 1,000,000 | 128,000 | minimal..xhigh | ❌ |
 | `big-pickle` | 200,000 | 32,000 | high, max | ❌ |
 | `ling-3.0-flash-fin-free` | 262,144 | 131,072 | minimal..xhigh | ❌ |
+| `union-alpha` | 262,144 | 131,072 | — *(no effort levels)* | ✅ |
 
 ### KiloCode Gateway (19 models)
 
@@ -62,7 +68,7 @@ pi-freeflow provides unified access to **26 curated free models** across two ups
 
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :--- | :--- | :--- | :--- |
-| **OpenCode Zen** | 7 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat) | Keyless |
+| **OpenCode Zen** | 8 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat + Messages) | Keyless |
 | **KiloCode Gateway** | 19 | `api.kilo.ai` | `/api/gateway/chat/completions` | `Bearer kilo-free` |
 
 ## Stealth previews
