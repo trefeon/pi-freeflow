@@ -110,15 +110,10 @@ test("model aliases resolve correctly to canonical IDs", () => {
 test("every reasoning model declares a thinkingLevelMap so the picker is lockable", () => {
 	// Without a map the host falls back to guessing effort labels. Each
 	// reasoning model must declare its own map (or share the Kilo map).
-	// Exception: union-alpha (reasoning:true, no map) — its effort wire
-	// values are unknown, so the host sends no effort param; the model
-	// answers anyway (live-verified 2026-09-17). Add a map once probed.
+	// union-alpha exposes exactly the levels upstream serves (live-verified
+	// 2026-09-17: low/high/xhigh 200, max 503) — minimal/medium/max hidden.
 	for (const m of ALL_MODELS) {
 		if (!m.reasoning) continue;
-		if (m.id === "union-alpha") {
-			assert.equal(m.thinkingLevelMap, undefined, "union-alpha must stay mapless until effort values are probed");
-			continue;
-		}
 		assert.ok(
 			m.thinkingLevelMap,
 			`${m.id} reasoning:true must declare thinkingLevelMap`,

@@ -135,11 +135,19 @@ export const OPENCODE_MODELS: ModelDef[] = [
 		maxTokens: 131_072,
 		api: "anthropic-messages",
 		input: ["text", "image"],
-		// No thinkingLevelMap: the effort wire values for this endpoint are
-		// unknown, so the host sends no effort param. The model answers
-		// anyway (proven live 2026-09-17: POST /zen/v1/messages streams real
-		// tokens at zero cost). Followup: probe effort values, then add a map.
-	},
+		// Effort wire values verified live 2026-09-17: POST /zen/v1/messages
+		// with output_config.effort returns 200 for low/high/xhigh, 503 for
+		// max. Passed through verbatim so the picker exposes exactly the
+		// levels upstream serves (minimal/medium hidden, unprobed).
+		thinkingLevelMap: {
+			off: null,
+			minimal: null,
+			low: "low",
+			medium: null,
+			high: "high",
+			xhigh: "xhigh",
+			max: null,},
+		},
 ];
 
 /**
