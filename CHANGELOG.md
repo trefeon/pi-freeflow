@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.15.0
+
+### Minor Changes
+
+- Free-tier requests now use native session identifiers and an up-to-date client version, after the upstream gateway began rejecting older formats with a free-tier error. `/freeflow test` also gains an end-to-end chat check that verifies a relay can actually run inference, not just list models.
+
+### Patch Changes
+
+- Requests now roll over to the next relay when the current one answers with a disabled-deployment verdict, instead of failing on the first relay and requiring a manual switch. Other payment and quota refusals still surface immediately.
+
 ## 1.14.0
 
 ### Minor Changes
