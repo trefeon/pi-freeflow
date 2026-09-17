@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.16.0
+
+### Minor Changes
+
+- New free model: Union Alpha Free joins the picker. It answers through a different upstream endpoint than the other free models, handled automatically — 262K context, image input, tool calling, and zero cost like the rest of the catalog.
+
 ## 1.15.2
 
 ### Patch Changes
