@@ -5,6 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
 	ALL_MODELS,
+	MODEL_MAP,
 	OPENCODE_MODELS,
 	KILO_MODELS,
 	KILO_MODEL_IDS,
@@ -109,8 +110,15 @@ test("model aliases resolve correctly to canonical IDs", () => {
 test("every reasoning model declares a thinkingLevelMap so the picker is lockable", () => {
 	// Without a map the host falls back to guessing effort labels. Each
 	// reasoning model must declare its own map (or share the Kilo map).
+	// Exception: union-alpha (reasoning:true, no map) — its effort wire
+	// values are unknown, so the host sends no effort param; the model
+	// answers anyway (live-verified 2026-09-17). Add a map once probed.
 	for (const m of ALL_MODELS) {
 		if (!m.reasoning) continue;
+		if (m.id === "union-alpha") {
+			assert.equal(m.thinkingLevelMap, undefined, "union-alpha must stay mapless until effort values are probed");
+			continue;
+		}
 		assert.ok(
 			m.thinkingLevelMap,
 			`${m.id} reasoning:true must declare thinkingLevelMap`,
@@ -145,6 +153,8 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 		"nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 262_144, reasoning: true },
 		"big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
 		"ling-3.0-flash-fin-free": { ctx: 262_144, max: 131_072, reasoning: true },
+		// Added 2026-09-17 (live-verified: POST /zen/v1/messages streams real tokens, cost 0)
+		"union-alpha": { ctx: 262_144, max: 131_072, reasoning: true },
 		// KiloCode Gateway
 		"dots-studio/dots-3-note-preview:free": { ctx: 512_000, max: 512_000, reasoning: true },
 		"stepfun/step-3.7-flash:free": { ctx: 262_144, max: 262_144, reasoning: true },
@@ -185,4 +195,16 @@ test("new alias map resolves to canonical kilo ids", () => {
 	assert.equal(resolveCanonicalModelId("ling-3.0-flash-vl"), "inclusionai/ling-3.0-flash-vl:free");
 	assert.equal(resolveCanonicalModelId("nex-n2.5-pro"), "nex-agi/nex-n2.5-pro:free");
 	assert.equal(resolveCanonicalModelId("nex-n2.5-mini"), "nex-agi/nex-n2.5-mini:free");
+});
+
+test("union-alpha registered as the first anthropic-messages Zen model", () => {
+	const m = MODEL_MAP.get("union-alpha");
+	assert.ok(m, "union-alpha must be in MODEL_MAP");
+	assert.equal(m!.name, "Union Alpha Free");
+	assert.equal(m!.api, "anthropic-messages");
+	assert.equal(m!.contextWindow, 262_144);
+	assert.equal(m!.maxTokens, 131_072);
+	assert.deepEqual(m!.input, ["text", "image"]);
+	assert.equal(m!.reasoning, true);
+	assert.equal(getModelUpstream("union-alpha"), "opencode");
 });

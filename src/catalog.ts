@@ -77,7 +77,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 26 verified models for 0ms instant availability.
+ * Initialized with all 27 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
 	...m,
@@ -400,6 +400,6 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
 	} catch (err) {
 		logDebug("Failed reading stale catalog cache", { error: String(err) });
 	}
-	// No valid cache — return in-memory static 26 (host will refresh if needed)
+	// No valid cache — return in-memory static 27 (host will refresh if needed)
 	return aliveCatalog;
 }

@@ -23,6 +23,7 @@ const UNKNOWN_MODEL = "gpt-9-ultra-paid";
 test("isRelayEligibleModel allows zen free catalog ids", () => {
 	assert.equal(isRelayEligibleModel(ZEN_FREE), true);
 	assert.equal(isRelayEligibleModel("mimo-v2.5-free"), true);
+	assert.equal(isRelayEligibleModel("union-alpha"), true);
 });
 
 test("isRelayEligibleModel allows kilo free catalog ids", () => {

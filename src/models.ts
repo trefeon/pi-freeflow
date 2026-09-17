@@ -1,8 +1,8 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 26 verified free models:
- * - 7 OpenCode Zen models (2 Responses API + 5 Chat Completions)
+ * Defines the 27 verified free models:
+ * - 8 OpenCode Zen models (2 Responses API + 5 Chat Completions + 1 Anthropic Messages)
  * - 19 KiloCode Keyless Gateway models (18 OpenRouter format + 1 Standard format)
  */
 
@@ -126,6 +126,19 @@ export const OPENCODE_MODELS: ModelDef[] = [
 			high: "high",
 			xhigh: "xhigh",
 			max: null,},
+	},
+	{
+		id: "union-alpha",
+		name: "Union Alpha Free",
+		reasoning: true,
+		contextWindow: 262_144,
+		maxTokens: 131_072,
+		api: "anthropic-messages",
+		input: ["text", "image"],
+		// No thinkingLevelMap: the effort wire values for this endpoint are
+		// unknown, so the host sends no effort param. The model answers
+		// anyway (proven live 2026-09-17: POST /zen/v1/messages streams real
+		// tokens at zero cost). Followup: probe effort values, then add a map.
 	},
 ];
 
@@ -389,7 +402,7 @@ export const KILO_MODEL_IDS = new Set<string>([
 ]);
 
 /**
- * Combined list of all 26 static free models (canonical)
+ * Combined list of all 27 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS];
 

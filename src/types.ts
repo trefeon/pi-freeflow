@@ -2,7 +2,7 @@
  * Core type definitions for pi-freeflow
  */
 
-export type ProviderApi = "openai-completions" | "openai-responses";
+export type ProviderApi = "openai-completions" | "openai-responses" | "anthropic-messages";
 export type Upstream = "opencode" | "kilo";
 
 export type ThinkingLevel =

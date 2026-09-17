@@ -328,6 +328,22 @@ test("F: buildProviderConfig emits the host-compatible provider contract", () =>
 	assert.equal(kilo!.compat?.supportsDeveloperRole, false);
 });
 
+test("F2: buildProviderConfig passes anthropic-messages api through for union-alpha", () => {
+	const cfg = buildProviderConfig(
+		ALL_MODELS.map((m) => ({
+			...m,
+			source: KILO_MODEL_IDS.has(m.id) ? "kilo" : "opencode",
+		})),
+		29752,
+	);
+
+	const union = cfg.models.find((m) => m.id === "union-alpha");
+	assert.ok(union, "union-alpha must be present in provider config");
+	assert.equal(union!.api, "anthropic-messages");
+	assert.equal(union!.contextWindow, 262_144);
+	assert.equal(union!.maxTokens, 131_072);
+});
+
 // ── G. Package manifest contract ──────────────────────────────────────────────
 
 test("G: package.json satisfies the install/distribution contract", () => {
