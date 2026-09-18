@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.19.0
+
+### Minor Changes
+
+- Every tool your agent can use now works on every free model: the proxy translates tool definitions between chat, responses, and messages formats automatically, so built-in tools, MCP server tools, and custom tools all pass through intact on all request types. Strict tool schemas are preserved, and requests sent in one format to another endpoint are converted instead of rejected.
+
 ## 1.18.0
 
 ### Minor Changes

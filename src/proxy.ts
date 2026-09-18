@@ -726,13 +726,18 @@ export function startProxy(
    const isStream = clientRequestedStream;
 
    // Stale-registration guard: responses-only models (muse-spark-*) must
-   // reach upstream via /v1/responses. A chat/completions request for one
-   // means the host still holds a pre-fix provider registration (stale
-   // disk cache or no restart after upgrade) and upstream answers 500.
-   if (!isKilo && typeof parsedBody?.model === "string" && target.pathname.endsWith("/chat/completions")) {
+   // reach upstream via /v1/responses, and messages-only models (union-alpha)
+   // via /v1/messages. A request on the wrong path means the host still holds
+   // a pre-fix provider registration (stale disk cache or no restart after
+   // upgrade) and upstream answers 500.
+   if (!isKilo && typeof parsedBody?.model === "string") {
     const knownDef = MODEL_MAP.get(String(parsedBody.model));
-    if (knownDef?.api === "openai-responses") {
-     log("warn", `model ${String(parsedBody.model)} expects openai-responses but got ${target.pathname} — stale provider registration (restart Pi/OMP after upgrade)`, { model: String(parsedBody.model), path: target.pathname }, reqId);
+    if (target.pathname.endsWith("/chat/completions") && knownDef?.api && knownDef.api !== "openai-completions") {
+     log("warn", `model ${String(parsedBody.model)} expects ${knownDef.api} but got ${target.pathname} — stale provider registration (restart Pi/OMP after upgrade)`, { model: String(parsedBody.model), path: target.pathname }, reqId);
+    } else if (target.pathname.endsWith("/messages") && knownDef?.api && knownDef.api !== "anthropic-messages") {
+     log("warn", `model ${String(parsedBody.model)} expects ${knownDef.api} but got ${target.pathname} — stale provider registration (restart Pi/OMP after upgrade)`, { model: String(parsedBody.model), path: target.pathname }, reqId);
+    } else if (target.pathname.endsWith("/responses") && knownDef?.api && knownDef.api !== "openai-responses") {
+     log("warn", `model ${String(parsedBody.model)} expects ${knownDef.api} but got ${target.pathname} — stale provider registration (restart Pi/OMP after upgrade)`, { model: String(parsedBody.model), path: target.pathname }, reqId);
     }
    }
    try {
