@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.18.0
+
+### Minor Changes
+
+- OpenCode free-tier client fingerprinting: plain chat, subagent, evaluation, and background watchdog requests now pass upstream free-tier gates without error. The proxy automatically supplies compatibility tools and streaming conventions expected by the upstream gateway, while transparently converting responses to standard non-streaming format for callers that request it.
+
  ## 1.17.1
 
  ### Patch Changes

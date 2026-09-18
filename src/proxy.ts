@@ -18,54 +18,58 @@ import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
 import { getAliveCatalog } from "./catalog.ts";
 import {
-	ALLOWED_METHODS,
-	ALLOWED_PATH_PATTERN,
-	BASE_PORT_REPROBE_MS,
-	HOST,
-	KILO_CHAT_URL,
-	KILO_RESPONSES_URL,
-	PATH_TRAVERSAL_PATTERN,
-	MAX_BODY_BYTES,
-	PORT,
-	UPSTREAM_HEADER_TIMEOUT_MS,
-	UPSTREAM_OPENCODE,
-	opencodeHeaders,
+ ALLOWED_METHODS,
+ ALLOWED_PATH_PATTERN,
+ BASE_PORT_REPROBE_MS,
+ HOST,
+ KILO_CHAT_URL,
+ KILO_RESPONSES_URL,
+ PATH_TRAVERSAL_PATTERN,
+ MAX_BODY_BYTES,
+ PORT,
+ UPSTREAM_HEADER_TIMEOUT_MS,
+ UPSTREAM_OPENCODE,
+ opencodeHeaders,
 } from "./config.ts";
 
+import {
+ convertSseToJson,
+ enforceOpencodeFingerprint,
+} from "./opencode-fingerprint.ts";
 import { isDebugEnabled, log } from "./logger.ts";
 import { getModelUpstream, KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
 import { relayFetch } from "./relay.ts";
 import { getActiveRelayState, orderedRelayCandidates } from "./relay-state.ts";
 import {
-	issuerRelayFor,
-	prepareResponsesFailoverBody,
-	rejectedReasoningCount,
-	rememberIssuerRelay,
-	rememberRejectedReasoning,
-	responsesConversationKey,
-	stripRejectedReasoning,
-	stripReasoningEncryption,
-	isReasoningCallerMismatch,
+ issuerRelayFor,
+ prepareResponsesFailoverBody,
+ rejectedReasoningCount,
+ rememberIssuerRelay,
+ rememberRejectedReasoning,
+ responsesConversationKey,
+ stripRejectedReasoning,
+ stripReasoningEncryption,
+ isReasoningCallerMismatch,
 } from "./responses.ts";
 import { pipeUpstreamStream } from "./stream-pipe.ts";
 import {
-	decideZenRoute,
-	isUnprovenSession,
-	isUpstreamGated,
-	pickFailoverModel,
-	recordUpstreamFailure,
-	recordUpstreamSuccess,
-	rememberGateRejection,
-	sessionKeyOf,
-	wasGateRejected,
-	withFreeTierHint,
+ decideZenRoute,
+ isUnprovenSession,
+ isUpstreamGated,
+ pickFailoverModel,
+ recordUpstreamFailure,
+ recordUpstreamSuccess,
+ rememberGateRejection,
+ sessionKeyOf,
+ wasGateRejected,
+ withFreeTierHint,
 } from "./upstream-health.ts";
 
 
 let shutdownShouldExit = false;
 export function setShutdownShouldExit(v: boolean): void {
-	shutdownShouldExit = v;
+ shutdownShouldExit = v;
 }
 
 /**
@@ -75,17 +79,17 @@ export function setShutdownShouldExit(v: boolean): void {
  */
 let last429HintAt = 0;
 function shouldShow429Hint(): boolean {
-	const now = Date.now();
-	if (now - last429HintAt < 10 * 60 * 1000) return false;
-	last429HintAt = now;
-	return true;
+ const now = Date.now();
+ if (now - last429HintAt < 10 * 60 * 1000) return false;
+ last429HintAt = now;
+ return true;
 }
 /** Test-only: reset 429 hint throttle */
 export function _reset429HintForTest(): void { last429HintAt = 0; }
 
 /** Deploy guidance attached to a natural upstream 429 once the throttle allows. */
 const RATE_LIMIT_HINT =
-	"Shared free-tier IP quota reached. Add your own relay egress: /freeflow deploy (Vercel 1M/mo recommended)";
+ "Shared free-tier IP quota reached. Add your own relay egress: /freeflow deploy (Vercel 1M/mo recommended)";
 
 /**
  * Attach the deploy hint to a natural upstream 429 JSON body. Anything else —
@@ -93,14 +97,14 @@ const RATE_LIMIT_HINT =
  * consuming the throttle slot.
  */
 function withRateLimitHint(status: number, data: string): string {
-	if (status !== 429) return data;
-	try {
-		const parsed: unknown = JSON.parse(data);
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && shouldShow429Hint()) {
-			return JSON.stringify({ ...(parsed as Record<string, unknown>), hint: RATE_LIMIT_HINT });
-		}
-	} catch {}
-	return data;
+ if (status !== 429) return data;
+ try {
+  const parsed: unknown = JSON.parse(data);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && shouldShow429Hint()) {
+   return JSON.stringify({ ...(parsed as Record<string, unknown>), hint: RATE_LIMIT_HINT });
+  }
+ } catch { }
+ return data;
 }
 
 /**
@@ -111,11 +115,11 @@ function withRateLimitHint(status: number, data: string): string {
  * Anything else (unknown/paid model ids, non-strings) goes direct upstream.
  */
 export function isRelayEligibleModel(model: unknown): boolean {
-	if (model === undefined || model === null) return true;
-	if (typeof model !== "string") return false;
-	if (model.trim() === "") return true;
-	const canonical = resolveCanonicalModelId(model.trim());
-	return MODEL_MAP.has(canonical) || KILO_MODEL_IDS.has(canonical);
+ if (model === undefined || model === null) return true;
+ if (typeof model !== "string") return false;
+ if (model.trim() === "") return true;
+ const canonical = resolveCanonicalModelId(model.trim());
+ return MODEL_MAP.has(canonical) || KILO_MODEL_IDS.has(canonical);
 }
 
 /**
@@ -131,120 +135,120 @@ export function isRelayEligibleModel(model: unknown): boolean {
  * through untouched — working sessions are never rerouted.
  */
 export type ZenFailoverDecision =
-	| { action: "failover"; model: string }
-	| { action: "canary" }
-	| { action: "passthrough" };
+ | { action: "failover"; model: string }
+ | { action: "canary" }
+ | { action: "passthrough" };
 export function classifyZenFailover(
-	parsedBody: Record<string, unknown> | null,
-	pathname: string,
+ parsedBody: Record<string, unknown> | null,
+ pathname: string,
 ): ZenFailoverDecision {
-	if (!parsedBody || typeof parsedBody.model !== "string") return { action: "passthrough" };
-	if (getModelUpstream(parsedBody.model) !== "opencode") return { action: "passthrough" };
-	const isChatPath = pathname.endsWith("/chat/completions");
-	const isResponsesPath = pathname.endsWith("/responses");
-	if (!isChatPath && !isResponsesPath) return { action: "passthrough" };
-	if (isChatPath && !Array.isArray(parsedBody.messages)) return { action: "passthrough" };
-	if (isResponsesPath && parsedBody.input === undefined) return { action: "passthrough" };
-	if (!wasGateRejected(parsedBody, pathname)) {
-		if (!isUpstreamGated("zen")) return { action: "passthrough" };
-		if (!isUnprovenSession(parsedBody, pathname)) return { action: "passthrough" };
-		const route = decideZenRoute(parsedBody, pathname);
-		if (route === "canary") {
-			log("debug", "zen gated — canary session passes through to zen");
-			return { action: "canary" };
-		}
-		if (route !== "failover") return { action: "passthrough" };
-	} else {
-		log("debug", "zen refused this session before — failing over to Kilo");
-	}
-	const pick = pickFailoverModel();
-	if (!pick) return { action: "passthrough" };
-	return { action: "failover", model: pick };
+ if (!parsedBody || typeof parsedBody.model !== "string") return { action: "passthrough" };
+ if (getModelUpstream(parsedBody.model) !== "opencode") return { action: "passthrough" };
+ const isChatPath = pathname.endsWith("/chat/completions");
+ const isResponsesPath = pathname.endsWith("/responses");
+ if (!isChatPath && !isResponsesPath) return { action: "passthrough" };
+ if (isChatPath && !Array.isArray(parsedBody.messages)) return { action: "passthrough" };
+ if (isResponsesPath && parsedBody.input === undefined) return { action: "passthrough" };
+ if (!wasGateRejected(parsedBody, pathname)) {
+  if (!isUpstreamGated("zen")) return { action: "passthrough" };
+  if (!isUnprovenSession(parsedBody, pathname)) return { action: "passthrough" };
+  const route = decideZenRoute(parsedBody, pathname);
+  if (route === "canary") {
+   log("debug", "zen gated — canary session passes through to zen");
+   return { action: "canary" };
+  }
+  if (route !== "failover") return { action: "passthrough" };
+ } else {
+  log("debug", "zen refused this session before — failing over to Kilo");
+ }
+ const pick = pickFailoverModel();
+ if (!pick) return { action: "passthrough" };
+ return { action: "failover", model: pick };
 }
 
 /**
  * Extract client IP address from incoming HTTP request.
  */
 export function getClientIP(req: http.IncomingMessage): string {
-	const addr = req.socket.remoteAddress;
-	if (!addr) return "unknown";
-	return addr.startsWith("::ffff:") ? addr.slice(7) : addr;
+ const addr = req.socket.remoteAddress;
+ if (!addr) return "unknown";
+ return addr.startsWith("::ffff:") ? addr.slice(7) : addr;
 }
 
 /**
  * Validate that the request URL matches allowed API path patterns and prevents path traversal.
  */
 export function validatePath(rawUrl: string): URL | null {
-	const cleaned = rawUrl.replace(/^\/+/, "");
-	if (!ALLOWED_PATH_PATTERN.test(`/${cleaned}`)) return null;
-	if (PATH_TRAVERSAL_PATTERN.test(cleaned)) return null;
-	try {
-		const decoded = decodeURIComponent(cleaned);
-		if (PATH_TRAVERSAL_PATTERN.test(decoded)) return null;
-		if (decoded !== cleaned && !ALLOWED_PATH_PATTERN.test(`/${decoded}`)) {
-			return null;
-		}
-	} catch {
-		return null;
-	}
-	try {
-		return new URL(cleaned, `${UPSTREAM_OPENCODE}/`);
-	} catch {
-		return null;
-	}
+ const cleaned = rawUrl.replace(/^\/+/, "");
+ if (!ALLOWED_PATH_PATTERN.test(`/${cleaned}`)) return null;
+ if (PATH_TRAVERSAL_PATTERN.test(cleaned)) return null;
+ try {
+  const decoded = decodeURIComponent(cleaned);
+  if (PATH_TRAVERSAL_PATTERN.test(decoded)) return null;
+  if (decoded !== cleaned && !ALLOWED_PATH_PATTERN.test(`/${decoded}`)) {
+   return null;
+  }
+ } catch {
+  return null;
+ }
+ try {
+  return new URL(cleaned, `${UPSTREAM_OPENCODE}/`);
+ } catch {
+  return null;
+ }
 }
 
 /**
  * Sanitize and inject standard headers before forwarding request to upstream.
  */
 export function sanitizeHeaders(
-	incoming: http.IncomingHttpHeaders,
-	targetHost: string,
+ incoming: http.IncomingHttpHeaders,
+ targetHost: string,
 ): Record<string, string> {
-	// authorization is deliberately NOT forwarded: the host provider registers
-	// with a dummy key (placeholder), and zen free models are keyless — sending
-	// that fake key upstream gets 401 Invalid API key. Kilo injects its own key.
-	const allowed: Record<string, true> = {
-		"content-type": true,
-		accept: true,
-		"x-request-id": true,
-	};
-	const sanitized: Record<string, string> = {};
-	for (const [key, value] of Object.entries(incoming)) {
-		const lower = key.toLowerCase();
-		if (lower.startsWith(":")) continue;
-		if (!allowed[lower] && !lower.startsWith("x-opencode-")) continue;
-		if (typeof value === "string") sanitized[lower] = value;
-		else if (Array.isArray(value)) sanitized[lower] = value.join(", ");
-	}
-	sanitized.host = targetHost;
-	// Drop the client's own user-agent so opencodeHeaders() cannot produce a
-	// duplicate (case-differing) User-Agent pair — upstream resets connections
-	// that send two conflicting User-Agent headers.
-	delete sanitized["user-agent"];
-	Object.assign(sanitized, opencodeHeaders());
-	sanitized["accept-encoding"] = "identity";
-	sanitized.connection = "keep-alive";
-	return sanitized;
+ // authorization is deliberately NOT forwarded: the host provider registers
+ // with a dummy key (placeholder), and zen free models are keyless — sending
+ // that fake key upstream gets 401 Invalid API key. Kilo injects its own key.
+ const allowed: Record<string, true> = {
+  "content-type": true,
+  accept: true,
+  "x-request-id": true,
+ };
+ const sanitized: Record<string, string> = {};
+ for (const [key, value] of Object.entries(incoming)) {
+  const lower = key.toLowerCase();
+  if (lower.startsWith(":")) continue;
+  if (!allowed[lower] && !lower.startsWith("x-opencode-")) continue;
+  if (typeof value === "string") sanitized[lower] = value;
+  else if (Array.isArray(value)) sanitized[lower] = value.join(", ");
+ }
+ sanitized.host = targetHost;
+ // Drop the client's own user-agent so opencodeHeaders() cannot produce a
+ // duplicate (case-differing) User-Agent pair — upstream resets connections
+ // that send two conflicting User-Agent headers.
+ delete sanitized["user-agent"];
+ Object.assign(sanitized, opencodeHeaders());
+ sanitized["accept-encoding"] = "identity";
+ sanitized.connection = "keep-alive";
+ return sanitized;
 }
 export async function isProxyAlive(port: number): Promise<boolean> {
-	if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
-	try {
-		const res = await fetch(`http://${HOST}:${port}/v1/models`, {
-			signal: AbortSignal.timeout(1500),
-		});
-		const ct = res.headers.get("content-type") || "";
-		return res.ok && ct.includes("application/json");
-	} catch {
-		return false;
-	}
+ if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+ try {
+  const res = await fetch(`http://${HOST}:${port}/v1/models`, {
+   signal: AbortSignal.timeout(1500),
+  });
+  const ct = res.headers.get("content-type") || "";
+  return res.ok && ct.includes("application/json");
+ } catch {
+  return false;
+ }
 }
 
 let activeRequests = 0;
 
 /** Current in-flight proxied requests (guard for stale-daemon replacement). */
 export function getActiveRequests(): number {
-	return activeRequests;
+ return activeRequests;
 }
 
 /**
@@ -255,41 +259,41 @@ export function getActiveRequests(): number {
  * the failed-SSE window — callers treat missing as "not degraded".
  */
 export async function getDaemonHealth(
-	port: number,
+ port: number,
 ): Promise<DaemonHealthSnapshot> {
-	if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
-	try {
-		const res = await fetch(`http://${HOST}:${port}/_health`, {
-			signal: AbortSignal.timeout(2500),
-		});
-		if (!res.ok) return null;
-		const data: unknown = await res.json();
-		if (data && typeof data === "object") {
-			const v =
-				"version" in data && typeof data.version === "string" && data.version
-					? data.version
-					: "";
-			const ar = "activeRequests" in data ? data.activeRequests : undefined;
-			const sr = "sseRate" in data ? data.sseRate : undefined;
-			const sd = "sseDegraded" in data ? data.sseDegraded : undefined;
-			const lb = "lastBytesAt" in data ? data.lastBytesAt : undefined;
-			return {
-				version: v,
-				activeRequests: typeof ar === "number" ? ar : undefined,
-				sseRate: typeof sr === "number" ? sr : undefined,
-				sseDegraded: typeof sd === "boolean" ? sd : undefined,
-				lastBytesAt: typeof lb === "number" ? lb : undefined,
-			};
-		}
-		return null;
-	} catch {
-		return null;
-	}
+ if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+ try {
+  const res = await fetch(`http://${HOST}:${port}/_health`, {
+   signal: AbortSignal.timeout(2500),
+  });
+  if (!res.ok) return null;
+  const data: unknown = await res.json();
+  if (data && typeof data === "object") {
+   const v =
+    "version" in data && typeof data.version === "string" && data.version
+     ? data.version
+     : "";
+   const ar = "activeRequests" in data ? data.activeRequests : undefined;
+   const sr = "sseRate" in data ? data.sseRate : undefined;
+   const sd = "sseDegraded" in data ? data.sseDegraded : undefined;
+   const lb = "lastBytesAt" in data ? data.lastBytesAt : undefined;
+   return {
+    version: v,
+    activeRequests: typeof ar === "number" ? ar : undefined,
+    sseRate: typeof sr === "number" ? sr : undefined,
+    sseDegraded: typeof sd === "boolean" ? sd : undefined,
+    lastBytesAt: typeof lb === "number" ? lb : undefined,
+   };
+  }
+  return null;
+ } catch {
+  return null;
+ }
 }
 /** Version of the daemon on `port`; "" when alive but pre-version-field, null when not alive. */
 export async function getDaemonVersion(port: number): Promise<string | null> {
-	const h = await getDaemonHealth(port);
-	return h ? h.version : null;
+ const h = await getDaemonHealth(port);
+ return h ? h.version : null;
 }
 
 /**
@@ -298,100 +302,100 @@ export async function getDaemonVersion(port: number): Promise<string | null> {
  * scanning /proc fds. Dependency-free, same-user only, never self-kills.
  */
 function killViaProcNet(port: number): boolean {
-	if (process.platform !== "linux") return false;
-	try {
-		const hexPort = port.toString(16).toUpperCase().padStart(4, "0");
-		const inodes = new Set<string>();
-		for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
-			let text = "";
-			try {
-				text = fs.readFileSync(table, "utf8");
-			} catch {
-				continue;
-			}
-			for (const line of text.split("\n").slice(1)) {
-				const cols = line.trim().split(/\s+/);
-				if (cols.length < 10) continue;
-				const addr = cols[1].split(":");
-				if (addr.length !== 2 || addr[1].toUpperCase() !== hexPort) continue;
-				if (cols[3] !== "0A") continue; // LISTEN only
-				inodes.add(cols[9]);
-			}
-		}
-		if (inodes.size === 0) return false;
-		for (const pid of fs.readdirSync("/proc")) {
-			if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
-			let fds: string[];
-			try {
-				fds = fs.readdirSync(`/proc/${pid}/fd`);
-			} catch {
-				continue;
-			}
-			for (const fd of fds) {
-				let link = "";
-				try {
-					link = fs.readlinkSync(`/proc/${pid}/fd/${fd}`);
-				} catch {
-					continue;
-				}
-				const sock = link.match(/^socket:\[(\d+)\]$/);
-				if (sock && inodes.has(sock[1])) {
-					try {
-						process.kill(Number(pid), "SIGKILL");
-						return true;
-					} catch {
-						return false;
-					}
-				}
-			}
-		}
-	} catch {}
-	return false;
+ if (process.platform !== "linux") return false;
+ try {
+  const hexPort = port.toString(16).toUpperCase().padStart(4, "0");
+  const inodes = new Set<string>();
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+   let text = "";
+   try {
+    text = fs.readFileSync(table, "utf8");
+   } catch {
+    continue;
+   }
+   for (const line of text.split("\n").slice(1)) {
+    const cols = line.trim().split(/\s+/);
+    if (cols.length < 10) continue;
+    const addr = cols[1].split(":");
+    if (addr.length !== 2 || addr[1].toUpperCase() !== hexPort) continue;
+    if (cols[3] !== "0A") continue; // LISTEN only
+    inodes.add(cols[9]);
+   }
+  }
+  if (inodes.size === 0) return false;
+  for (const pid of fs.readdirSync("/proc")) {
+   if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
+   let fds: string[];
+   try {
+    fds = fs.readdirSync(`/proc/${pid}/fd`);
+   } catch {
+    continue;
+   }
+   for (const fd of fds) {
+    let link = "";
+    try {
+     link = fs.readlinkSync(`/proc/${pid}/fd/${fd}`);
+    } catch {
+     continue;
+    }
+    const sock = link.match(/^socket:\[(\d+)\]$/);
+    if (sock && inodes.has(sock[1])) {
+     try {
+      process.kill(Number(pid), "SIGKILL");
+      return true;
+     } catch {
+      return false;
+     }
+    }
+   }
+  }
+ } catch { }
+ return false;
 }
 
 export async function killPortHolder(port: number): Promise<boolean> {
-	if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
-	try {
-		if (process.platform === "win32") {
-			try {
-				const out = execSync(`netstat -ano | findstr :${port}`, {
-					encoding: "utf8",
-					timeout: 3000,
-					windowsHide: true,
-				}) as string;
-				for (const line of out.split("\n")) {
-					if (!line.includes("LISTENING")) continue;
-					const parts = line.trim().split(/\s+/);
-					// Match the port on the Local Address column only — a raw
-					// substring match can hit longer ports (:2818 vs :28180).
-					if (!parts[1] || !parts[1].endsWith(`:${port}`)) continue;
-					const pid = parts[parts.length - 1];
-					if (!pid || !/^\d+$/.test(pid)) continue;
-					// Windows netstat report: 127.0.0.1:38180 ... LISTENING/PID
-					if (Number(pid) === process.pid) continue; // never self-kill
-					execSync(`taskkill /F /PID ${pid}`, { timeout: 3000, stdio: "ignore", windowsHide: true });
-					return true;
-				}
-			} catch {}
-			return false;
-		}
-		try {
-			const out = execSync(`lsof -ti tcp:${port} 2>/dev/null || fuser -n tcp ${port} 2>/dev/null`, {
-				encoding: "utf8",
-				timeout: 3000,
-			}) as string;
-			const pids = out.trim().split(/\s+/).filter((p) => /^\d+$/.test(p) && Number(p) !== process.pid);
-			// lsof matches both ends of a connection: our own recent probe socket
-			// (TIME_WAIT) can sort first, so skip self instead of taking [0].
-			if (pids.length === 0) return killViaProcNet(port);
-			execSync(`kill -9 ${pids[0]}`, { timeout: 3000, stdio: "ignore" });
-			return true;
-		} catch {
-			return killViaProcNet(port);
-		}
-	} catch {
-		return false;
-	}
+ if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+ try {
+  if (process.platform === "win32") {
+   try {
+    const out = execSync(`netstat -ano | findstr :${port}`, {
+     encoding: "utf8",
+     timeout: 3000,
+     windowsHide: true,
+    }) as string;
+    for (const line of out.split("\n")) {
+     if (!line.includes("LISTENING")) continue;
+     const parts = line.trim().split(/\s+/);
+     // Match the port on the Local Address column only — a raw
+     // substring match can hit longer ports (:2818 vs :28180).
+     if (!parts[1] || !parts[1].endsWith(`:${port}`)) continue;
+     const pid = parts[parts.length - 1];
+     if (!pid || !/^\d+$/.test(pid)) continue;
+     // Windows netstat report: 127.0.0.1:38180 ... LISTENING/PID
+     if (Number(pid) === process.pid) continue; // never self-kill
+     execSync(`taskkill /F /PID ${pid}`, { timeout: 3000, stdio: "ignore", windowsHide: true });
+     return true;
+    }
+   } catch { }
+   return false;
+  }
+  try {
+   const out = execSync(`lsof -ti tcp:${port} 2>/dev/null || fuser -n tcp ${port} 2>/dev/null`, {
+    encoding: "utf8",
+    timeout: 3000,
+   }) as string;
+   const pids = out.trim().split(/\s+/).filter((p) => /^\d+$/.test(p) && Number(p) !== process.pid);
+   // lsof matches both ends of a connection: our own recent probe socket
+   // (TIME_WAIT) can sort first, so skip self instead of taking [0].
+   if (pids.length === 0) return killViaProcNet(port);
+   execSync(`kill -9 ${pids[0]}`, { timeout: 3000, stdio: "ignore" });
+   return true;
+  } catch {
+   return killViaProcNet(port);
+  }
+ } catch {
+  return false;
+ }
 }
 
 /**
@@ -400,71 +404,71 @@ export async function killPortHolder(port: number): Promise<boolean> {
  * endpoint (caller continues). Control writes are async (chunked JSON).
  */
 export function handleControlRequest(
-	req: http.IncomingMessage,
-	res: http.ServerResponse,
-	reqPathname: string | null,
-	closeServer: () => void,
+ req: http.IncomingMessage,
+ res: http.ServerResponse,
+ reqPathname: string | null,
+ closeServer: () => void,
 ): boolean {
-	if (reqPathname === null) return false;
-	const isShutdown = reqPathname === "/_shutdown";
-	const isClientRoute = reqPathname.startsWith("/_client/");
-	if (!isShutdown && !isClientRoute) return false;
-	const clientIP = req.socket.remoteAddress ?? "";
-	if (!isLoopbackIP(clientIP)) {
-		res.writeHead(403, { "content-type": "application/json" });
-		res.end(JSON.stringify({ error: "loopback only" }));
-		return true;
-	}
-	if (isShutdown) {
-		log("info", "control /_shutdown received — closing proxy");
-		res.writeHead(200, { "content-type": "application/json" });
-		res.end(JSON.stringify({ ok: true }));
-		setTimeout(() => {
-			try { closeServer(); } catch {}
-			if (shutdownShouldExit) process.exit(0);
-		}, 50);
-		return true;
-	}
-	const chunks: Buffer[] = [];
-	let total = 0;
-	req.on("data", (c: Buffer) => {
-		total += c.length;
-		if (total > 4096) { req.destroy(); return; }
-		chunks.push(c);
-	});
-	req.on("end", () => {
-		let clientId = "";
-		try {
-			const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-			if (parsed && typeof parsed === "object" && "id" in parsed) {
-				const candidate = parsed.id;
-				if (typeof candidate === "string" && candidate) clientId = candidate;
-			}
-		} catch {}
-		if (!clientId) {
-			res.writeHead(400, { "content-type": "application/json" });
-			res.end(JSON.stringify({ error: "missing client id" }));
-			return;
-		}
-		if (reqPathname === "/_client/attach") registerClient(clientId);
-		else if (reqPathname === "/_client/heartbeat") {
-			// Unknown id = daemon restarted since attach. Report ok:false so the
-			// client re-attaches instead of heartbeating lease-less.
-			if (!renewClient(clientId)) {
-				res.writeHead(200, { "content-type": "application/json" });
-				res.end(JSON.stringify({ ok: false }));
-				return;
-			}
-		} else if (reqPathname === "/_client/detach") unregisterClient(clientId);
-		else {
-			res.writeHead(404, { "content-type": "application/json" });
-			res.end(JSON.stringify({ error: "not found" }));
-			return;
-		}
-		res.writeHead(200, { "content-type": "application/json" });
-		res.end(JSON.stringify({ ok: true }));
-	});
-	return true;
+ if (reqPathname === null) return false;
+ const isShutdown = reqPathname === "/_shutdown";
+ const isClientRoute = reqPathname.startsWith("/_client/");
+ if (!isShutdown && !isClientRoute) return false;
+ const clientIP = req.socket.remoteAddress ?? "";
+ if (!isLoopbackIP(clientIP)) {
+  res.writeHead(403, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: "loopback only" }));
+  return true;
+ }
+ if (isShutdown) {
+  log("info", "control /_shutdown received — closing proxy");
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ ok: true }));
+  setTimeout(() => {
+   try { closeServer(); } catch { }
+   if (shutdownShouldExit) process.exit(0);
+  }, 50);
+  return true;
+ }
+ const chunks: Buffer[] = [];
+ let total = 0;
+ req.on("data", (c: Buffer) => {
+  total += c.length;
+  if (total > 4096) { req.destroy(); return; }
+  chunks.push(c);
+ });
+ req.on("end", () => {
+  let clientId = "";
+  try {
+   const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+   if (parsed && typeof parsed === "object" && "id" in parsed) {
+    const candidate = parsed.id;
+    if (typeof candidate === "string" && candidate) clientId = candidate;
+   }
+  } catch { }
+  if (!clientId) {
+   res.writeHead(400, { "content-type": "application/json" });
+   res.end(JSON.stringify({ error: "missing client id" }));
+   return;
+  }
+  if (reqPathname === "/_client/attach") registerClient(clientId);
+  else if (reqPathname === "/_client/heartbeat") {
+   // Unknown id = daemon restarted since attach. Report ok:false so the
+   // client re-attaches instead of heartbeating lease-less.
+   if (!renewClient(clientId)) {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: false }));
+    return;
+   }
+  } else if (reqPathname === "/_client/detach") unregisterClient(clientId);
+  else {
+   res.writeHead(404, { "content-type": "application/json" });
+   res.end(JSON.stringify({ error: "not found" }));
+   return;
+  }
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ ok: true }));
+ });
+ return true;
 }
 
 /**
@@ -474,10 +478,10 @@ export function handleControlRequest(
  * rolls nor penalizes a healthy relay when the request merely ran slow.
  */
 function upstreamTimeoutError(): Error & { code: string } {
-	const err = new Error(`upstream header timeout (${UPSTREAM_HEADER_TIMEOUT_MS}ms)`) as Error & { code: string };
-	err.name = "AbortError";
-	err.code = "FF_INTERNAL_ABORT";
-	return err;
+ const err = new Error(`upstream header timeout (${UPSTREAM_HEADER_TIMEOUT_MS}ms)`) as Error & { code: string };
+ err.name = "AbortError";
+ err.code = "FF_INTERNAL_ABORT";
+ return err;
 }
 
 /**
@@ -500,52 +504,52 @@ function upstreamTimeoutError(): Error & { code: string } {
  * (the normal path) is never consumed here.
  */
 async function retryWithoutReasoningEncryption(
-	response: Response,
-	sentBody: Buffer,
-	resend: (body: Buffer) => Promise<Response>,
-	reqId: string,
-	conversationKey: string | null,
+ response: Response,
+ sentBody: Buffer,
+ resend: (body: Buffer) => Promise<Response>,
+ reqId: string,
+ conversationKey: string | null,
 ): Promise<Response> {
-	if (response.status !== 400) return response;
-	if ((response.headers.get("content-type") ?? "").includes("text/event-stream")) {
-		return response;
-	}
-	let errorText: string;
-	try {
-		errorText = await response.clone().text();
-	} catch {
-		return response;
-	}
-	if (!isReasoningCallerMismatch(errorText)) return response;
+ if (response.status !== 400) return response;
+ if ((response.headers.get("content-type") ?? "").includes("text/event-stream")) {
+  return response;
+ }
+ let errorText: string;
+ try {
+  errorText = await response.clone().text();
+ } catch {
+  return response;
+ }
+ if (!isReasoningCallerMismatch(errorText)) return response;
 
-	const portable = stripReasoningEncryption(sentBody);
-	if (!portable) {
-		log(
-			"warn",
-			"upstream rejected caller-bound reasoning but the request carries no encrypted_content to strip",
-			{ status: 400 },
-			reqId,
-		);
-		return response;
-	}
+ const portable = stripReasoningEncryption(sentBody);
+ if (!portable) {
+  log(
+   "warn",
+   "upstream rejected caller-bound reasoning but the request carries no encrypted_content to strip",
+   { status: 400 },
+   reqId,
+  );
+  return response;
+ }
 
-	log(
-		"warn",
-		"upstream rejected caller-bound reasoning (blobs issued by another instance); retrying with encrypted_content stripped",
-		{ status: 400, tracked: conversationKey !== null },
-		reqId,
-	);
-	const retried = await resend(portable);
-	if (retried.ok && conversationKey) {
-		const remembered = rememberRejectedReasoning(sentBody, conversationKey);
-		log(
-			"info",
-			`conversation will drop ${remembered} rejected reasoning blob(s) on later turns`,
-			undefined,
-			reqId,
-		);
-	}
-	return retried;
+ log(
+  "warn",
+  "upstream rejected caller-bound reasoning (blobs issued by another instance); retrying with encrypted_content stripped",
+  { status: 400, tracked: conversationKey !== null },
+  reqId,
+ );
+ const retried = await resend(portable);
+ if (retried.ok && conversationKey) {
+  const remembered = rememberRejectedReasoning(sentBody, conversationKey);
+  log(
+   "info",
+   `conversation will drop ${remembered} rejected reasoning blob(s) on later turns`,
+   undefined,
+   reqId,
+  );
+ }
+ return retried;
 }
 
 /**
@@ -554,650 +558,676 @@ async function retryWithoutReasoningEncryption(
  * parent or sibling OMP session, resolves immediately with { server: null, port: 28180 }.
  */
 export function startProxy(
-	overridePort?: number,
+ overridePort?: number,
 ): Promise<{ server: http.Server | null; port: number }> {
-	const basePort = overridePort ?? PORT;
+ const basePort = overridePort ?? PORT;
 
-	const server = http.createServer((req, res) => {
-		const clientIP = getClientIP(req);
-		const reqId = randomUUID().slice(0, 8);
-		if (isDebugEnabled()) {
-			log(
-				"debug",
-				`incoming ${req.method} ${req.url} from ${clientIP}`,
-				{ ip: clientIP, method: req.method, url: req.url },
-				reqId,
-			);
-		}
+ const server = http.createServer((req, res) => {
+  const clientIP = getClientIP(req);
+  const reqId = randomUUID().slice(0, 8);
+  if (isDebugEnabled()) {
+   log(
+    "debug",
+    `incoming ${req.method} ${req.url} from ${clientIP}`,
+    { ip: clientIP, method: req.method, url: req.url },
+    reqId,
+   );
+  }
 
-		if (!ALLOWED_METHODS.has(req.method ?? "")) {
-			res.writeHead(405, { "content-type": "application/json" });
-			res.end(JSON.stringify({ error: "method not allowed" }));
-			return;
-		}
+  if (!ALLOWED_METHODS.has(req.method ?? "")) {
+   res.writeHead(405, { "content-type": "application/json" });
+   res.end(JSON.stringify({ error: "method not allowed" }));
+   return;
+  }
 
-		if (req.method === "OPTIONS") {
-			// No CORS headers: loopback proxy is not a cross-origin resource.
-			// Keep a bare 204 so OPTIONS never reaches validatePath/upstream.
-			res.writeHead(204);
-			res.end();
-			return;
-		}
+  if (req.method === "OPTIONS") {
+   // No CORS headers: loopback proxy is not a cross-origin resource.
+   // Keep a bare 204 so OPTIONS never reaches validatePath/upstream.
+   res.writeHead(204);
+   res.end();
+   return;
+  }
 
-		let reqPathname: string | null = null;
-		try {
-			reqPathname = new URL(req.url ?? "/", `http://${HOST}`).pathname;
-		} catch {}
-		if (handleControlRequest(req, res, reqPathname, () => server.close())) return;
-		// Loopback-only health endpoint — always accessible even when widget hidden
-		if (req.method === "GET" && reqPathname !== null && (reqPathname === "/_health" || reqPathname === "/health")) {
-			const addr = server.address();
-			const realPort = addr && typeof addr === "object" ? (addr as { port: number }).port : basePort;
-			if (handleHealthRequest(req, res, realPort, getActiveRequests())) return;
-		}
-		if (req.method === "GET" && (reqPathname === "/v1/models" || reqPathname === "/v1/models/")) {
-			const alive = getAliveCatalog();
-			const body = JSON.stringify({
-				object: "list",
-				data: alive.map((m) => ({
-					id: m.id,
-					object: "model",
-					created: 0,
-					owned_by: m.source === "kilo" ? "kilocode" : "opencode",
-				})),
-			});
-			res.writeHead(200, {
-				"content-type": "application/json",
-				"content-length": Buffer.byteLength(body),
-			});
-			res.end(body);
-			return;
-		}
+  let reqPathname: string | null = null;
+  try {
+   reqPathname = new URL(req.url ?? "/", `http://${HOST}`).pathname;
+  } catch { }
+  if (handleControlRequest(req, res, reqPathname, () => server.close())) return;
+  // Loopback-only health endpoint — always accessible even when widget hidden
+  if (req.method === "GET" && reqPathname !== null && (reqPathname === "/_health" || reqPathname === "/health")) {
+   const addr = server.address();
+   const realPort = addr && typeof addr === "object" ? (addr as { port: number }).port : basePort;
+   if (handleHealthRequest(req, res, realPort, getActiveRequests())) return;
+  }
+  if (req.method === "GET" && (reqPathname === "/v1/models" || reqPathname === "/v1/models/")) {
+   const alive = getAliveCatalog();
+   const body = JSON.stringify({
+    object: "list",
+    data: alive.map((m) => ({
+     id: m.id,
+     object: "model",
+     created: 0,
+     owned_by: m.source === "kilo" ? "kilocode" : "opencode",
+    })),
+   });
+   res.writeHead(200, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(body),
+   });
+   res.end(body);
+   return;
+  }
 
-		const target = validatePath(req.url ?? "/");
-		if (!target) {
-			const cleaned = (req.url ?? "/").replace(/^\/+/, "");
-			if (PATH_TRAVERSAL_PATTERN.test(cleaned)) {
-				res.writeHead(403, { "content-type": "application/json" });
-				res.end(JSON.stringify({ error: "forbidden" }));
-			} else {
-				res.writeHead(404, { "content-type": "application/json" });
-				res.end(JSON.stringify({ error: "not found" }));
-			}
-			return;
-		}
-		touchActivity();
-		// Buffer request body to inspect model ID for upstream routing
-		const bodyChunks: Buffer[] = [];
-		activeRequests += 1;
-		res.on("close", () => {
-			activeRequests -= 1;
-		});
+  const target = validatePath(req.url ?? "/");
+  if (!target) {
+   const cleaned = (req.url ?? "/").replace(/^\/+/, "");
+   if (PATH_TRAVERSAL_PATTERN.test(cleaned)) {
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "forbidden" }));
+   } else {
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+   }
+   return;
+  }
+  touchActivity();
+  // Buffer request body to inspect model ID for upstream routing
+  const bodyChunks: Buffer[] = [];
+  activeRequests += 1;
+  res.on("close", () => {
+   activeRequests -= 1;
+  });
 
-		// Reject oversized bodies before buffering starts: the client declares
-		// the size in content-length, so no transfer cost is wasted.
-		const declaredLength = Number(req.headers["content-length"] ?? 0);
-		if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
-			res.writeHead(413, { "content-type": "application/json" });
-			res.end(JSON.stringify({ error: "payload too large" }));
-			return;
-		}
-		let bufferedBytes = 0;
-		req.on("error", (err) => {
-			log(
-				"warn",
-				"client request error during body buffering",
-				{ error: String(err) },
-				reqId,
-			);
-			if (!res.headersSent) {
-				res.writeHead(400, { "content-type": "application/json" });
-			}
-			res.end(JSON.stringify({ error: "bad request" }));
-		});
+  // Reject oversized bodies before buffering starts: the client declares
+  // the size in content-length, so no transfer cost is wasted.
+  const declaredLength = Number(req.headers["content-length"] ?? 0);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+   res.writeHead(413, { "content-type": "application/json" });
+   res.end(JSON.stringify({ error: "payload too large" }));
+   return;
+  }
+  let bufferedBytes = 0;
+  req.on("error", (err) => {
+   log(
+    "warn",
+    "client request error during body buffering",
+    { error: String(err) },
+    reqId,
+   );
+   if (!res.headersSent) {
+    res.writeHead(400, { "content-type": "application/json" });
+   }
+   res.end(JSON.stringify({ error: "bad request" }));
+  });
 
-		// Running cap for chunked/undeclared bodies: stop buffering the instant
-		// the limit is crossed instead of holding the whole payload in memory.
-		req.on("data", (chunk: Buffer) => {
-			bufferedBytes += chunk.length;
-			if (bufferedBytes > MAX_BODY_BYTES) {
-				req.destroy();
-				if (!res.headersSent) {
-					res.writeHead(413, { "content-type": "application/json" });
-					res.end(JSON.stringify({ error: "payload too large" }));
-				}
-				return;
-			}
-			bodyChunks.push(chunk);
-		});
+  // Running cap for chunked/undeclared bodies: stop buffering the instant
+  // the limit is crossed instead of holding the whole payload in memory.
+  req.on("data", (chunk: Buffer) => {
+   bufferedBytes += chunk.length;
+   if (bufferedBytes > MAX_BODY_BYTES) {
+    req.destroy();
+    if (!res.headersSent) {
+     res.writeHead(413, { "content-type": "application/json" });
+     res.end(JSON.stringify({ error: "payload too large" }));
+    }
+    return;
+   }
+   bodyChunks.push(chunk);
+  });
 
-		req.on("end", async () => {
-			const bodyStr = Buffer.concat(bodyChunks).toString();
-			let isKilo = false;
-			let parsedBody: Record<string, unknown> | null = null;
+  req.on("end", async () => {
+   const bodyStr = Buffer.concat(bodyChunks).toString();
+   let isKilo = false;
+   let parsedBody: Record<string, unknown> | null = null;
+   let clientRequestedStream = false;
 
-			try {
-				parsedBody = JSON.parse(bodyStr);
-				if (typeof parsedBody?.model === "string") {
-					const canonical = resolveCanonicalModelId(parsedBody.model);
-					parsedBody.model = canonical;
-					if (KILO_MODEL_IDS.has(canonical)) {
-						isKilo = true;
-					}
-				}
-			} catch {}
+   try {
+    parsedBody = JSON.parse(bodyStr);
+    if (typeof parsedBody?.model === "string") {
+     const canonical = resolveCanonicalModelId(parsedBody.model);
+     parsedBody.model = canonical;
+     if (KILO_MODEL_IDS.has(canonical)) {
+      isKilo = true;
+     }
+    }
+    if (parsedBody && typeof parsedBody === "object") {
+     clientRequestedStream = parsedBody.stream === true;
+    }
+   } catch { }
 
-			const sessionKey = sessionKeyOf(parsedBody);
-			// Zen free-tier gate failover: refused or fresh Zen sessions ride a
-			// healthy Kilo model on the same wire API via the existing Kilo branch.
-			// Working sessions pass through untouched; canary sessions pass through
-			// carrying the recovery probe (their success clears the gate). Responses
-			// bodies are scrubbed of Zen-bound state (chain pointer, reasoning blobs)
-			// Kilo cannot honor before the model swap.
-			const zenFailover = classifyZenFailover(parsedBody, target.pathname);
-			const isCanary = zenFailover.action === "canary";
-			if (zenFailover.action === "failover" && parsedBody) {
-				const from = String(parsedBody.model);
-				parsedBody.model = zenFailover.model;
-				if (target.pathname.endsWith("/responses")) prepareResponsesFailoverBody(parsedBody);
-				isKilo = true;
-				log("info", `zen gated — session failed over ${from} -> ${zenFailover.model}`, { model: from, failover: zenFailover.model }, reqId);
-			}
+   const sessionKey = sessionKeyOf(parsedBody);
+   // Zen free-tier gate failover: refused or fresh Zen sessions ride a
+   // healthy Kilo model on the same wire API via the existing Kilo branch.
+   // Working sessions pass through untouched; canary sessions pass through
+   // carrying the recovery probe (their success clears the gate). Responses
+   // bodies are scrubbed of Zen-bound state (chain pointer, reasoning blobs)
+   // Kilo cannot honor before the model swap.
+   const zenFailover = classifyZenFailover(parsedBody, target.pathname);
+   const isCanary = zenFailover.action === "canary";
+   if (zenFailover.action === "failover" && parsedBody) {
+    const from = String(parsedBody.model);
+    parsedBody.model = zenFailover.model;
+    if (target.pathname.endsWith("/responses")) prepareResponsesFailoverBody(parsedBody);
+    isKilo = true;
+    log("info", `zen gated — session failed over ${from} -> ${zenFailover.model}`, { model: from, failover: zenFailover.model }, reqId);
+   }
 
-			const isStream = parsedBody?.stream === true;
+   // OpenCode Zen free-tier fingerprint: upstream mandates stream: true and the
+   // file-search tool quartet {bash, glob, grep, read}. Missing tools (such as on
+   // subagent or advisor watchdog turns) trigger 403 FreeTierError.
+   let bodyModified = false;
+   let callerHadTools = true;
+   if (!isKilo && parsedBody) {
+    const fp = enforceOpencodeFingerprint(parsedBody, target.pathname);
+    callerHadTools = fp.callerHadTools;
+    bodyModified = true;
+   }
 
-			// Stale-registration guard: responses-only models (muse-spark-*) must
-			// reach upstream via /v1/responses. A chat/completions request for one
-			// means the host still holds a pre-fix provider registration (stale
-			// disk cache or no restart after upgrade) and upstream answers 500.
-			if (!isKilo && typeof parsedBody?.model === "string" && target.pathname.endsWith("/chat/completions")) {
-				const knownDef = MODEL_MAP.get(String(parsedBody.model));
-				if (knownDef?.api === "openai-responses") {
-					log("warn", `model ${String(parsedBody.model)} expects openai-responses but got ${target.pathname} — stale provider registration (restart Pi/OMP after upgrade)`, { model: String(parsedBody.model), path: target.pathname }, reqId);
-				}
-			}
-			try {
-				if (isKilo && parsedBody) {
-					// Header-wait timeout + client-disconnect abort: once headers
-					// arrive the timer is cleared so a long stream is not killed at
-					// the timeout ceiling; the stream phase is owned by
-					// pipeUpstreamStream and its close handling.
-					const kiloController = new AbortController();
-					const kiloTimeoutId = setTimeout(
-						() => kiloController.abort(upstreamTimeoutError()),
-						UPSTREAM_HEADER_TIMEOUT_MS,
-					);
-					const abortKiloOnClientGone = () => {
-						if (!res.writableEnded) kiloController.abort();
-					};
-					res.once("close", abortKiloOnClientGone);
-					req.once("error", abortKiloOnClientGone);
-					let response: Response;
-					// Kilo serves both wire APIs natively: responses-shaped bodies go to
-					// its responses endpoint, chat bodies to chat completions. Sending a
-					// responses body to the chat URL (or vice versa) would 400.
-					const kiloUrl = target.pathname.endsWith("/responses") ? KILO_RESPONSES_URL : KILO_CHAT_URL;
-					try {
-						response = await relayFetch(
-							kiloUrl,
-							{
-								method: "POST",
-								headers: {
-									"Content-Type": "application/json",
-									Authorization: "Bearer kilo-free",
-								},
-								body: JSON.stringify(parsedBody),
-								signal: kiloController.signal,
-							},
-							reqId,
-						);
-					} finally {
-						clearTimeout(kiloTimeoutId);
-						res.off("close", abortKiloOnClientGone);
-						req.off("error", abortKiloOnClientGone);
-					}
-					if (response.ok) recordUpstreamSuccess("kilo", { sessionKey });
+   const isStream = clientRequestedStream;
 
-					if (isStream && response.ok && response.body) {
-						const ct =
-							response.headers.get("content-type") || "text/event-stream";
-						res.writeHead(response.status, {
-							"content-type": ct,
-							"cache-control": "no-cache, no-transform",
-							connection: "keep-alive",
-							"x-accel-buffering": "no",
-						});
-						// Kilo is fetched directly (not via the relay pool), so pass undefined:
-						// attributing kilo-side stream failures to an unrelated opencode relay
-						// would mark a healthy relay as failed.
-						pipeUpstreamStream(
-							Readable.fromWeb(
-								response.body as unknown as WebReadableStream,
-							),
-							res,
-							req,
-							reqId,
-							undefined,
-						);
-					} else {
-						const data = withRateLimitHint(response.status, await response.text());
-						const ct =
-							response.headers.get("content-type") || "application/json";
-						res.writeHead(response.status, { "content-type": ct });
-						res.end(data);
-					}
-				} else {
-					// OpenCode routing — relay egress is for free-catalog models
-					// only; unknown/paid models go direct upstream.
-					const relayState = getActiveRelayState();
-					const relayPoolOn =
-						relayState.mode !== "off" &&
-						relayState.enabled !== false &&
-						Boolean(relayState.url || (relayState.relays && relayState.relays.length > 0));
-					const relayEligible = isRelayEligibleModel(parsedBody?.model);
-					const shouldUseRelay = relayPoolOn && relayEligible;
-					if (relayPoolOn && !relayEligible) {
-						log("info", `relay bypass for non-catalog model ${String(parsedBody?.model ?? "?")} — routing direct upstream`, { model: parsedBody?.model }, reqId);
-					}
-					if (shouldUseRelay) {
-						const fullUrl = `${UPSTREAM_OPENCODE}${req.url ?? "/"}`;
-						const activeHost = relayState.url
-							? new URL(relayState.url).host
-							: "opencode.ai";
-						const relayHeaders = sanitizeHeaders(req.headers, activeHost);
+   // Stale-registration guard: responses-only models (muse-spark-*) must
+   // reach upstream via /v1/responses. A chat/completions request for one
+   // means the host still holds a pre-fix provider registration (stale
+   // disk cache or no restart after upgrade) and upstream answers 500.
+   if (!isKilo && typeof parsedBody?.model === "string" && target.pathname.endsWith("/chat/completions")) {
+    const knownDef = MODEL_MAP.get(String(parsedBody.model));
+    if (knownDef?.api === "openai-responses") {
+     log("warn", `model ${String(parsedBody.model)} expects openai-responses but got ${target.pathname} — stale provider registration (restart Pi/OMP after upgrade)`, { model: String(parsedBody.model), path: target.pathname }, reqId);
+    }
+   }
+   try {
+    if (isKilo && parsedBody) {
+     // Header-wait timeout + client-disconnect abort: once headers
+     // arrive the timer is cleared so a long stream is not killed at
+     // the timeout ceiling; the stream phase is owned by
+     // pipeUpstreamStream and its close handling.
+     const kiloController = new AbortController();
+     const kiloTimeoutId = setTimeout(
+      () => kiloController.abort(upstreamTimeoutError()),
+      UPSTREAM_HEADER_TIMEOUT_MS,
+     );
+     const abortKiloOnClientGone = () => {
+      if (!res.writableEnded) kiloController.abort();
+     };
+     res.once("close", abortKiloOnClientGone);
+     req.once("error", abortKiloOnClientGone);
+     let response: Response;
+     // Kilo serves both wire APIs natively: responses-shaped bodies go to
+     // its responses endpoint, chat bodies to chat completions. Sending a
+     // responses body to the chat URL (or vice versa) would 400.
+     const kiloUrl = target.pathname.endsWith("/responses") ? KILO_RESPONSES_URL : KILO_CHAT_URL;
+     try {
+      response = await relayFetch(
+       kiloUrl,
+       {
+        method: "POST",
+        headers: {
+         "Content-Type": "application/json",
+         Authorization: "Bearer kilo-free",
+        },
+        body: JSON.stringify(parsedBody),
+        signal: kiloController.signal,
+       },
+       reqId,
+      );
+     } finally {
+      clearTimeout(kiloTimeoutId);
+      res.off("close", abortKiloOnClientGone);
+      req.off("error", abortKiloOnClientGone);
+     }
+     if (response.ok) recordUpstreamSuccess("kilo", { sessionKey });
 
-						try {
-							if (parsedBody) {
-								const requestBody = Buffer.concat(bodyChunks);
-								// Reasoning `encrypted_content` is bound to the caller that
-								// requested it, and a relay roll changes that caller. A
-								// conversation already rejected for foreign blobs keeps its
-								// history portable from then on.
-								const conversationKey = responsesConversationKey(parsedBody);
-								const responsesRequest = target.pathname.endsWith("/responses");
-								// Per-conversation affinity: reasoning blobs are only readable
-								// by the backend that issued them, so stay on the issuing relay
-								// while it is healthy.
-								const issuer = responsesRequest && conversationKey !== null
-									? issuerRelayFor(conversationKey)
-									: undefined;
-								const candidates = orderedRelayCandidates(
-									typeof issuer === "string" ? issuer : undefined,
-								);
-								const servingRelay = candidates[0] ?? null;
-								// Affinity cannot be honored (issuer cooling, dropped from the
-								// pool, or the path changed relay<->direct): the next backend
-								// cannot read this history, so send it portable instead of
-								// letting upstream reject the whole request.
-								const issuerChanged = issuer !== undefined && issuer !== servingRelay;
-								// Drop only the blobs upstream already rejected, so everything
-								// the current backend issued still flows verbatim.
-								const stripRejected = responsesRequest &&
-									conversationKey !== null &&
-									rejectedReasoningCount(conversationKey) > 0;
-								const bodyForUpstream = issuerChanged
-									? (stripReasoningEncryption(requestBody) ?? requestBody)
-									: stripRejected
-										? (stripRejectedReasoning(requestBody, conversationKey) ?? requestBody)
-										: requestBody;
-								if (issuerChanged && conversationKey !== null) {
-									// These blobs belong to a backend this conversation is
-									// leaving, so never replay them again.
-									rememberRejectedReasoning(requestBody, conversationKey);
-									log(
-										"info",
-										`reasoning issuer changed (${issuer ?? "direct"} -> ${servingRelay ?? "direct"}); sending history without caller-bound reasoning`,
-										undefined,
-										reqId,
-									);
-								}
+     if (isStream && response.ok && response.body) {
+      const ct =
+       response.headers.get("content-type") || "text/event-stream";
+      res.writeHead(response.status, {
+       "content-type": ct,
+       "cache-control": "no-cache, no-transform",
+       connection: "keep-alive",
+       "x-accel-buffering": "no",
+      });
+      // Kilo is fetched directly (not via the relay pool), so pass undefined:
+      // attributing kilo-side stream failures to an unrelated opencode relay
+      // would mark a healthy relay as failed.
+      pipeUpstreamStream(
+       Readable.fromWeb(
+        response.body as unknown as WebReadableStream,
+       ),
+       res,
+       req,
+       reqId,
+       undefined,
+      );
+     } else {
+      const data = withRateLimitHint(response.status, await response.text());
+      const ct =
+       response.headers.get("content-type") || "application/json";
+      res.writeHead(response.status, { "content-type": ct });
+      res.end(data);
+     }
+    } else {
+     // OpenCode routing — relay egress is for free-catalog models
+     // only; unknown/paid models go direct upstream.
+     const relayState = getActiveRelayState();
+     const relayPoolOn =
+      relayState.mode !== "off" &&
+      relayState.enabled !== false &&
+      Boolean(relayState.url || (relayState.relays && relayState.relays.length > 0));
+     const relayEligible = isRelayEligibleModel(parsedBody?.model);
+     const shouldUseRelay = relayPoolOn && relayEligible;
+     if (relayPoolOn && !relayEligible) {
+      log("info", `relay bypass for non-catalog model ${String(parsedBody?.model ?? "?")} — routing direct upstream`, { model: parsedBody?.model }, reqId);
+     }
+     if (shouldUseRelay) {
+      const fullUrl = `${UPSTREAM_OPENCODE}${req.url ?? "/"}`;
+      const activeHost = relayState.url
+       ? new URL(relayState.url).host
+       : "opencode.ai";
+      const relayHeaders = sanitizeHeaders(req.headers, activeHost);
 
-								// One attempt, with its own header-wait timeout and
-								// client-disconnect abort; the timer is cleared once headers
-								// arrive so streams are not killed at the timeout ceiling.
-								// Aborts caused by our own timeout are tagged
-								// FF_INTERNAL_ABORT so stream-pipe never penalizes the relay.
-								let servedIssuer: string | null = null;
-								let issuerReported = false;
-								const sendViaRelay = async (payload: Buffer): Promise<Response> => {
-									const relayController = new AbortController();
-									const relayTimeoutId = setTimeout(
-										() => relayController.abort(upstreamTimeoutError()),
-										UPSTREAM_HEADER_TIMEOUT_MS,
-									);
-									const abortRelayOnClientGone = () => {
-										if (!res.writableEnded) relayController.abort();
-									};
-									res.once("close", abortRelayOnClientGone);
-									req.once("error", abortRelayOnClientGone);
-									try {
-										return await relayFetch(
-											fullUrl,
-											{
-												method: req.method || "POST",
-												headers: relayHeaders,
-												body: payload,
-												signal: relayController.signal,
-											} as unknown as RequestInit,
-											reqId,
-											{
-												preferred: typeof issuer === "string" ? issuer : undefined,
-												onServed: (relay) => {
-													servedIssuer = relay;
-													issuerReported = true;
-												},
-											},
-										);
-									} finally {
-										clearTimeout(relayTimeoutId);
-										res.off("close", abortRelayOnClientGone);
-										req.off("error", abortRelayOnClientGone);
-									}
-								};
+      try {
+       if (parsedBody) {
+        const requestBody = bodyModified
+         ? Buffer.from(JSON.stringify(parsedBody), "utf8")
+         : Buffer.concat(bodyChunks);
+        // Reasoning `encrypted_content` is bound to the caller that
+        // requested it, and a relay roll changes that caller. A
+        // conversation already rejected for foreign blobs keeps its
+        // history portable from then on.
+        const conversationKey = responsesConversationKey(parsedBody);
+        const responsesRequest = target.pathname.endsWith("/responses");
+        // Per-conversation affinity: reasoning blobs are only readable
+        // by the backend that issued them, so stay on the issuing relay
+        // while it is healthy.
+        const issuer = responsesRequest && conversationKey !== null
+         ? issuerRelayFor(conversationKey)
+         : undefined;
+        const candidates = orderedRelayCandidates(
+         typeof issuer === "string" ? issuer : undefined,
+        );
+        const servingRelay = candidates[0] ?? null;
+        // Affinity cannot be honored (issuer cooling, dropped from the
+        // pool, or the path changed relay<->direct): the next backend
+        // cannot read this history, so send it portable instead of
+        // letting upstream reject the whole request.
+        const issuerChanged = issuer !== undefined && issuer !== servingRelay;
+        // Drop only the blobs upstream already rejected, so everything
+        // the current backend issued still flows verbatim.
+        const stripRejected = responsesRequest &&
+         conversationKey !== null &&
+         rejectedReasoningCount(conversationKey) > 0;
+        const bodyForUpstream = issuerChanged
+         ? (stripReasoningEncryption(requestBody) ?? requestBody)
+         : stripRejected
+          ? (stripRejectedReasoning(requestBody, conversationKey) ?? requestBody)
+          : requestBody;
+        if (issuerChanged && conversationKey !== null) {
+         // These blobs belong to a backend this conversation is
+         // leaving, so never replay them again.
+         rememberRejectedReasoning(requestBody, conversationKey);
+         log(
+          "info",
+          `reasoning issuer changed (${issuer ?? "direct"} -> ${servingRelay ?? "direct"}); sending history without caller-bound reasoning`,
+          undefined,
+          reqId,
+         );
+        }
 
-								let response = await sendViaRelay(bodyForUpstream);
-								// Retry must stay available on every responses request: even a
-								// proactively stripped body can still carry a blob the current
-								// instance cannot read.
-								if (responsesRequest) {
-									response = await retryWithoutReasoningEncryption(
-										response,
-										requestBody,
-										sendViaRelay,
-										reqId,
-										conversationKey,
-									);
-								}
-								// Record the backend that actually served this turn. Reading
-								// the sticky active relay here would be wrong now that
-								// affinity deliberately leaves it untouched.
-								if (
-									responsesRequest &&
-									conversationKey !== null &&
-									response.ok &&
-									issuerReported
-								) {
-									rememberIssuerRelay(conversationKey, servedIssuer);
-								}
-								// Upstream degradation tracking: successes prove Zen reachable,
-								// 403 free-tier gates feed the health state machine (a 403 never
-								// rolls — it is a terminal upstream verdict, not a relay fault).
-								if (response.ok) {
-									recordUpstreamSuccess("zen", { sessionKey, canary: isCanary });
-								} else if (response.status === 403 && (response.headers.get("content-type") ?? "").includes("application/json")) {
-									try {
-										const gateText = await response.clone().text();
-										recordUpstreamFailure("zen", 403, gateText);
-										rememberGateRejection(parsedBody, target.pathname, 403, gateText);
-									} catch {}
-								}
+        // One attempt, with its own header-wait timeout and
+        // client-disconnect abort; the timer is cleared once headers
+        // arrive so streams are not killed at the timeout ceiling.
+        // Aborts caused by our own timeout are tagged
+        // FF_INTERNAL_ABORT so stream-pipe never penalizes the relay.
+        let servedIssuer: string | null = null;
+        let issuerReported = false;
+        const sendViaRelay = async (payload: Buffer): Promise<Response> => {
+         const relayController = new AbortController();
+         const relayTimeoutId = setTimeout(
+          () => relayController.abort(upstreamTimeoutError()),
+          UPSTREAM_HEADER_TIMEOUT_MS,
+         );
+         const abortRelayOnClientGone = () => {
+          if (!res.writableEnded) relayController.abort();
+         };
+         res.once("close", abortRelayOnClientGone);
+         req.once("error", abortRelayOnClientGone);
+         try {
+          return await relayFetch(
+           fullUrl,
+           {
+            method: req.method || "POST",
+            headers: relayHeaders,
+            body: payload,
+            signal: relayController.signal,
+           } as unknown as RequestInit,
+           reqId,
+           {
+            preferred: typeof issuer === "string" ? issuer : undefined,
+            onServed: (relay) => {
+             servedIssuer = relay;
+             issuerReported = true;
+            },
+           },
+          );
+         } finally {
+          clearTimeout(relayTimeoutId);
+          res.off("close", abortRelayOnClientGone);
+          req.off("error", abortRelayOnClientGone);
+         }
+        };
 
-								if (isStream && response.ok && response.body) {
-									const ct =
-										response.headers.get("content-type") ||
-										"text/event-stream";
-									res.writeHead(response.status, {
-										"content-type": ct,
-										"cache-control": "no-cache, no-transform",
-										connection: "keep-alive",
-										"x-accel-buffering": "no",
-									});
-									pipeUpstreamStream(
-										Readable.fromWeb(
-											response.body as unknown as WebReadableStream,
-										),
-										res,
-										req,
-										reqId,
-										relayState.url,
-									);
-								} else {
-									if (!response.ok) {
-										log("warn", `upstream ${response.status} for model ${String((parsedBody as Record<string, unknown> | null)?.model ?? "?")} via relay`, { status: response.status, model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url }, reqId);
-									}
-									const data = withFreeTierHint(response.status, withRateLimitHint(response.status, await response.text()));
-									const ct =
-										response.headers.get("content-type") ||
-										"application/json";
-									res.writeHead(response.status, { "content-type": ct });
-									res.end(data);
-								}
-								return; // relay handled successfully
-							}
-						} catch (e) {
-							log(
-								"warn",
-								"opencode relay failed, falling back to direct upstream",
-								{ error: String(e) },
-								reqId,
-							);
-							if (res.headersSent) return; // cannot recover mid-stream
-						}
-					}
+        let response = await sendViaRelay(bodyForUpstream);
+        // Retry must stay available on every responses request: even a
+        // proactively stripped body can still carry a blob the current
+        // instance cannot read.
+        if (responsesRequest) {
+         response = await retryWithoutReasoningEncryption(
+          response,
+          requestBody,
+          sendViaRelay,
+          reqId,
+          conversationKey,
+         );
+        }
+        // Record the backend that actually served this turn. Reading
+        // the sticky active relay here would be wrong now that
+        // affinity deliberately leaves it untouched.
+        if (
+         responsesRequest &&
+         conversationKey !== null &&
+         response.ok &&
+         issuerReported
+        ) {
+         rememberIssuerRelay(conversationKey, servedIssuer);
+        }
+        // Upstream degradation tracking: successes prove Zen reachable,
+        // 403 free-tier gates feed the health state machine (a 403 never
+        // rolls — it is a terminal upstream verdict, not a relay fault).
+        if (response.ok) {
+         recordUpstreamSuccess("zen", { sessionKey, canary: isCanary });
+        } else if (response.status === 403 && (response.headers.get("content-type") ?? "").includes("application/json")) {
+         try {
+          const gateText = await response.clone().text();
+          recordUpstreamFailure("zen", 403, gateText);
+          rememberGateRejection(parsedBody, target.pathname, 403, gateText);
+         } catch { }
+        }
 
-					// Direct path — the relay already parsed/forwarded raw; send the buffered bytes unchanged
-					const directBody = Buffer.concat(bodyChunks);
+        if (isStream && response.ok && response.body) {
+         const ct =
+          response.headers.get("content-type") ||
+          "text/event-stream";
+         res.writeHead(response.status, {
+          "content-type": ct,
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+          "x-accel-buffering": "no",
+         });
+         pipeUpstreamStream(
+          Readable.fromWeb(
+           response.body as unknown as WebReadableStream,
+          ),
+          res,
+          req,
+          reqId,
+          relayState.url,
+         );
+        } else {
+         if (!response.ok) {
+          log("warn", `upstream ${response.status} for model ${String((parsedBody as Record<string, unknown> | null)?.model ?? "?")} via relay`, { status: response.status, model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url }, reqId);
+         }
+         let rawText = await response.text();
+         let ct =
+          response.headers.get("content-type") ||
+          "application/json";
+         if (response.ok && (ct.includes("text/event-stream") || rawText.includes("data:"))) {
+          rawText = convertSseToJson(rawText, target.pathname, callerHadTools);
+          ct = "application/json";
+         }
+         const data = withFreeTierHint(response.status, withRateLimitHint(response.status, rawText));
+         res.writeHead(response.status, { "content-type": ct });
+         res.end(data);
+        }
+        return; // relay handled successfully
+       }
+      } catch (e) {
+       log(
+        "warn",
+        "opencode relay failed, falling back to direct upstream",
+        { error: String(e) },
+        reqId,
+       );
+       if (res.headersSent) return; // cannot recover mid-stream
+      }
+     }
 
-					// Same backend-bound blobs as the relay path: leaving the issuing
-					// relay for the direct route (or vice versa) makes the history
-					// unreadable, so send it portable instead.
-					const directConversationKey = responsesConversationKey(parsedBody);
-					const directResponsesRequest = target.pathname.endsWith("/responses");
-					const directIssuer = directResponsesRequest && directConversationKey !== null
-						? issuerRelayFor(directConversationKey)
-						: undefined;
-					const directIssuerChanged = directIssuer !== undefined && directIssuer !== null;
-					const directStripRejected = directResponsesRequest &&
-						directConversationKey !== null &&
-						rejectedReasoningCount(directConversationKey) > 0;
-					const directBodyForUpstream = directIssuerChanged
-						? (stripReasoningEncryption(directBody) ?? directBody)
-						: directStripRejected
-							? (stripRejectedReasoning(directBody, directConversationKey) ?? directBody)
-							: directBody;
-					if (directIssuerChanged && directConversationKey !== null) {
-						rememberRejectedReasoning(directBody, directConversationKey);
-						log(
-							"info",
-							`reasoning issuer changed (${directIssuer} -> direct); sending history without caller-bound reasoning`,
-							undefined,
-							reqId,
-						);
-					}
+     // Direct path — send the fingerprinted body if modified, else raw bytes
+     const directBody = bodyModified
+      ? Buffer.from(JSON.stringify(parsedBody), "utf8")
+      : Buffer.concat(bodyChunks);
 
-					if (isDebugEnabled()) {
-						log(
-							"debug",
-							`direct upstream ${target.hostname}${target.pathname} (${directBody.length}B)`,
-							{ model: parsedBody?.model, isKilo },
-							reqId,
-						);
-					}
+     // Same backend-bound blobs as the relay path: leaving the issuing
+     // relay for the direct route (or vice versa) makes the history
+     // unreadable, so send it portable instead.
+     const directConversationKey = responsesConversationKey(parsedBody);
+     const directResponsesRequest = target.pathname.endsWith("/responses");
+     const directIssuer = directResponsesRequest && directConversationKey !== null
+      ? issuerRelayFor(directConversationKey)
+      : undefined;
+     const directIssuerChanged = directIssuer !== undefined && directIssuer !== null;
+     const directStripRejected = directResponsesRequest &&
+      directConversationKey !== null &&
+      rejectedReasoningCount(directConversationKey) > 0;
+     const directBodyForUpstream = directIssuerChanged
+      ? (stripReasoningEncryption(directBody) ?? directBody)
+      : directStripRejected
+       ? (stripRejectedReasoning(directBody, directConversationKey) ?? directBody)
+       : directBody;
+     if (directIssuerChanged && directConversationKey !== null) {
+      rememberRejectedReasoning(directBody, directConversationKey);
+      log(
+       "info",
+       `reasoning issuer changed (${directIssuer} -> direct); sending history without caller-bound reasoning`,
+       undefined,
+       reqId,
+      );
+     }
 
-					const fwd = sanitizeHeaders(req.headers, target.hostname);
-					fwd["connection"] = "keep-alive";
+     if (isDebugEnabled()) {
+      log(
+       "debug",
+       `direct upstream ${target.hostname}${target.pathname} (${directBody.length}B)`,
+       { model: parsedBody?.model, isKilo },
+       reqId,
+      );
+     }
 
-					const sendDirect = async (payload: Buffer): Promise<Response> => {
-						const headers = { ...fwd };
-						if (payload.length > 0) {
-							headers["content-length"] = String(payload.byteLength);
-						}
-						const controller = new AbortController();
-						const timeoutId = setTimeout(() => controller.abort(upstreamTimeoutError()), UPSTREAM_HEADER_TIMEOUT_MS);
-						const onClientClose = () => {
-							if (!res.writableEnded) controller.abort();
-						};
-						const onReqError = () => controller.abort();
-						res.on("close", onClientClose);
-						req.on("error", onReqError);
-						try {
-							return await fetch(target.href, {
-								method: req.method,
-								headers,
-								body: payload.length > 0 ? payload : undefined,
-								signal: controller.signal,
-							} as unknown as RequestInit);
-						} finally {
-							clearTimeout(timeoutId);
-							res.off("close", onClientClose);
-							req.off("error", onReqError);
-						}
-					};
+     const fwd = sanitizeHeaders(req.headers, target.hostname);
+     fwd["connection"] = "keep-alive";
 
-					try {
-						let upstreamRes = await sendDirect(directBodyForUpstream);
-						if (directResponsesRequest) {
-							upstreamRes = await retryWithoutReasoningEncryption(
-								upstreamRes,
-								directBody,
-								sendDirect,
-								reqId,
-								directConversationKey,
-							);
-						}
-						// The direct route is its own backend: remember it so a later
-						// switch back to relays ships a portable history.
-						if (directResponsesRequest && directConversationKey !== null && upstreamRes.ok) {
-							rememberIssuerRelay(directConversationKey, null);
-						}
-						if (upstreamRes.status >= 400) {
-							log("warn", `direct upstream ${upstreamRes.status} for model ${String(parsedBody?.model ?? "?")} ${target.pathname}`, { status: upstreamRes.status, model: parsedBody?.model, path: target.pathname }, reqId);
-						}
-						// Upstream degradation tracking, mirroring the relay path: successes
-						// prove Zen reachable, 403 free-tier gates feed the health machine.
-						if (upstreamRes.ok) {
-							recordUpstreamSuccess("zen", { sessionKey, canary: isCanary });
-						} else if (upstreamRes.status === 403 && (upstreamRes.headers.get("content-type") ?? "").includes("application/json")) {
-							try {
-								const gateText = await upstreamRes.clone().text();
-								recordUpstreamFailure("zen", 403, gateText);
-								rememberGateRejection(parsedBody, target.pathname, 403, gateText);
-							} catch {}
-						}
+     const sendDirect = async (payload: Buffer): Promise<Response> => {
+      const headers = { ...fwd };
+      if (payload.length > 0) {
+       headers["content-length"] = String(payload.byteLength);
+      }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(upstreamTimeoutError()), UPSTREAM_HEADER_TIMEOUT_MS);
+      const onClientClose = () => {
+       if (!res.writableEnded) controller.abort();
+      };
+      const onReqError = () => controller.abort();
+      res.on("close", onClientClose);
+      req.on("error", onReqError);
+      try {
+       return await fetch(target.href, {
+        method: req.method,
+        headers,
+        body: payload.length > 0 ? payload : undefined,
+        signal: controller.signal,
+       } as unknown as RequestInit);
+      } finally {
+       clearTimeout(timeoutId);
+       res.off("close", onClientClose);
+       req.off("error", onReqError);
+      }
+     };
 
-						// Natural 429: every relay plus direct is rate-limited — buffer the
-						// JSON error and attach the deploy hint instead of piping it
-						// through as a stream body.
-						if (upstreamRes.status === 429) {
-							const data = withRateLimitHint(429, await upstreamRes.text());
-							const ct429 = upstreamRes.headers.get("content-type") || "application/json";
-							res.writeHead(429, { "content-type": ct429 });
-							res.end(data);
-							return;
-						}
-						// Gated upstream: a 403 free-tier gate is a final answer, not a
-						// stream — buffer it and attach the recovery hint instead of
-						// piping it through as a stream body.
-						if (upstreamRes.status === 403) {
-							const data = withFreeTierHint(403, await upstreamRes.text());
-							const ct403 = upstreamRes.headers.get("content-type") || "application/json";
-							res.writeHead(403, { "content-type": ct403 });
-							res.end(data);
-							return;
-						}
+     try {
+      let upstreamRes = await sendDirect(directBodyForUpstream);
+      if (directResponsesRequest) {
+       upstreamRes = await retryWithoutReasoningEncryption(
+        upstreamRes,
+        directBody,
+        sendDirect,
+        reqId,
+        directConversationKey,
+       );
+      }
+      // The direct route is its own backend: remember it so a later
+      // switch back to relays ships a portable history.
+      if (directResponsesRequest && directConversationKey !== null && upstreamRes.ok) {
+       rememberIssuerRelay(directConversationKey, null);
+      }
+      if (upstreamRes.status >= 400) {
+       log("warn", `direct upstream ${upstreamRes.status} for model ${String(parsedBody?.model ?? "?")} ${target.pathname}`, { status: upstreamRes.status, model: parsedBody?.model, path: target.pathname }, reqId);
+      }
+      // Upstream degradation tracking, mirroring the relay path: successes
+      // prove Zen reachable, 403 free-tier gates feed the health machine.
+      if (upstreamRes.ok) {
+       recordUpstreamSuccess("zen", { sessionKey, canary: isCanary });
+      } else if (upstreamRes.status === 403 && (upstreamRes.headers.get("content-type") ?? "").includes("application/json")) {
+       try {
+        const gateText = await upstreamRes.clone().text();
+        recordUpstreamFailure("zen", 403, gateText);
+        rememberGateRejection(parsedBody, target.pathname, 403, gateText);
+       } catch { }
+      }
 
-						const outHeaders: Record<string, string> = {};
-						for (const h of ["content-type", "cache-control", "x-request-id"] as const) {
-							const v = upstreamRes.headers.get(h);
-							if (v) outHeaders[h] = v;
-						}
-						outHeaders["x-content-type-options"] = "nosniff";
-						outHeaders["connection"] = "keep-alive";
-						const ka = upstreamRes.headers.get("keep-alive");
-						if (ka) outHeaders["keep-alive"] = ka;
+      // Natural 429: every relay plus direct is rate-limited — buffer the
+      // JSON error and attach the deploy hint instead of piping it
+      // through as a stream body.
+      if (upstreamRes.status === 429) {
+       const data = withRateLimitHint(429, await upstreamRes.text());
+       const ct429 = upstreamRes.headers.get("content-type") || "application/json";
+       res.writeHead(429, { "content-type": ct429 });
+       res.end(data);
+       return;
+      }
+      // Gated upstream: a 403 free-tier gate is a final answer, not a
+      // stream — buffer it and attach the recovery hint instead of
+      // piping it through as a stream body.
+      if (upstreamRes.status === 403) {
+       const data = withFreeTierHint(403, await upstreamRes.text());
+       const ct403 = upstreamRes.headers.get("content-type") || "application/json";
+       res.writeHead(403, { "content-type": ct403 });
+       res.end(data);
+       return;
+      }
 
-						res.writeHead(upstreamRes.status, outHeaders);
-						if (isStream && upstreamRes.body) {
-							pipeUpstreamStream(
-								Readable.fromWeb(upstreamRes.body as unknown as WebReadableStream),
-								res,
-								req,
-								reqId,
-								"direct",
-							);
-						} else if (upstreamRes.body) {
-							const nodeStream = Readable.fromWeb(upstreamRes.body as unknown as WebReadableStream);
-							nodeStream.on("error", (streamErr) => {
-								log("error", "upstream stream error in direct proxy", { error: String(streamErr) }, reqId);
-								if (!res.writableEnded) res.end();
-							});
-							nodeStream.pipe(res);
-						} else {
-							res.end();
-						}
-					} catch (proxyErr) {
-						log("error", "proxy socket error", { error: String(proxyErr) }, reqId);
-						if (!res.headersSent) {
-							res.writeHead(502, { "content-type": "application/json" });
-							res.end(JSON.stringify({ error: "upstream error" }));
-						} else if (!res.writableEnded) {
-							res.end();
-						}
-					}
-				}
-			} catch (err) {
-				log("error", "proxy error", { error: String(err) }, reqId);
-				if (!res.headersSent) {
-					res.writeHead(502, { "content-type": "application/json" });
-				}
-				res.end(JSON.stringify({ error: "internal error" }));
-			}
-		});
-	});
+      const outHeaders: Record<string, string> = {};
+      for (const h of ["content-type", "cache-control", "x-request-id"] as const) {
+       const v = upstreamRes.headers.get(h);
+       if (v) outHeaders[h] = v;
+      }
+      outHeaders["x-content-type-options"] = "nosniff";
+      outHeaders["connection"] = "keep-alive";
+      const ka = upstreamRes.headers.get("keep-alive");
+      if (ka) outHeaders["keep-alive"] = ka;
 
-	return new Promise<{ server: http.Server | null; port: number }>(
-		(resolve, reject) => {
-			let attempt = 0;
-			let settled = false;
+      if (isStream && upstreamRes.body) {
+       res.writeHead(upstreamRes.status, outHeaders);
+       pipeUpstreamStream(
+        Readable.fromWeb(upstreamRes.body as unknown as WebReadableStream),
+        res,
+        req,
+        reqId,
+        "direct",
+       );
+      } else if (upstreamRes.body) {
+       let rawText = await upstreamRes.text();
+       if (upstreamRes.ok && (outHeaders["content-type"]?.includes("text/event-stream") || rawText.includes("data:"))) {
+        rawText = convertSseToJson(rawText, target.pathname, callerHadTools);
+        outHeaders["content-type"] = "application/json";
+       }
+       res.writeHead(upstreamRes.status, outHeaders);
+       res.end(rawText);
+      } else {
+       res.writeHead(upstreamRes.status, outHeaders);
+       res.end();
+      }
+     } catch (proxyErr) {
+      log("error", "proxy socket error", { error: String(proxyErr) }, reqId);
+      if (!res.headersSent) {
+       res.writeHead(502, { "content-type": "application/json" });
+       res.end(JSON.stringify({ error: "upstream error" }));
+      } else if (!res.writableEnded) {
+       res.end();
+      }
+     }
+    }
+   } catch (err) {
+    log("error", "proxy error", { error: String(err) }, reqId);
+    if (!res.headersSent) {
+     res.writeHead(502, { "content-type": "application/json" });
+    }
+    res.end(JSON.stringify({ error: "internal error" }));
+   }
+  });
+ });
 
-			const tryListen = async (port: number) => {
-				server.removeAllListeners("error");
-				server.once("error", async (err: NodeJS.ErrnoException) => {
-					if (settled) return;
-					if (err.code === "EADDRINUSE") {
-						// Cold-start race: a sibling may be binding the base port
-						// right now. Re-probe it for up to 3s before accepting a
-						// walked port so parallel startups converge on :28180.
-						if (await reprobeBasePortAlive(basePort, BASE_PORT_REPROBE_MS)) {
-							settled = true;
-							log(
-								"info",
-								`attached to running proxy on http://${HOST}:${basePort}`,
-							);
-							resolve({ server: null, port: basePort });
-							return;
-						}
-						if (attempt < 20) {
-							attempt++;
-							log("warn", `port ${port} taken — trying ${port + 1}`);
-							tryListen(port + 1);
-							return;
-						}
-					}
-					settled = true;
-					log("error", "server error", { code: err.code, message: err.message });
-					reject(err);
-				});
-				server.listen(port, HOST, () => {
-					if (settled) return;
-					settled = true;
-					try {
-						server.unref();
-					} catch {}
-					const addr = server.address();
-					const realPort = addr && typeof addr === "object" ? addr.port : port;
-					if (realPort !== basePort) {
-						log("warn", `base port ${basePort} busy — proxy listening on walked port http://${HOST}:${realPort}`);
-					} else {
-						log("info", `proxy listening on http://${HOST}:${realPort}`);
-					}
-					resolve({ server, port: realPort });
-				});
-			};
+ return new Promise<{ server: http.Server | null; port: number }>(
+  (resolve, reject) => {
+   let attempt = 0;
+   let settled = false;
 
-			tryListen(basePort);
-		},
-	);
+   const tryListen = async (port: number) => {
+    server.removeAllListeners("error");
+    server.once("error", async (err: NodeJS.ErrnoException) => {
+     if (settled) return;
+     if (err.code === "EADDRINUSE") {
+      // Cold-start race: a sibling may be binding the base port
+      // right now. Re-probe it for up to 3s before accepting a
+      // walked port so parallel startups converge on :28180.
+      if (await reprobeBasePortAlive(basePort, BASE_PORT_REPROBE_MS)) {
+       settled = true;
+       log(
+        "info",
+        `attached to running proxy on http://${HOST}:${basePort}`,
+       );
+       resolve({ server: null, port: basePort });
+       return;
+      }
+      if (attempt < 20) {
+       attempt++;
+       log("warn", `port ${port} taken — trying ${port + 1}`);
+       tryListen(port + 1);
+       return;
+      }
+     }
+     settled = true;
+     log("error", "server error", { code: err.code, message: err.message });
+     reject(err);
+    });
+    server.listen(port, HOST, () => {
+     if (settled) return;
+     settled = true;
+     try {
+      server.unref();
+     } catch { }
+     const addr = server.address();
+     const realPort = addr && typeof addr === "object" ? addr.port : port;
+     if (realPort !== basePort) {
+      log("warn", `base port ${basePort} busy — proxy listening on walked port http://${HOST}:${realPort}`);
+     } else {
+      log("info", `proxy listening on http://${HOST}:${realPort}`);
+     }
+     resolve({ server, port: realPort });
+    });
+   };
+
+   tryListen(basePort);
+  },
+ );
 }
 
 /**
@@ -1205,10 +1235,10 @@ export function startProxy(
  * soon as the port is alive (caller attaches instead of walking).
  */
 export async function reprobeBasePortAlive(port: number, timeoutMs: number): Promise<boolean> {
-	const deadline = Date.now() + Math.max(0, timeoutMs);
-	for (;;) {
-		if (await isProxyAlive(port)) return true;
-		if (Date.now() >= deadline) return false;
-		await new Promise<void>((r) => setTimeout(r, 200));
-	}
+ const deadline = Date.now() + Math.max(0, timeoutMs);
+ for (; ;) {
+  if (await isProxyAlive(port)) return true;
+  if (Date.now() >= deadline) return false;
+  await new Promise<void>((r) => setTimeout(r, 200));
+ }
 }

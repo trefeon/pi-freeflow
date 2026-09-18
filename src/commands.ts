@@ -36,7 +36,7 @@ import {
  saveDebugState,
 } from "./logger.ts";
 import { probeRelay } from "./probe.ts";
-import { getUpstreamHealth } from "./upstream-health.ts";
+import { getUpstreamHealth, resetUpstreamGate } from "./upstream-health.ts";
 import {
  buildRelayExport,
  ensureRelay,
@@ -1296,10 +1296,11 @@ export function createCommandSpec(
     );
     const updated = await refreshCatalog(true);
     setAliveCatalog(updated);
+    resetUpstreamGate("zen");
     persist();
     onCatalogRefreshed?.(updated);
     ctx.ui.notify(
-     `✓ Refreshed ${updated.length} models with full-spec metadata!`,
+     `✓ Refreshed ${updated.length} models with full-spec metadata (upstream health reset)!`,
      "info",
     );
    } else if (sub === "remove") {

@@ -1,4 +1,5 @@
 import { opencodeHeaders } from "./config.ts";
+import { ensureChatFingerprintTools } from "./opencode-fingerprint.ts";
 
 /**
  * Relay reachability probe: verifies a deployed relay answers requests
@@ -69,11 +70,14 @@ export async function probeRelay(
     fetchUrl = "https://opencode.ai/zen/v1/chat/completions";
     method = "POST";
     headers["content-type"] = "application/json";
-    body = JSON.stringify({
+    const probePayload: Record<string, unknown> = {
      model: opts?.model || "nemotron-3.5-lightning-free",
      max_tokens: 1,
+     stream: true,
      messages: [{ role: "user", content: "ping" }],
-    });
+    };
+    ensureChatFingerprintTools(probePayload);
+    body = JSON.stringify(probePayload);
    } else {
     fetchUrl = "https://opencode.ai/zen/v1/models";
    }
@@ -84,11 +88,14 @@ export async function probeRelay(
     headers["content-type"] = "application/json";
     headers["x-relay-target"] = "https://opencode.ai";
     headers["x-relay-path"] = "/zen/v1/chat/completions";
-    body = JSON.stringify({
+    const probePayload: Record<string, unknown> = {
      model: opts?.model || "nemotron-3.5-lightning-free",
      max_tokens: 1,
+     stream: true,
      messages: [{ role: "user", content: "ping" }],
-    });
+    };
+    ensureChatFingerprintTools(probePayload);
+    body = JSON.stringify(probePayload);
    } else {
     fetchUrl = `${cleanUrl}/v1/models`;
     headers["x-relay-target"] = "https://opencode.ai";
