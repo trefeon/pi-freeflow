@@ -35,6 +35,8 @@ import {
 import {
  convertSseToJson,
  enforceOpencodeFingerprint,
+ type CaseRestoreMap,
+ type FindGlobRestore,
 } from "./opencode-fingerprint.ts";
 import { isDebugEnabled, log } from "./logger.ts";
 import { getModelUpstream, KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
@@ -713,13 +715,19 @@ export function startProxy(
    }
 
    // OpenCode Zen free-tier fingerprint: upstream mandates stream: true and the
-   // file-search tool quartet {bash, glob, grep, read}. Missing tools (such as on
+   // placeholder sextet {bash, glob, grep, read, edit, write}. Missing tools (such as on
    // subagent or advisor watchdog turns) trigger 403 FreeTierError.
    let bodyModified = false;
    let callerHadTools = true;
+   let callerCaseRestore: CaseRestoreMap | undefined;
+   let callerFindGlob: FindGlobRestore | undefined;
+   let callerInjected: string[] | undefined;
    if (!isKilo && parsedBody) {
     const fp = enforceOpencodeFingerprint(parsedBody, target.pathname);
     callerHadTools = fp.callerHadTools;
+    callerCaseRestore = fp.caseRestore;
+    callerFindGlob = fp.findGlob;
+    callerInjected = fp.injected;
     bodyModified = true;
    }
 
@@ -986,7 +994,7 @@ export function startProxy(
           response.headers.get("content-type") ||
           "application/json";
          if (response.ok && (ct.includes("text/event-stream") || rawText.includes("data:"))) {
-          rawText = convertSseToJson(rawText, target.pathname, callerHadTools);
+          rawText = convertSseToJson(rawText, target.pathname, callerHadTools, callerCaseRestore, callerFindGlob, callerInjected);
           ct = "application/json";
          }
          const data = withFreeTierHint(response.status, withRateLimitHint(response.status, rawText));
@@ -1151,7 +1159,7 @@ export function startProxy(
       } else if (upstreamRes.body) {
        let rawText = await upstreamRes.text();
        if (upstreamRes.ok && (outHeaders["content-type"]?.includes("text/event-stream") || rawText.includes("data:"))) {
-        rawText = convertSseToJson(rawText, target.pathname, callerHadTools);
+        rawText = convertSseToJson(rawText, target.pathname, callerHadTools, callerCaseRestore, callerFindGlob, callerInjected);
         outHeaders["content-type"] = "application/json";
        }
        res.writeHead(upstreamRes.status, outHeaders);

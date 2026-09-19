@@ -83,7 +83,7 @@ test("proxy: OpenCode chat request without tools receives injected fingerprint a
 		assert.equal(clientRes.status, 200);
 		assert.ok(clientRes.headers["content-type"]?.includes("application/json"));
 
-		// 1. Upstream received fingerprinted body: stream: true and full tool quartet
+		// 1. Upstream received fingerprinted body: stream: true and full tool sextet
 		assert.ok(upstreamReceivedBody);
 		const body1 = upstreamReceivedBody as Record<string, unknown>;
 		assert.equal(body1.stream, true, "upstream must receive stream: true");
@@ -197,7 +197,7 @@ test("proxy: OpenCode Responses request without tools (like advisor watchdog) re
 		assert.equal(clientRes.status, 200);
 		assert.ok(clientRes.headers["content-type"]?.includes("application/json"));
 
-		// 1. Upstream received fingerprinted body: stream: true, store: false, flat tools quartet
+		// 1. Upstream received fingerprinted body: stream: true, store: false, flat tools sextet
 		assert.ok(upstreamReceivedBody);
 		const body2 = upstreamReceivedBody as Record<string, unknown>;
 		assert.equal(body2.stream, true);
