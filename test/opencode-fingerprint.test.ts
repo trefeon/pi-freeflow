@@ -144,6 +144,34 @@ test("enforceOpencodeFingerprint: Bash lowercased without dup, tool_choice retar
 	assert.deepEqual(body.tool_choice, { type: "function", function: { name: "bash" } });
 });
 
+test("enforceOpencodeFingerprint: caller tool_choice naming find rides upstream as glob", () => {
+	// Translator gap: the find declaration was renamed to glob upstream while a
+	// caller tool_choice naming find was left dangling. Both shapes retarget.
+	const body: Record<string, unknown> = {
+		model: "m",
+		stream: true,
+		tools: [{ type: "function", function: { name: "find", description: "f", parameters: { type: "object" } } }],
+		tool_choice: { type: "function", function: { name: "find" } },
+	};
+	const r = enforceOpencodeFingerprint(body, "/v1/chat/completions");
+	const names = (body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name);
+	assert.ok(names.includes("glob"), "find declaration renamed to glob upstream");
+	assert.ok(!names.some((n) => n.toLowerCase() === "find"), "no dangling find declaration");
+	assert.deepEqual(body.tool_choice, { type: "function", function: { name: "glob" } });
+	for (const t of ["bash", "glob", "grep", "read", "edit", "write"]) {
+		assert.ok(names.includes(t), `sextet complete upstream: ${t}`);
+	}
+	assert.ok(!r.injected.includes("glob"), "caller-supplied glob is not re-injected");
+	const stringChoice: Record<string, unknown> = {
+		stream: true,
+		tools: [{ type: "function", function: { name: "find", description: "f", parameters: { type: "object" } } }],
+		tool_choice: "find",
+	};
+	enforceOpencodeFingerprint(stringChoice, "/v1/responses");
+	assert.equal(stringChoice.tool_choice, "glob", "string choice retargets too");
+	assert.equal(stringChoice.store, false, "responses cloak still applies");
+});
+
 test("normalizePlaceholderCase + retargetToolChoice: bounded per-request restore", () => {
 	const body: Record<string, unknown> = {
 		tools: [{ name: "Grep" }, { name: "ls" }],

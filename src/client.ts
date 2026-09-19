@@ -35,10 +35,12 @@ import {
  LEGACY_PORT,
  LOG_FILE,
  NO_KILL_ENV,
+ OPENCODE_VERSION_TTL_MS,
  PKG_VERSION,
  PORT,
  RECOVERY_BACKOFF_BASE_MS,
  RECOVERY_BACKOFF_CAP_MS,
+ refreshOpenCodeUserAgent,
 } from "./config.ts";
 import { logInfo, logWarn } from "./logger.ts";
 import {
@@ -68,6 +70,10 @@ let backoffAttempt = 0;
 let recoveryFailures: number[] = [];
 /** Watchdog respawns halted until this time (breaker open). */
 let breakerOpenUntil = 0;
+/** Last wall-clock attempt of a background UA refresh; storm-guard for heartbeat cadence. */
+let lastUaRefreshAt = 0;
+/** Test-injected fetch for the background UA refresh; null = global fetch. */
+let uaRefreshFetch: typeof fetch | null = null;
 
 export interface DaemonRuntime {
  execPath: string;
@@ -252,6 +258,35 @@ async function controlCall(
  }
 }
 
+/**
+ * Fire-and-forget background refresh of the OpenCode User-Agent.
+ * Called once at attach/startup and re-armed on the heartbeat cadence.
+ * Never on the request hot path, never awaited, failures silent: the pinned
+ * fallback keeps serving traffic offline and the 6h disk TTL keeps the live
+ * version fresh. The in-process last-attempt timestamp (set synchronously
+ * before firing) stops overlapping heartbeats from stampeding npm while a
+ * fetch is still in flight.
+ */
+export function maybeRefreshOpenCodeUserAgent(): void {
+ const now = Date.now();
+ if (now - lastUaRefreshAt < OPENCODE_VERSION_TTL_MS) return;
+ lastUaRefreshAt = now;
+ try {
+  void Promise.resolve(refreshOpenCodeUserAgent(uaRefreshFetch ?? fetch)).catch(() => { });
+ } catch { }
+}
+
+/** Test seam: inject the fetch used by the background UA refresh. */
+export function _setUaRefreshFetchForTest(fetchImpl: typeof fetch | null): void {
+ uaRefreshFetch = fetchImpl;
+}
+
+/** Test seam: reset the UA refresh storm-guard (and injected fetch). */
+export function _resetUaRefreshForTest(): void {
+ lastUaRefreshAt = 0;
+ uaRefreshFetch = null;
+}
+
 function startHeartbeat(port: number): void {
  stopHeartbeatInternal();
  heartbeatPort = port;
@@ -298,6 +333,7 @@ export function stopHeartbeat(): void {
 }
 
 async function beatOnce(port: number): Promise<void> {
+ maybeRefreshOpenCodeUserAgent();
  if (ensuring) return;
  const result = await controlCall(port, "/_client/heartbeat", { id: CLIENT_ID });
  if (result === "gone") {
@@ -315,6 +351,7 @@ async function attachTo(port: number): Promise<void> {
   return;
  }
  startHeartbeat(port);
+ maybeRefreshOpenCodeUserAgent();
 }
 
 /**
@@ -868,6 +905,7 @@ export function _resetClientForTest(): void {
  attachedPort = 0;
  ensuring = false;
  lastSpawnAt = 0;
+ _resetUaRefreshForTest();
  _resetRecoveryForTest();
  if (fallbackServer) {
   try {

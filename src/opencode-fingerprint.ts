@@ -249,6 +249,11 @@ export function enforceOpencodeFingerprint(
  retargetToolChoice(body);
 
  const findGlob = buildFindGlobRestore(Array.isArray(body.tools) ? body.tools : []);
+ // Caller tool_choice naming `find` must ride upstream as `glob` — the rename
+ // above collapses the declaration, so an unretargeted choice dangles.
+ if (body.tool_choice !== undefined) {
+  body.tool_choice = retargetToolChoiceForUpstream(body.tool_choice, findGlob) as Record<string, unknown> | string;
+ }
  const callerUpstream = new Set<string>();
  if (Array.isArray(body.tools)) {
   for (const tool of body.tools) {

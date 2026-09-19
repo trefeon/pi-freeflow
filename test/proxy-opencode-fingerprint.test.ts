@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { startProxy } from "../src/proxy.ts";
-import { OPENCODE_FINGERPRINT_TOOLS } from "../src/opencode-fingerprint.ts";
+import { OPENCODE_FINGERPRINT_TOOLS, toolNameOf } from "../src/opencode-fingerprint.ts";
 import { _resetUpstreamHealthForTest } from "../src/upstream-health.ts";
 import { _resetFreeTierHintForTest } from "../src/upstream-health.ts";
 
@@ -211,6 +211,99 @@ test("proxy: OpenCode Responses request without tools (like advisor watchdog) re
 		// 2. Client received clean completed response object
 		const parsed = JSON.parse(clientRes.body) as typeof expectedResponseObj;
 		assert.deepEqual(parsed, expectedResponseObj);
+	} finally {
+		globalThis.fetch = realFetch;
+		if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+		await new Promise<void>((resolve) => mockUpstream.close(() => resolve()));
+		_resetUpstreamHealthForTest();
+		_resetFreeTierHintForTest();
+	}
+});
+
+test("proxy: upstream receives live UA + ses_/msg_ headers with stream:true and the full sextet", async () => {
+	_resetUpstreamHealthForTest();
+	_resetFreeTierHintForTest();
+
+	let upstreamReceivedBody: Record<string, unknown> | null = null;
+	let upstreamHeaders: Record<string, string> = {};
+	const mockUpstream = http.createServer((req, res) => {
+		upstreamHeaders = {};
+		for (const [k, v] of Object.entries(req.headers)) {
+			if (typeof v === "string") upstreamHeaders[k] = v;
+		}
+		const chunks: Buffer[] = [];
+		req.on("data", (c) => chunks.push(c));
+		req.on("end", () => {
+			upstreamReceivedBody = JSON.parse(Buffer.concat(chunks).toString());
+			res.writeHead(200, { "content-type": "text/event-stream" });
+			res.write(
+				'data: {"id":"chatcmpl-456","model":"big-pickle","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"}}]}\n\n',
+			);
+			res.end("data: [DONE]\n\n");
+		});
+	});
+
+	await new Promise<void>((resolve) => mockUpstream.listen(0, "127.0.0.1", () => resolve()));
+	const mockPort = (mockUpstream.address() as { port: number }).port;
+
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+		const targetUrl = new URL(String(url));
+		const redirectUrl = `http://127.0.0.1:${mockPort}${targetUrl.pathname}`;
+		return realFetch(redirectUrl, init);
+	}) as typeof fetch;
+
+	const { server, port } = await startProxy(TEST_PORT + 2);
+	const effectivePort = port ?? TEST_PORT + 2;
+
+	try {
+		const clientRes = await new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>(
+			(resolve, reject) => {
+				const clientReq = http.request(
+					{
+						hostname: "127.0.0.1",
+						port: effectivePort,
+						path: "/v1/chat/completions",
+						method: "POST",
+						headers: { "content-type": "application/json" },
+					},
+					(res) => {
+						const chunks: Buffer[] = [];
+						res.on("data", (c) => chunks.push(c));
+						res.on("end", () => {
+							resolve({
+								status: res.statusCode ?? 0,
+								headers: res.headers,
+								body: Buffer.concat(chunks).toString(),
+							});
+						});
+					},
+				);
+				clientReq.on("error", reject);
+				clientReq.write(JSON.stringify({ model: "big-pickle", messages: [{ role: "user", content: "hi" }] }));
+				clientReq.end();
+			},
+		);
+		assert.equal(clientRes.status, 200);
+		assert.ok(clientRes.headers["content-type"]?.includes("application/json"), "SSE converted back for non-streaming client");
+
+		// Gate axes on the wire: UA, session/request IDs, tools, stream.
+		assert.ok(/^opencode\/\d+\.\d+\.\d+$/.test(upstreamHeaders["user-agent"] ?? ""), `live UA header: ${upstreamHeaders["user-agent"]}`);
+		assert.ok(
+			/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(upstreamHeaders["x-opencode-session"] ?? ""),
+			`ses_ header shape: ${upstreamHeaders["x-opencode-session"]}`,
+		);
+		assert.ok(
+			/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(upstreamHeaders["x-opencode-request"] ?? ""),
+			`msg_ header shape: ${upstreamHeaders["x-opencode-request"]}`,
+		);
+		assert.equal(upstreamHeaders["x-opencode-client"], "cli");
+		const received: unknown = upstreamReceivedBody;
+		assert.ok(received && typeof received === "object" && "stream" in received && "tools" in received);
+		assert.equal(received.stream, true);
+		assert.ok(Array.isArray(received.tools), "tools must be present");
+		const names = received.tools.map((t) => toolNameOf(t));
+		assert.deepEqual([...names].sort(), ["bash", "edit", "glob", "grep", "read", "write"]);
 	} finally {
 		globalThis.fetch = realFetch;
 		if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
