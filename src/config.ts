@@ -6,7 +6,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 // Package version — stale-daemon detection in the shared-port reuse path.
 let PKG_VERSION = "0.0.0";
@@ -45,9 +45,148 @@ export function resolvePort(): number {
 export const PORT = resolvePort();
 
 // ── OpenCode client headers ─────────────────────────────────────────
-export const OPENCODE_VERSION = "1.18.31";
+// Live UA layer, grounded in reference/opencode:
+// - packages/opencode/src/session/llm/request.ts sends `User-Agent: USER_AGENT`
+//   on every opencode-provider request.
+// - packages/opencode/src/installation/index.ts builds it as
+//   `opencode/${InstallationVersion}` (plugin probes) or
+//   `opencode/${InstallationChannel}/${InstallationVersion}/${client}` (CLI).
+// - packages/core/src/installation/version.ts falls back to "local" when the
+//   build-time OPENCODE_VERSION global is absent.
+// Free-tier floor: opencodeHeaders() must never send below 1.17.0.
+// OPENCODE_VERSION_FLOOR pins the minimum; OPENCODE_VERSION_FALLBACK is the
+// last-known-good npm version used when the live lookup is stale/offline.
+export const OPENCODE_VERSION_FLOOR = "1.17.0";
+export const OPENCODE_VERSION_FALLBACK = "1.18.31";
+/** Live npm lookup TTL: 6h — within one window the cached UA is reused. */
+export const OPENCODE_VERSION_TTL_MS = 6 * 60 * 60 * 1_000;
+/** Env override: exact `opencode/<version>` UA (or bare version) for tests/pins. */
+export const OPENCODE_USER_AGENT_ENV = "PI_FREEFLOW_OPENCODE_USER_AGENT";
+/** Owned UA probe cache file (sibling of the update-check cache). */
+export const OPENCODE_VERSION_CACHE_ENV = "PI_FREEFLOW_OPENCODE_VERSION_CACHE";
+
+export const OPENCODE_VERSION = OPENCODE_VERSION_FALLBACK;
 export const OPENCODE_USER_AGENT = `opencode/${OPENCODE_VERSION}`;
 export const OPENCODE_CLIENT = "cli";
+
+function compareVersionParts(a: string, b: string): number {
+ const pa = a.split(".").map((p) => Number.parseInt(p, 10));
+ const pb = b.split(".").map((p) => Number.parseInt(p, 10));
+ for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+  const na = pa[i] ?? 0;
+  const nb = pb[i] ?? 0;
+  if (na !== nb) return na < nb ? -1 : 1;
+ }
+ return 0;
+}
+
+/** True when `version` is a strict `major.minor.patch` at or above the floor. */
+export function isSupportedOpenCodeVersion(version: unknown): boolean {
+ if (typeof version !== "string") return false;
+ if (!/^\d+\.\d+\.\d+$/.test(version)) return false;
+ return compareVersionParts(version, OPENCODE_VERSION_FLOOR) >= 0;
+}
+
+/** Normalize an override/registry version into an `opencode/<v>` UA, else null. */
+export function toOpenCodeUserAgent(version: unknown): string | null {
+ if (typeof version !== "string") return null;
+ const v = version.trim();
+ if (!v) return null;
+ const bare = v.startsWith("opencode/") ? v.slice("opencode/".length) : v;
+ if (!isSupportedOpenCodeVersion(bare)) return null;
+ return `opencode/${bare}`;
+}
+
+function openCodeVersionCachePath(): string {
+ const override = process.env[OPENCODE_VERSION_CACHE_ENV];
+ if (typeof override === "string" && override.trim() !== "") return override;
+ try {
+  return path.join(path.dirname(resolveUpdateCachePath()), "pi-freeflow-opencode-version.json");
+ } catch {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".opencode-version.json");
+ }
+}
+
+interface OpenCodeVersionCache { version: string; checkedAt: number; }
+
+function readOpenCodeVersionCache(): OpenCodeVersionCache | null {
+ try {
+  const raw = readFileSync(openCodeVersionCachePath(), "utf8");
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object") return null;
+  const { version, checkedAt } = parsed as Record<string, unknown>;
+  if (!isSupportedOpenCodeVersion(version)) return null;
+  if (typeof checkedAt !== "number" || !Number.isFinite(checkedAt)) return null;
+  return { version: version as string, checkedAt };
+ } catch { return null; }
+}
+
+function writeOpenCodeVersionCache(version: string): void {
+ try {
+  const file = openCodeVersionCachePath();
+  const dir = path.dirname(file);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(file, JSON.stringify({ version, checkedAt: Date.now() }), "utf8");
+ } catch { }
+}
+
+let liveOpenCodeVersion: string | null = null;
+/** Memoized disk read: path -> { version, fileCheckedAt } so opencodeHeaders() stays sync and cheap. */
+let diskMemo: { path: string; version: string | null; readAt: number } | null = null;
+const DISK_MEMO_TTL_MS = 60_000;
+
+function memoizedDiskVersion(): string | null {
+ const file = openCodeVersionCachePath();
+ const now = Date.now();
+ if (diskMemo && diskMemo.path === file && now - diskMemo.readAt < DISK_MEMO_TTL_MS) return diskMemo.version;
+ const cached = readOpenCodeVersionCache();
+ const version = cached && now - cached.checkedAt < OPENCODE_VERSION_TTL_MS ? cached.version : null;
+ diskMemo = { path: file, version, readAt: now };
+ return version;
+}
+
+/** Test-only: reset the in-process live version (cache file untouched). */
+export function _resetLiveOpenCodeVersionForTest(): void { liveOpenCodeVersion = null; diskMemo = null; }
+
+/**
+ * Synchronous UA getter — offline-safe by construction. Precedence:
+ * env override > in-process live version > fresh disk cache > pinned fallback.
+ * Never throws, never touches the network (disk re-read at most once a minute).
+ */
+export function getOpenCodeUserAgent(): string {
+ const override = toOpenCodeUserAgent(process.env[OPENCODE_USER_AGENT_ENV]);
+ if (override) return override;
+ if (liveOpenCodeVersion && isSupportedOpenCodeVersion(liveOpenCodeVersion)) {
+  return `opencode/${liveOpenCodeVersion}`;
+ }
+ const disk = memoizedDiskVersion();
+ if (disk) return `opencode/${disk}`;
+ return OPENCODE_USER_AGENT;
+}
+
+/**
+ * Refresh the live UA from `npm view opencode-ai version` (registry metadata,
+ * same source the installer layer queries for the latest channel build).
+ * Offline-safe: any failure keeps the pinned fallback and returns it.
+ * A fetched version below the floor never replaces the fallback.
+ */
+export async function refreshOpenCodeUserAgent(fetchImpl: typeof fetch = fetch): Promise<string> {
+ const override = toOpenCodeUserAgent(process.env[OPENCODE_USER_AGENT_ENV]);
+ if (override) return override;
+ try {
+  const res = await fetchImpl("https://registry.npmjs.org/opencode-ai/latest", {
+   signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) return getOpenCodeUserAgent();
+  const body: unknown = await res.json();
+  const version = (body as Record<string, unknown>)?.version;
+  if (!isSupportedOpenCodeVersion(version)) return getOpenCodeUserAgent();
+  liveOpenCodeVersion = version as string;
+  writeOpenCodeVersionCache(version as string);
+  diskMemo = null;
+  return `opencode/${version}`;
+ } catch { return getOpenCodeUserAgent(); }
+}
 // OpenCode project ID: 40-character sha1 hex hash
 export const OPENCODE_PROJECT = createHash("sha1")
  .update("git-remote:github.com/anomalyco/opencode")
@@ -58,9 +197,10 @@ let idTimestamp = 0;
 let idCounter = 0;
 
 /**
- * Generate a 26-character Crockford/base62 OpenCode-compatible identifier.
+ * Generate a 26-character OpenCode-compatible identifier.
  * Matches packages/schema/src/identifier.ts in anomalyco/opencode:
- * 12 hex characters encoding inverted (descending) or direct (ascending) timestamp,
+ * 12 hex characters encoding inverted (descending) or direct (ascending)
+ * timestamp (BigInt(timestamp) * 0x1000n + counter, ~ when descending),
  * followed by 14 random base62 characters.
  */
 export function createOpenCodeId(descending: boolean, timestamp = Date.now()): string {
@@ -93,7 +233,7 @@ export const OPENCODE_SESSION = createOpenCodeSessionId();
 
 export function opencodeHeaders(): Record<string, string> {
  return {
-  "User-Agent": OPENCODE_USER_AGENT,
+  "User-Agent": getOpenCodeUserAgent(),
   "x-opencode-client": OPENCODE_CLIENT,
   "x-opencode-project": OPENCODE_PROJECT,
   "x-opencode-session": OPENCODE_SESSION,

@@ -1,0 +1,118 @@
+name: OpenCode Upstream Watcher
+
+on:
+  schedule:
+    # Daily at 04:00 UTC
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  watch:
+    name: Check Upstream OpenCode Drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+
+      - name: Run OpenCode Watch Check
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          node scripts/opencode-watch.mjs --check --output drift-report.md
+          EXIT_CODE=$?
+          set -e
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+          if [ $EXIT_CODE -eq 2 ]; then
+            echo "Watcher infra failure (exit code 2) — report only, no drift issue"
+            echo "DRIFT_DETECTED=false" >> "$GITHUB_ENV"
+            echo "INFRA_FAILURE=true" >> "$GITHUB_ENV"
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          elif [ $EXIT_CODE -ne 0 ]; then
+            echo "Drift detected (exit code $EXIT_CODE)"
+            echo "DRIFT_DETECTED=true" >> "$GITHUB_ENV"
+            echo "INFRA_FAILURE=false" >> "$GITHUB_ENV"
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No drift detected (exit code 0)"
+            echo "DRIFT_DETECTED=false" >> "$GITHUB_ENV"
+            echo "INFRA_FAILURE=false" >> "$GITHUB_ENV"
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish Step Summary
+        if: always()
+        run: |
+          if [ -f drift-report.md ]; then
+            cat drift-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Annotate Infra Failure
+        if: always() && env.INFRA_FAILURE == 'true'
+        run: |
+          echo "::error::OpenCode watcher infra failure — see step summary; no drift issue filed."
+
+      - name: Open or Update GitHub Issue on Drift
+        if: env.DRIFT_DETECTED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LABEL="opencode-drift"
+          # Ensure label exists in repository
+          gh label create "$LABEL" --description "Upstream OpenCode drift detected" --color "d73a4a" --force || true
+
+          # Fall back to a minimal inline body when the report file is missing
+          BODY_ARGS="--body-file drift-report.md"
+          if [ ! -f drift-report.md ]; then
+            BODY_ARGS="--body \"OpenCode upstream drift detected but drift-report.md is missing. See workflow logs.\""
+          fi
+
+          # Check for existing open issue with the opencode-drift label
+          EXISTING_ISSUE=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number')
+
+          if [ -n "$EXISTING_ISSUE" ]; then
+            echo "Updating existing drift issue #$EXISTING_ISSUE"
+            # shellcheck disable=SC2086
+            gh issue comment "$EXISTING_ISSUE" $BODY_ARGS
+          else
+            echo "Creating new drift issue"
+            CURRENT_DATE=$(date -u +'%Y-%m-%d')
+            # shellcheck disable=SC2086
+            gh issue create \
+              --title "🚨 OpenCode Upstream Drift Detected (${CURRENT_DATE})" \
+              --label "$LABEL" \
+              $BODY_ARGS
+          fi
+
+      - name: Update State and Commit
+        if: env.DRIFT_DETECTED == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Updating .github/opencode-watch-state.json..."
+          node scripts/opencode-watch.mjs --update
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/opencode-watch-state.json
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(watch): update opencode watch state [skip ci]"
+            git push
+          else
+            echo "No state changes to commit"
+          fi
