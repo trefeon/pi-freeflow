@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.20.0
+
+### Minor Changes
+
+- Every tool from both supported hosts now works on every free model, including the models served on the dedicated responses endpoint. The proxy also tracks the latest client version in the background and always identifies itself with a supported one, so free-tier access keeps working as new releases come out.
+
+  Also new: a daily automated check watches for upstream changes (new releases, free-model list and pricing changes) and files an issue when anything drifts, plus an opt-in script that verifies all tools end-to-end against the live free tier.
+
 ## 1.19.0
 
 ### Minor Changes
@@ -12,11 +20,11 @@
 
 - OpenCode free-tier client fingerprinting: plain chat, subagent, evaluation, and background watchdog requests now pass upstream free-tier gates without error. The proxy automatically supplies compatibility tools and streaming conventions expected by the upstream gateway, while transparently converting responses to standard non-streaming format for callers that request it.
 
- ## 1.17.1
+## 1.17.1
 
- ### Patch Changes
+### Patch Changes
 
- - Assistant and subagent requests now stay working when the shared free-tier gateway refuses sessions: retried and resumed conversations automatically continue on a healthy fallback model instead of repeating the refusal, and normal routing resumes on its own once the gateway recovers.
+- Assistant and subagent requests now stay working when the shared free-tier gateway refuses sessions: retried and resumed conversations automatically continue on a healthy fallback model instead of repeating the refusal, and normal routing resumes on its own once the gateway recovers.
 
 ## 1.17.0
 
