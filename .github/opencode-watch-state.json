@@ -1,18 +1,20 @@
 {
   "lastRelease": "v1.18.31",
   "fileShas": {
-    "identifier.ts": "3eeb8c682210921b6dac49f0d785d9088a48503c4539d590f5c3b0e848d78b27",
-    "session-id.ts": "e9bf2bb2382af14577371b17b22b36f07ef6cf97923e655935fde0460ec3bdc6",
-    "zen.mdx": "4876062e4ffc6ed1ec01a3e2389d5d38b54a63f346b2b31c896630112cec6fad"
+    "identifier.ts": "aab182e24eb8e133300c5105e67e21d438550ab326e31fffac7763873c5ae5cd",
+    "session-id.ts": "da161dc7602f91a0528fce9f259d1ff83d84e8376d5b2cbd714ceeeb001c7b9b",
+    "zen.mdx": "a699182f6c5fb8d18af56342bbe49437ce2316a8d33d6ca3e06ab6dac5d6a330"
   },
   "freeModels": [
     "big-pickle",
-    "mimo-v2.5-free",
+    "deepseek-v4-flash-free",
+    "jev-1.13-free",
     "ling-3.0-flash-fin-free",
-    "nemotron-3-ultra-free",
-    "nemotron-3.5-lightning-free",
+    "mimo-v2.5-free",
+    "muse-spark-1.2-contributor-free",
     "muse-spark-1.3-contributor-free",
-    "jev-1.13-free"
+    "nemotron-3-ultra-free",
+    "nemotron-3.5-lightning-free"
   ],
-  "lastChecked": "2026-09-19T00:00:00.000Z"
+  "lastChecked": "2026-09-20T17:06:22.694Z"
 }
