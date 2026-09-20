@@ -7,6 +7,8 @@
  * mocked tests only, no live calls here.
  */
 
+import { fetchWithSystemCA } from "./system-ca-fetch.ts";
+
 export interface OAuthCredentials {
  access: string;
  refresh: string;
@@ -61,9 +63,20 @@ export function resolveClineWorkosClientId(): string {
 /** Resolved client id used by start/poll. */
 export const CLINE_WORKOS_CLIENT_ID = resolveClineWorkosClientId();
 
+/**
+ * Wire form of a Cline credential. Cline OAuth access tokens are WorkOS JWTs
+ * (base64url eyJ header) and must ride as workos:<jwt>; dashboard API keys
+ * (clp_ apikey category) go verbatim — prefixing them 401s. Mirrors the
+ * 9router getClineAccessToken guard (open-sse/shared/clineAuth.js).
+ */
+export function isWorkosJwt(token: string): boolean {
+ return /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(token.trim());
+}
+
 export function toApiKey(accessToken: string): string {
  const token = accessToken.trim();
- return token.toLowerCase().startsWith(WORKOS_TOKEN_PREFIX) ? token : `${WORKOS_TOKEN_PREFIX}${token}`;
+ if (token.toLowerCase().startsWith(WORKOS_TOKEN_PREFIX)) return token;
+ return isWorkosJwt(token) ? `${WORKOS_TOKEN_PREFIX}${token}` : token;
 }
 
 const DEVICE_AUTHORIZATION_PATH = "/user_management/authorize/device";
@@ -73,7 +86,7 @@ const REFRESH_PATH = "/api/v1/auth/refresh";
 
 const HTTP_TIMEOUT_MS = 30 * 1000;
 
-export type FetchImpl = typeof fetch;
+export type FetchImpl = (input: string, init?: RequestInit) => Promise<Response>;
 
 function joinUrl(base: string, path: string): string {
  return base.replace(/\/+$/, "") + path;
@@ -126,7 +139,7 @@ export function deriveExpiry(explicitMs: number | undefined, accessToken: string
 
 export async function startDeviceAuth(
  workosBase: string = DEFAULT_WORKOS_BASE,
- fetchImpl: FetchImpl = fetch,
+ fetchImpl: FetchImpl = fetchWithSystemCA,
 ): Promise<DeviceAuth> {
  const response = await fetchImpl(joinUrl(workosBase, DEVICE_AUTHORIZATION_PATH), {
   method: "POST",
@@ -173,7 +186,7 @@ export async function pollDeviceToken(
  options?: PollOptions,
 ): Promise<DevicePollTokens> {
  if (!deviceCode) throw new Error("deviceCode is required");
- const fetchFn = options?.fetchImpl ?? fetch;
+ const fetchFn = options?.fetchImpl ?? fetchWithSystemCA;
  const outerSignal = options?.signal;
  const deadline = Date.now() + (options?.maxWaitMs ?? intervalSeconds * 1000 * 60 * 10);
  let interval = Math.max(1, intervalSeconds);
@@ -295,7 +308,7 @@ export async function registerClineToken(
  apiBase: string = DEFAULT_API_BASE,
  accessToken = "",
  refreshToken = "",
- fetchImpl: FetchImpl = fetch,
+ fetchImpl: FetchImpl = fetchWithSystemCA,
 ): Promise<OAuthCredentials> {
  if (!accessToken || !refreshToken) throw new Error("accessToken and refreshToken are required");
  const response = await fetchImpl(joinUrl(apiBase, REGISTER_PATH), {
@@ -316,7 +329,7 @@ export async function registerClineToken(
 export async function refreshClineToken(
  apiBase: string = DEFAULT_API_BASE,
  refreshToken = "",
- fetchImpl: FetchImpl = fetch,
+ fetchImpl: FetchImpl = fetchWithSystemCA,
 ): Promise<OAuthCredentials> {
  if (!refreshToken) throw new Error("refreshToken is required");
  const response = await fetchImpl(joinUrl(apiBase, REFRESH_PATH), {

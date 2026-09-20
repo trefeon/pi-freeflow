@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.22.2
+
+### Patch Changes
+
+- Fix Cline login flow: the browser link and code now arrive in a single copy-paste block and stay pinned until login finishes, instead of the link scrolling away behind a separate waiting notice. Saved logins also refresh on their own again before expiring, and chatting with no logins saved tells you to add one instead of showing a rate-limit hint.
+
 ## 1.22.1
 
 ### Patch Changes

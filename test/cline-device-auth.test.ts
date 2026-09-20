@@ -26,11 +26,12 @@ function b64url(obj: unknown): string {
 }
 
 describe("toApiKey", () => {
-	it("adds the workos: prefix once", () => {
-		assert.equal(toApiKey("abc"), "workos:abc");
-		assert.equal(toApiKey("workos:abc"), "workos:abc");
-		assert.equal(toApiKey("WorkOS:abc"), "WorkOS:abc");
-		assert.equal(toApiKey("  abc  "), "workos:abc");
+	it("prefixes WorkOS JWTs once, passes dashboard keys verbatim", () => {
+		assert.equal(toApiKey("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.sig"), "workos:eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.sig");
+		assert.equal(toApiKey("workos:eyJhYi5jZA"), "workos:eyJhYi5jZA");
+		assert.equal(toApiKey("clp_abc123"), "clp_abc123");
+		assert.equal(toApiKey("abc"), "abc");
+		assert.equal(toApiKey("  abc  "), "abc");
 	});
 });
 

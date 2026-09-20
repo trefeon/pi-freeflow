@@ -11,6 +11,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { RELAY_STATE_FILE } from "./config.ts";
 import { logWarn } from "./logger.ts";
+import type { FetchImpl } from "./cline-device-auth.ts";
+import { isWorkosJwt } from "./cline-device-auth.ts";
 
 /** Env override for the pool file location (tests/CI sandbox). */
 export const CLINE_POOL_FILE_ENV = "PI_FREEFLOW_CLINE_POOL_FILE";
@@ -144,7 +146,7 @@ function readPoolFile(): ClinePoolState {
    const rec: Record<string, unknown> = entry as Record<string, unknown>;
    const slot = typeof rec.slot === "string" ? rec.slot.trim() : "";
    const token = typeof rec.token === "string" ? rec.token : "";
-   if (!slot || !token.startsWith("workos:")) continue;
+   if (!slot || (!token.startsWith("workos:") && !isWorkosJwt(token) && !token.startsWith("clp_"))) continue;
    const refreshRaw: unknown = rec.refreshToken;
    const refreshToken = typeof refreshRaw === "string" && refreshRaw.length > 0 ? refreshRaw : undefined;
    const expiresRaw: unknown = rec.expiresAt;
@@ -238,7 +240,7 @@ export function addAccount(
  const cleanSlot = (slot || "").trim();
  if (!cleanSlot) throw new Error("Cline slot name cannot be empty");
  if (cleanSlot.length > 64) throw new Error("Cline slot name is too long (max 64 characters)");
- if (!token.startsWith("workos:")) throw new Error("Cline token must start with workos:");
+ if (!token.startsWith("workos:") && !isWorkosJwt(token) && !token.startsWith("clp_")) throw new Error("Cline token must be a workos: login grant or a clp_ API key");
  const pool = loadPool();
  const existing = pool.accounts.find((a) => a.slot === cleanSlot);
  if (existing) {
@@ -308,7 +310,7 @@ async function refreshAccountInPlace(
   void e;
   return null;
  }
- if (!fresh || typeof fresh.token !== "string" || !fresh.token.startsWith("workos:")) {
+ if (!fresh || typeof fresh.token !== "string" || (!fresh.token.startsWith("workos:") && !isWorkosJwt(fresh.token) && !fresh.token.startsWith("clp_"))) {
   logWarn("cline slot refresh rejected — grant is dead", { slot: account.slot });
   return false;
  }
@@ -368,7 +370,7 @@ export interface ClineRollOpts {
  chatUrl: string;
  /** Restrict the roll to these slots; default is the whole pool. */
  slots?: string[];
- fetchImpl?: typeof fetch;
+ fetchImpl?: FetchImpl;
  reqId?: string;
  /**
   * Device-login refresher. When present, a stale slot refreshes once before

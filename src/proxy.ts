@@ -42,7 +42,9 @@ import {
 } from "./opencode-fingerprint.ts";
 import { isDebugEnabled, log } from "./logger.ts";
 import { getModelUpstream, isClineModel, KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
+import { refreshClineToken, toApiKey } from "./cline-device-auth.ts";
 import { rollChat } from "./cline-accounts.ts";
+import { fetchWithSystemCA } from "./system-ca-fetch.ts";
 import {
  chatResponsesJsonFromChatCompletion,
  chatResponsesSseFromChatCompletion,
@@ -133,6 +135,9 @@ const CLINE_MODEL_HINT =
  * bodies — passes through untouched.
  */
 export function mapClineError(status: number, data: string): string {
+ // Synthetic pool-exhausted bodies already tell the user exactly what to do
+ // (add a login / wait out cooldowns) — a rate-limit hint would mislead.
+ if (data.includes("cline_pool_exhausted")) return data;
  const hint = status === 429
   ? CLINE_RATE_LIMIT_HINT
   : status === 403
@@ -150,6 +155,15 @@ export function mapClineError(status: number, data: string): string {
   }
  } catch { }
  return data;
+}
+/**
+ * Device-login refresher for the Cline pool: one refresh per stale slot per
+ * turn. A throw keeps the stale bearer (transient); only a well-formed fresh
+ * grant replaces it — the pool module owns that decision.
+ */
+async function clineRefreshImpl(refreshToken: string): Promise<{ token: string; refreshToken?: string; expiresAt?: number } | null> {
+ const creds = await refreshClineToken(undefined, refreshToken);
+ return { token: toApiKey(creds.access), refreshToken: creds.refresh, expiresAt: creds.expires };
 }
 
 /**
@@ -181,7 +195,7 @@ async function handleClineRequest(opts: {
  chatBody.stream = true;
  let upstreamRes: Response;
  try {
-  const result = await rollChat({ body: JSON.stringify(chatBody), chatUrl: CLINE_CHAT_URL });
+  const result = await rollChat({ body: JSON.stringify(chatBody), chatUrl: CLINE_CHAT_URL, refreshImpl: clineRefreshImpl, fetchImpl: fetchWithSystemCA });
   upstreamRes = result.res;
   if (typeof result.slot === "string" && result.slot.length > 0) {
    log("debug", `cline served by slot ${result.slot}`, { model }, reqId);

@@ -61,6 +61,7 @@ import {
 import { addAccount, isClineSlotHealthy, loadPool, redactedToken, removeAccount } from "./cline-accounts.ts";
 import type { ClinePoolState } from "./cline-accounts.ts";
 import { pollDeviceToken, registerClineToken, startDeviceAuth, toApiKey } from "./cline-device-auth.ts";
+import { isCertError } from "./system-ca-fetch.ts";
 import type {
  ExtensionAPI,
  ExtensionContext,
@@ -1452,20 +1453,25 @@ export function createCommandSpec(
      try {
       started = await startDeviceAuth();
      } catch (e) {
+      if (isCertError(e)) {
+       ctx.ui.notify("Could not reach Cline: your antivirus or network proxy intercepts TLS and Node does not trust it. The login retries with your OS certificates automatically — if this persists, restart the host with NODE_USE_SYSTEM_CA=1 set, or point NODE_EXTRA_CA_CERTS at your proxy CA file.", "error");
+       return;
+      }
       ctx.ui.notify(`Could not reach Cline to start login: ${clineErrorMessage(e)}`, "error");
       return;
      }
      const link = started.verificationUriComplete ?? started.verificationUri;
      const minutes = Math.max(1, Math.round(started.expiresIn / 60));
-     ctx.ui.notify(`Cline login [${slot}]: open ${link} and enter code ${started.userCode} (expires in ~${minutes} min)`, "info");
-     ctx.ui.notify("Waiting for approval in the browser — approve or cancel there; this finishes on its own.", "info");
+     const loginLine = `Cline login [${slot}]\nOpen this link in your browser:\n${link}\nEnter code: ${started.userCode} (expires in ~${minutes} min)\nWaiting for approval — approve or cancel in the browser; this finishes on its own.`;
+     ctx.ui.notify(loginLine, "info");
+     try { ctx.ui.setStatus("cline-login", `Cline login [${slot}] code ${started.userCode}`); } catch { }
      const progress = setInterval(() => {
-      ctx.ui.notify("Still waiting for Cline approval — approve or cancel in the browser.", "info");
+      ctx.ui.notify(loginLine, "info");
      }, 45000);
      // @ts-ignore allow unref to not block process exit in CLI
      progress.unref?.();
      try {
-      const deviceTokens = await pollDeviceToken(undefined, started.deviceCode, started.interval);
+      const deviceTokens = await pollDeviceToken(undefined, started.deviceCode, started.interval, { maxWaitMs: Math.max(60_000, started.expiresIn * 1000) });
       const creds = await registerClineToken(undefined, deviceTokens.accessToken, deviceTokens.refreshToken);
       const apiKey = toApiKey(creds.access);
       addAccount(slot, apiKey, {
@@ -1483,7 +1489,7 @@ export function createCommandSpec(
        code = e.errorCode;
       }
       if (code === "authorization_pending") {
-       ctx.ui.notify("Still waiting for Cline approval — approve or cancel in the browser.", "info");
+       ctx.ui.notify(loginLine, "info");
       } else if (code === "access_denied" || code === "cancelled") {
        ctx.ui.notify("Cline login cancelled.", "warning");
       } else if (code === "expired_token") {
@@ -1493,6 +1499,7 @@ export function createCommandSpec(
       }
      } finally {
       clearInterval(progress);
+      try { ctx.ui.setStatus("cline-login", undefined); } catch { }
      }
     } else if (action === "accounts" || action === "list") {
      const pool = loadPool();
