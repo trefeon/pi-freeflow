@@ -25,6 +25,12 @@ export const UPSTREAM_OPENCODE = "https://opencode.ai/zen";
 export const KILO_CHAT_URL = "https://api.kilo.ai/api/gateway/chat/completions";
 export const KILO_RESPONSES_URL = "https://api.kilo.ai/api/gateway/responses";
 export const OPENCODE_API_URL = `${UPSTREAM_OPENCODE}/v1`;
+// Cline serves chat completions only — responses-path requests are translated
+// to chat upstream and back (see tool-translation.ts). Direct-only: Cline
+// traffic never rides the relay pool and carries a per-user bearer token
+// supplied at call time (never stored here).
+export const CLINE_API_BASE = "https://api.cline.bot/api/v1";
+export const CLINE_CHAT_URL = `${CLINE_API_BASE}/chat/completions`;
 
 // ── Network & Server defaults ───────────────────────────────────────
 export const DEFAULT_PORT = 28180;

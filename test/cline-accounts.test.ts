@@ -1,0 +1,253 @@
+/**
+ * Unit tests for the per-user Cline key pool and /freeflow cline commands.
+ * All network use is mocked; the pool file lives in the test sandbox.
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import {
+ _resetClineCooldownsForTest,
+ _resetClinePoolCacheForTest,
+ CLINE_POOL_FILE,
+ addAccount,
+ isClineSlotHealthy,
+ loadPool,
+ mapClineError,
+ redactedToken,
+ removeAccount,
+ rollChat,
+} from "../src/cline-accounts.ts";
+import { createCommandSpec } from "../src/commands.ts";
+import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "../src/types.ts";
+
+const SLOT_A = "workos:test-key-aaa111";
+const SLOT_B = "workos:test-key-bbb222";
+
+async function withIsolatedPool(fn: () => Promise<void> | void): Promise<void> {
+ const before = fs.existsSync(CLINE_POOL_FILE) ? fs.readFileSync(CLINE_POOL_FILE, "utf8") : null;
+ try {
+  fs.rmSync(CLINE_POOL_FILE, { force: true });
+ } catch { }
+ _resetClinePoolCacheForTest();
+ _resetClineCooldownsForTest();
+ try {
+  await fn();
+ } finally {
+  _resetClinePoolCacheForTest();
+  _resetClineCooldownsForTest();
+  if (before !== null) fs.writeFileSync(CLINE_POOL_FILE, before, "utf8");
+  else {
+   try {
+    fs.rmSync(CLINE_POOL_FILE, { force: true });
+   } catch { }
+  }
+ }
+}
+
+function jsonResponse(status: number, body = "{}"): Response {
+ return new Response(body, { status, headers: { "content-type": "application/json" } });
+}
+
+test("cline pool: login saves and reloads a slot", async () => {
+ await withIsolatedPool(() => {
+  addAccount("main", SLOT_A);
+  _resetClinePoolCacheForTest();
+  const pool = loadPool();
+  assert.equal(pool.accounts.length, 1);
+  assert.equal(pool.accounts[0].slot, "main");
+  assert.equal(pool.accounts[0].token, SLOT_A);
+ });
+});
+
+test("cline pool: file is owner-only", async () => {
+ await withIsolatedPool(() => {
+  addAccount("main", SLOT_A);
+  if (process.platform === "win32") return;
+  const mode = fs.statSync(CLINE_POOL_FILE).mode & 0o777;
+  assert.equal(mode, 0o600);
+ });
+});
+
+test("cline pool: corrupt file reads back empty", async () => {
+ await withIsolatedPool(() => {
+  fs.writeFileSync(CLINE_POOL_FILE, "{not json", "utf8");
+  _resetClinePoolCacheForTest();
+  assert.deepEqual(loadPool().accounts, []);
+ });
+});
+
+test("cline pool: skips entries without a workos: key", async () => {
+ await withIsolatedPool(() => {
+  fs.writeFileSync(
+   CLINE_POOL_FILE,
+   JSON.stringify({ accounts: [{ slot: "bad", token: "sk-plain" }, { slot: "good", token: SLOT_A }] }),
+   "utf8",
+  );
+  _resetClinePoolCacheForTest();
+  const pool = loadPool();
+  assert.equal(pool.accounts.length, 1);
+  assert.equal(pool.accounts[0].slot, "good");
+ });
+});
+
+test("cline pool: non-workos token is rejected without echoing it", async () => {
+ await withIsolatedPool(() => {
+  assert.throws(() => addAccount("main", "sk-plain-secret"), (e: unknown) => {
+   assert.ok(!(e as Error).message.includes("sk-plain-secret"));
+   return true;
+  });
+ });
+});
+
+test("cline pool: remove drops one slot", async () => {
+ await withIsolatedPool(() => {
+  addAccount("a", SLOT_A);
+  addAccount("b", SLOT_B);
+  assert.equal(removeAccount("a"), true);
+  assert.equal(removeAccount("missing"), false);
+  assert.deepEqual(loadPool().accounts.map((a) => a.slot), ["b"]);
+ });
+});
+
+test("cline pool: redacted display leaks only the tail", () => {
+ assert.equal(redactedToken(SLOT_A), `…${SLOT_A.slice(-4)}`);
+ assert.ok(!redactedToken(SLOT_A).includes(SLOT_A.slice(0, -4)));
+});
+
+test("mapClineError: status to retryable kind", () => {
+ assert.equal(mapClineError(200), "ok");
+ assert.equal(mapClineError(401), "auth");
+ assert.equal(mapClineError(403), "auth");
+ assert.equal(mapClineError(429), "rate-limit");
+ assert.equal(mapClineError(402), "exhausted");
+ assert.equal(mapClineError(500), "server");
+ assert.equal(mapClineError(400), "client");
+});
+
+test("rollChat: rolls past a rate-limited slot to the next one", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("a", SLOT_A);
+  addAccount("b", SLOT_B);
+  const seen: string[] = [];
+  const res = await rollChat({
+   body: JSON.stringify({ model: "x", stream: true }),
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   fetchImpl: (async (url: unknown, init: unknown) => {
+    const auth = new Headers((init as RequestInit).headers).get("authorization") ?? "";
+    seen.push(auth);
+    return auth.endsWith(SLOT_A.slice(-6)) ? jsonResponse(429) : jsonResponse(200, '{"ok":true}');
+   }) as typeof fetch,
+  });
+  assert.equal(res.slot, "b");
+  assert.equal(res.exhausted, false);
+  assert.equal(res.res.status, 200);
+  assert.equal(isClineSlotHealthy("a"), false);
+  assert.equal(isClineSlotHealthy("b"), true);
+  assert.ok(seen.every((h) => h.startsWith("Bearer workos:")));
+ });
+});
+
+test("rollChat: all slots failing returns an exhausted 429", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("a", SLOT_A);
+  const res = await rollChat({
+   body: "{}",
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   fetchImpl: (async () => jsonResponse(429)) as typeof fetch,
+  });
+  assert.equal(res.slot, null);
+  assert.equal(res.exhausted, true);
+  assert.equal(res.res.status, 429);
+ });
+});
+
+test("rollChat: empty pool is exhausted with login guidance", async () => {
+ await withIsolatedPool(async () => {
+  let called = false;
+  const res = await rollChat({
+   body: "{}",
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   fetchImpl: (async () => {
+    called = true;
+    return jsonResponse(200);
+   }) as typeof fetch,
+  });
+  assert.equal(called, false);
+  assert.equal(res.exhausted, true);
+  const text = await res.res.text();
+  assert.ok(text.includes("cline login"));
+ });
+});
+
+test("rollChat: caller error returns on first slot without cooling it", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("a", SLOT_A);
+  const res = await rollChat({
+   body: "{}",
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   fetchImpl: (async () => jsonResponse(400)) as typeof fetch,
+  });
+  assert.equal(res.slot, "a");
+  assert.equal(res.kind, "client");
+  assert.equal(isClineSlotHealthy("a"), true);
+ });
+});
+
+const mockApi: ExtensionAPI = {
+ registerProvider() { },
+ registerCommand() { },
+};
+
+function cliContext(inputs: string[]): { ctx: ExtensionContext; notifications: Array<{ message: string; type?: string }> } {
+ const notifications: Array<{ message: string; type?: string }> = [];
+ const queue = [...inputs];
+ const ui: ExtensionUIContext = {
+  notify(message: string, type?: "info" | "warning" | "error") {
+   notifications.push({ message, type });
+  },
+  setStatus() { },
+  input(_prompt: string, defaultValue?: string) {
+   const next = queue.shift();
+   return Promise.resolve(next ?? defaultValue ?? "");
+  },
+  select(_prompt: string, options: string[]) {
+   return Promise.resolve(options[0]);
+  },
+ };
+ return { ctx: { ui }, notifications };
+}
+
+test("command: /freeflow cline login saves without leaking the key", async () => {
+ await withIsolatedPool(async () => {
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = cliContext([SLOT_A]);
+  await spec.handler("cline login main", ctx);
+  assert.equal(loadPool().accounts.length, 1);
+  const shown = notifications.map((n) => n.message).join("\n");
+  assert.ok(shown.includes("[main]"));
+  assert.ok(!shown.includes(SLOT_A));
+ });
+});
+
+test("command: /freeflow cline accounts lists saved slots redacted", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("main", SLOT_A);
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = cliContext([]);
+  await spec.handler("cline accounts", ctx);
+  const shown = notifications.map((n) => n.message).join("\n");
+  assert.ok(shown.includes("[main]"));
+  assert.ok(!shown.includes(SLOT_A));
+ });
+});
+
+test("command: /freeflow cline logout removes the slot", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("main", SLOT_A);
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = cliContext([]);
+  await spec.handler("cline logout main", ctx);
+  assert.deepEqual(loadPool().accounts, []);
+  assert.ok(notifications.some((n) => n.message.includes("[main]")));
+ });
+});

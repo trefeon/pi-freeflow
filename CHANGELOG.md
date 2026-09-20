@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.21.0
+
+### Minor Changes
+
+- Use Cline free models with your own Cline login: `/freeflow cline login` signs in through your browser and saves it to a per-user pool on your machine, `/freeflow cline accounts` lists saved logins, and `/freeflow cline logout` removes one. Adds DeepSeek V4.1 Flash, Muse Spark 1.3, GLM 5.3 Flash, and Solar Pro 4 from Cline's free rotation, and labels every free model with its source ([OpenCode], [Kilo], [Cline]) in model selection. Requests roll across saved logins when one hits its daily free limit or fails.
+
 ## 1.20.0
 
 ### Minor Changes

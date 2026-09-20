@@ -58,6 +58,7 @@ import {
  formatRelayPickerItem,
  formatRelayStatusLabel,
 } from "./relay-state.ts";
+import { addAccount, isClineSlotHealthy, loadPool, redactedToken, removeAccount } from "./cline-accounts.ts";
 import type {
  ExtensionAPI,
  ExtensionContext,
@@ -353,7 +354,7 @@ export function createCommandSpec(
 ): Omit<RegisteredCommand, "name"> {
  return {
   description:
-   "Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno | install-startup | uninstall-startup",
+   "Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno | install-startup | uninstall-startup | cline login [slot] | cline accounts | cline logout [slot]",
   getArgumentCompletions: (prefix: string) =>
    [
     "auto",
@@ -381,6 +382,10 @@ export function createCommandSpec(
     "deploy deno",
     "install-startup",
     "uninstall-startup",
+    "cline",
+    "cline login",
+    "cline accounts",
+    "cline logout",
     "refresh",
     "models",
     "logs",
@@ -1388,6 +1393,47 @@ export function createCommandSpec(
      ctx.ui.notify(`✓ ${shortRelayLabel(matched.url, relayState.relays)} ok (HTTP ${probe.status}, ${probe.latencyMs}ms)`, "info");
     } else {
      ctx.ui.notify(`✗ ${shortRelayLabel(matched.url, relayState.relays)} failed: ${probe.error || `HTTP ${probe.status}`}`, "error");
+    }
+   } else if (sub === "cline") {
+    const tokens = rest.trim() ? rest.trim().split(/\s+/) : [];
+    const action = (tokens[0] || "accounts").toLowerCase();
+    const arg = tokens.slice(1).join(" ").trim();
+    if (action === "login") {
+     const slot = arg || ((await ctx.ui.input("Cline slot name (empty = default):", "default"))?.trim() || "default");
+     const token = ((await ctx.ui.input(`Paste the API key for Cline slot [${slot}]:`, ""))?.trim() || "");
+     if (!token) {
+      ctx.ui.notify("Cancelled — no API key provided", "warning");
+     } else {
+      try {
+       addAccount(slot, token);
+       ctx.ui.notify(`Saved Cline login [${slot}] (key ending ${redactedToken(token)}) — free Cline models are ready to use`, "info");
+      } catch (e) {
+       ctx.ui.notify((e as Error).message, "warning");
+      }
+     }
+    } else if (action === "accounts" || action === "list") {
+     const pool = loadPool();
+     if (!pool.accounts.length) {
+      ctx.ui.notify("No Cline logins saved — add one with /freeflow cline login", "info");
+     } else {
+      const lines = pool.accounts.map((a, idx) => {
+       const star = a.slot === pool.activeSlot ? "*" : " ";
+       const health = isClineSlotHealthy(a.slot) ? "ready" : "cooling";
+       return `${star} [${idx + 1}] [${a.slot}] key ending ${redactedToken(a.token)} — ${health}`;
+      });
+      ctx.ui.notify(`Cline logins (${pool.accounts.length}):\n${lines.join("\n")}`, "info");
+     }
+    } else if (action === "logout" || action === "remove") {
+     const slot = arg || ((await ctx.ui.input("Cline slot to remove:", ""))?.trim() || "");
+     if (!slot) {
+      ctx.ui.notify("Cancelled — no slot provided", "warning");
+     } else if (!removeAccount(slot)) {
+      ctx.ui.notify(`Cline slot '${slot}' not found`, "warning");
+     } else {
+      ctx.ui.notify(`Removed Cline login [${slot}]`, "info");
+     }
+    } else {
+     ctx.ui.notify("Usage: /freeflow cline login [slot] | /freeflow cline accounts | /freeflow cline logout [slot]", "warning");
     }
    } else if (sub === "export") {
     const tokens = rest.trim() ? rest.trim().split(/\s+/) : [];

@@ -21,6 +21,7 @@ import {
  ALLOWED_METHODS,
  ALLOWED_PATH_PATTERN,
  BASE_PORT_REPROBE_MS,
+ CLINE_CHAT_URL,
  HOST,
  KILO_CHAT_URL,
  KILO_RESPONSES_URL,
@@ -35,11 +36,19 @@ import {
 import {
  convertSseToJson,
  enforceOpencodeFingerprint,
+ sseToChatCompletionJson,
  type CaseRestoreMap,
  type FindGlobRestore,
 } from "./opencode-fingerprint.ts";
 import { isDebugEnabled, log } from "./logger.ts";
-import { getModelUpstream, KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
+import { getModelUpstream, isClineModel, KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
+import { rollChat } from "./cline-accounts.ts";
+import {
+ chatResponsesJsonFromChatCompletion,
+ chatResponsesSseFromChatCompletion,
+ clineChatBodyFromResponsesBody,
+ translateToolsForPath,
+} from "./tool-translation.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
 import { relayFetch } from "./relay.ts";
 import { getActiveRelayState, orderedRelayCandidates } from "./relay-state.ts";
@@ -107,6 +116,140 @@ function withRateLimitHint(status: number, data: string): string {
   }
  } catch { }
  return data;
+}
+/** Cline marker errors: each status carries account-actionable guidance. */
+const CLINE_RATE_LIMIT_HINT =
+ "Cline free-use limit reached for this login. Wait for the reset or switch models.";
+const CLINE_FORBIDDEN_HINT =
+ "Cline refused this request. Check the Cline login and retry.";
+const CLINE_AUTH_HINT =
+ "Cline login expired or missing. Reconnect the Cline login and retry.";
+const CLINE_MODEL_HINT =
+ "Cline has no such model. Refresh the model list and retry.";
+
+/**
+ * Attach the matching hint to a Cline marker error JSON body (free-limit
+ * 429, 403, 401, model 404). Anything else — other statuses, non-JSON
+ * bodies — passes through untouched.
+ */
+export function mapClineError(status: number, data: string): string {
+ const hint = status === 429
+  ? CLINE_RATE_LIMIT_HINT
+  : status === 403
+   ? CLINE_FORBIDDEN_HINT
+   : status === 401
+    ? CLINE_AUTH_HINT
+    : status === 404
+     ? CLINE_MODEL_HINT
+     : null;
+ if (hint === null) return data;
+ try {
+  const parsed: unknown = JSON.parse(data);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+   return JSON.stringify({ ...(parsed as Record<string, unknown>), hint });
+  }
+ } catch { }
+ return data;
+}
+
+/**
+ * Serve a Cline-model request direct (never relay pool, no opencode
+ * fingerprint). Cline serves chat completions only: responses-path bodies
+ * translate to chat upstream and the chat answer translates back, re-emitted
+ * as SSE when the caller streamed. Upstream always streams; callers that
+ * asked for plain JSON get the aggregated object.
+ */
+async function handleClineRequest(opts: {
+ parsedBody: Record<string, unknown>;
+ pathname: string;
+ req: http.IncomingMessage;
+ res: http.ServerResponse;
+ reqId: string;
+ clientRequestedStream: boolean;
+}): Promise<void> {
+ const { parsedBody, pathname, req, res, reqId, clientRequestedStream } = opts;
+ const responsesRequest = pathname.endsWith("/responses");
+ const model = typeof parsedBody.model === "string" ? parsedBody.model : "unknown";
+ let chatBody: Record<string, unknown>;
+ if (responsesRequest) {
+  chatBody = clineChatBodyFromResponsesBody(parsedBody);
+ } else {
+  chatBody = { ...parsedBody };
+  if (Array.isArray(chatBody.tools)) chatBody.tools = translateToolsForPath(chatBody.tools, "/v1/chat/completions");
+  delete chatBody.prompt_cache_key;
+ }
+ chatBody.stream = true;
+ let upstreamRes: Response;
+ try {
+  const result = await rollChat({ body: JSON.stringify(chatBody), chatUrl: CLINE_CHAT_URL });
+  upstreamRes = result.res;
+  if (typeof result.slot === "string" && result.slot.length > 0) {
+   log("debug", `cline served by slot ${result.slot}`, { model }, reqId);
+  }
+ } catch (e) {
+  log("error", "cline pool error", { error: String(e), model }, reqId);
+  if (!res.headersSent) {
+   res.writeHead(502, { "content-type": "application/json" });
+   res.end(JSON.stringify({ error: "upstream error" }));
+  }
+  return;
+ }
+ if (res.writableEnded) {
+  try { await upstreamRes.body?.cancel(); } catch { }
+  return;
+ }
+ if (!upstreamRes.ok) {
+  log("warn", `cline upstream ${upstreamRes.status} for model ${model}`, { status: upstreamRes.status, model }, reqId);
+  const data = mapClineError(upstreamRes.status, await upstreamRes.text());
+  if (!res.headersSent) {
+   res.writeHead(upstreamRes.status, { "content-type": upstreamRes.headers.get("content-type") || "application/json" });
+   res.end(data);
+  }
+  return;
+ }
+ if (!responsesRequest && clientRequestedStream && upstreamRes.body) {
+  res.writeHead(upstreamRes.status, {
+   "content-type": upstreamRes.headers.get("content-type") || "text/event-stream",
+   "cache-control": "no-cache, no-transform",
+   connection: "keep-alive",
+   "x-accel-buffering": "no",
+  });
+  pipeUpstreamStream(
+   Readable.fromWeb(upstreamRes.body as unknown as WebReadableStream),
+   res,
+   req,
+   reqId,
+   "direct",
+  );
+  return;
+ }
+ const sseText = await upstreamRes.text();
+ if (!responsesRequest) {
+  const data = convertSseToJson(sseText, pathname);
+  if (!res.headersSent) {
+   res.writeHead(upstreamRes.status, { "content-type": "application/json" });
+   res.end(data);
+  }
+  return;
+ }
+ const chat = sseToChatCompletionJson(sseText);
+ const resp = chatResponsesJsonFromChatCompletion(chat, model);
+ if (clientRequestedStream) {
+  if (!res.headersSent) {
+   res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+   });
+   res.end(chatResponsesSseFromChatCompletion(resp));
+  }
+  return;
+ }
+ if (!res.headersSent) {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify(resp));
+ }
 }
 
 /**
@@ -680,6 +823,7 @@ export function startProxy(
   req.on("end", async () => {
    const bodyStr = Buffer.concat(bodyChunks).toString();
    let isKilo = false;
+   let isCline = false;
    let parsedBody: Record<string, unknown> | null = null;
    let clientRequestedStream = false;
 
@@ -687,8 +831,9 @@ export function startProxy(
     parsedBody = JSON.parse(bodyStr);
     if (typeof parsedBody?.model === "string") {
      const canonical = resolveCanonicalModelId(parsedBody.model);
-     parsedBody.model = canonical;
-     if (KILO_MODEL_IDS.has(canonical)) {
+     if (isClineModel(canonical)) {
+      isCline = true;
+     } else if (KILO_MODEL_IDS.has(canonical)) {
       isKilo = true;
      }
     }
@@ -722,7 +867,7 @@ export function startProxy(
    let callerCaseRestore: CaseRestoreMap | undefined;
    let callerFindGlob: FindGlobRestore | undefined;
    let callerInjected: string[] | undefined;
-   if (!isKilo && parsedBody) {
+   if (!isKilo && !isCline && parsedBody) {
     const fp = enforceOpencodeFingerprint(parsedBody, target.pathname);
     callerHadTools = fp.callerHadTools;
     callerCaseRestore = fp.caseRestore;
@@ -738,7 +883,7 @@ export function startProxy(
    // via /v1/messages. A request on the wrong path means the host still holds
    // a pre-fix provider registration (stale disk cache or no restart after
    // upgrade) and upstream answers 500.
-   if (!isKilo && typeof parsedBody?.model === "string") {
+   if (!isKilo && !isCline && typeof parsedBody?.model === "string") {
     const knownDef = MODEL_MAP.get(String(parsedBody.model));
     if (target.pathname.endsWith("/chat/completions") && knownDef?.api && knownDef.api !== "openai-completions") {
      log("warn", `model ${String(parsedBody.model)} expects ${knownDef.api} but got ${target.pathname} — stale provider registration (restart Pi/OMP after upgrade)`, { model: String(parsedBody.model), path: target.pathname }, reqId);
@@ -749,7 +894,12 @@ export function startProxy(
     }
    }
    try {
-    if (isKilo && parsedBody) {
+    if (isCline && parsedBody) {
+     // Cline serves chat completions only, direct (never relay pool, no
+     // opencode fingerprint). The pool module owns the per-user Bearer
+     // token: the proxy only passes the body and maps the answer.
+     await handleClineRequest({ parsedBody, pathname: target.pathname, req, res, reqId, clientRequestedStream });
+    } else if (isKilo && parsedBody) {
      // Header-wait timeout + client-disconnect abort: once headers
      // arrive the timer is cleared so a long stream is not killed at
      // the timeout ceiling; the stream phase is owned by

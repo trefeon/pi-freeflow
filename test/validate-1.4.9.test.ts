@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ALL_MODELS, KILO_MODELS, OPENCODE_MODELS, MODEL_ALIASES, resolveCanonicalModelId, isKiloModel } from "../src/models.ts";
+import { ALL_MODELS, KILO_MODELS, OPENCODE_MODELS, CLINE_MODELS, MODEL_ALIASES, resolveCanonicalModelId, isKiloModel } from "../src/models.ts";
 import { LOG_MAX_BYTES, LOG_MAX_FILES } from "../src/config.ts";
 import { VERCEL_RELAY_WORKER, CLOUDFLARE_RELAY_WORKER, DENO_RELAY_SCRIPT } from "../src/deploy.ts";
 import { isSubstantial } from "../src/stream-pipe.ts";
@@ -14,11 +14,12 @@ function extractResolveRelayTarget(worker: string): string {
   return worker;
 }
 
-test("catalog 27 = 8 OpenCode + 19 Kilo", () => {
+test("catalog 31 = 8 OpenCode + 19 Kilo + 4 Cline", () => {
   assert.equal(OPENCODE_MODELS.length, 8);
   assert.equal(KILO_MODELS.length, 19);
-  assert.equal(ALL_MODELS.length, 27);
-  assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 27);
+  assert.equal(CLINE_MODELS.length, 4);
+  assert.equal(ALL_MODELS.length, 31);
+  assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 31);
 });
 
 test("aliases deduplicated and wrong removed", () => {

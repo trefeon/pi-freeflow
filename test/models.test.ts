@@ -8,6 +8,7 @@ import {
 	MODEL_MAP,
 	OPENCODE_MODELS,
 	KILO_MODELS,
+	CLINE_MODELS,
 	KILO_MODEL_IDS,
 	getModelDef,
 	isKiloModel,
@@ -16,12 +17,13 @@ import {
 	getAllRegisteredModels,
 } from "../src/models.ts";
 
-test("catalog composition: OpenCode + Kilo lists make up the full catalog", () => {
+test("catalog composition: OpenCode + Kilo + Cline lists make up the full catalog", () => {
 	// Composition over hardcoded counts — resilient to catalog growth while
 	// still locking the invariant that every model belongs to exactly one source.
 	assert.ok(OPENCODE_MODELS.length > 0, "OpenCode list must be non-empty");
 	assert.ok(KILO_MODELS.length > 0, "Kilo list must be non-empty");
-	assert.equal(OPENCODE_MODELS.length + KILO_MODELS.length, ALL_MODELS.length);
+	assert.ok(CLINE_MODELS.length > 0, "Cline list must be non-empty");
+	assert.equal(OPENCODE_MODELS.length + KILO_MODELS.length + CLINE_MODELS.length, ALL_MODELS.length);
 });
 
 test("all model IDs are unique", () => {
@@ -51,6 +53,7 @@ test("1M context window models are properly configured", () => {
 	const oneMillionModels = [
 		"muse-spark-1.2-contributor-free",
 		"muse-spark-1.3-contributor-free",
+		"cline-free/muse-spark-1.3-contributor",
 		"mimo-v2.5-free",
 		"nemotron-3.5-lightning-free",
 		"nemotron-3-ultra-free",
@@ -172,6 +175,11 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 		"nex-agi/nex-n2.5-pro:free": { ctx: 262_144, max: 235_929, reasoning: true },
 		"nex-agi/nex-n2.5-mini:free": { ctx: 262_144, max: 235_929, reasoning: true },
 		"inclusionai/ling-3.0-flash-vl:free": { ctx: 262_144, max: 32_768, reasoning: true },
+		// Cline direct-only (per-user pool — https://api.cline.bot)
+		"cline-free/deepseek-v4.1-flash": { ctx: 262_144, max: 32_768, reasoning: true },
+		"cline-free/muse-spark-1.3-contributor": { ctx: 1_048_576, max: 131_072, reasoning: true },
+		"z-ai/glm-5.3-flash": { ctx: 262_144, max: 65_536, reasoning: true },
+		"cline-free/solar-pro4": { ctx: 131_072, max: 32_768, reasoning: true },
 	};
 	for (const [id, { ctx, max, reasoning }] of Object.entries(locked)) {
 		const m = getModelDef(id);
@@ -195,7 +203,7 @@ test("new alias map resolves to canonical kilo ids", () => {
 test("union-alpha registered as the first anthropic-messages Zen model", () => {
 	const m = MODEL_MAP.get("union-alpha");
 	assert.ok(m, "union-alpha must be in MODEL_MAP");
-	assert.equal(m!.name, "Union Alpha Free");
+	assert.equal(m!.name, "Union Alpha Free [OpenCode]");
 	assert.equal(m!.api, "anthropic-messages");
 	assert.equal(m!.contextWindow, 262_144);
 	assert.equal(m!.maxTokens, 131_072);

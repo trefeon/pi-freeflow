@@ -3,159 +3,160 @@
  */
 
 export type ProviderApi = "openai-completions" | "openai-responses" | "anthropic-messages";
-export type Upstream = "opencode" | "kilo";
+export type Upstream = "opencode" | "kilo" | "cline";
 
 export type ThinkingLevel =
-	| "off"
-	| "minimal"
-	| "low"
-	| "medium"
-	| "high"
-	| "xhigh"
-	| "max";
+ | "off"
+ | "minimal"
+ | "low"
+ | "medium"
+ | "high"
+ | "xhigh"
+ | "max";
 
 export type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
 
 export type ModelInputType = "text" | "image";
 
 export interface ModelDef {
-	id: string;
-	name: string;
-	reasoning: boolean;
-	contextWindow: number;
-	maxTokens: number;
-	api?: ProviderApi;
-	input?: ModelInputType[];
-	thinkingFormat?: "openrouter";
-	thinkingLevelMap?: ThinkingLevelMap;
+ id: string;
+ name: string;
+ reasoning: boolean;
+ contextWindow: number;
+ maxTokens: number;
+ api?: ProviderApi;
+ input?: ModelInputType[];
+ thinkingFormat?: "openrouter";
+ thinkingLevelMap?: ThinkingLevelMap;
 }
 
 export type RegisteredModel = ModelDef & {
-	source: Upstream;
+ source: Upstream;
 };
 
 export interface KnownRelay {
-	url: string;
-	label?: string;
-	addedAt?: string;
-	/** Shared secret set by /freeflow deploy; proxy sends x-relay-auth only when present. */
-	auth?: string;
+ url: string;
+ label?: string;
+ addedAt?: string;
+ /** Shared secret set by /freeflow deploy; proxy sends x-relay-auth only when present. */
+ auth?: string;
 }
 export type RelayMode = "auto" | "on" | "off";
 
 export interface RelayState {
-	mode?: RelayMode;
-	enabled: boolean;
-	url: string;
-	relays: KnownRelay[];
-	hideWidget?: boolean;
+ mode?: RelayMode;
+ enabled: boolean;
+ url: string;
+ relays: KnownRelay[];
+ hideWidget?: boolean;
 }
 export type LogLevel = "debug" | "info" | "warn" | "error" | "audit";
 
 export interface DebugState {
-	debug: boolean;
-	level?: LogLevel;
+ debug: boolean;
+ level?: LogLevel;
 }
 
 export interface RawModelItem {
-	id: string;
-	name?: string;
-	context_length?: number;
-	max_tokens?: number;
-	contextWindow?: number;
-	maxTokens?: number;
-	reasoning?: boolean;
-	[key: string]: unknown;
+ id: string;
+ name?: string;
+ context_length?: number;
+ max_tokens?: number;
+ contextWindow?: number;
+ maxTokens?: number;
+ reasoning?: boolean;
+ [key: string]: unknown;
 }
 
 export interface CatalogCacheData {
-	timestamp: number;
-	opencode: string[];
-	kilo: string[];
-	models?: RegisteredModel[];
-	etag?: string;
+ timestamp: number;
+ opencode: string[];
+ kilo: string[];
+ models?: RegisteredModel[];
+ etag?: string;
 }
 
 // ── Extension API & UI Types (compatible with @earendil-works/pi-coding-agent) ──
 
 export interface ExtensionUIContext {
-	notify(message: string, type?: "info" | "warning" | "error"): void;
-	setStatus(key: string, status: string | undefined): void;
-	input(prompt: string, placeholder?: string): Promise<string | undefined>;
-	select(prompt: string, options: string[]): Promise<string | undefined>;
-	confirm?(title: string, message?: string): Promise<boolean>;
-	/** Optional status-bar click handler (when host supports clickable widgets) */
-	onStatusClick?(handler: () => void | Promise<void>): void | (() => void);
-	/** Fallback/alternate names hosts may expose */
-	onStatusBarClick?(handler: () => void | Promise<void>): void | (() => void);
-	onWidgetClick?(handler: () => void | Promise<void>): void | (() => void);
+ notify(message: string, type?: "info" | "warning" | "error"): void;
+ setStatus(key: string, status: string | undefined): void;
+ input(prompt: string, placeholder?: string): Promise<string | undefined>;
+ select(prompt: string, options: string[]): Promise<string | undefined>;
+ confirm?(title: string, message?: string): Promise<boolean>;
+ /** Optional status-bar click handler (when host supports clickable widgets) */
+ onStatusClick?(handler: () => void | Promise<void>): void | (() => void);
+ /** Fallback/alternate names hosts may expose */
+ onStatusBarClick?(handler: () => void | Promise<void>): void | (() => void);
+ onWidgetClick?(handler: () => void | Promise<void>): void | (() => void);
 }
 
 export interface ExtensionContext {
-	ui: ExtensionUIContext;
-	[key: string]: unknown;
+ ui: ExtensionUIContext;
+ [key: string]: unknown;
 }
 
 export interface CommandCompletion {
-	value: string;
-	label?: string;
-	description?: string;
+ value: string;
+ label?: string;
+ description?: string;
 }
 
 export interface RegisteredCommand {
-	description?: string;
-	getArgumentCompletions?: (prefix: string) => CommandCompletion[];
-	handler: (args: string, ctx: ExtensionContext) => Promise<void> | void;
+ description?: string;
+ getArgumentCompletions?: (prefix: string) => CommandCompletion[];
+ handler: (args: string, ctx: ExtensionContext) => Promise<void> | void;
 }
 
 export interface ProviderModelCost {
-	input: number;
-	output: number;
-	cacheRead: number;
-	cacheWrite: number;
+ input: number;
+ output: number;
+ cacheRead: number;
+ cacheWrite: number;
 }
 
 export interface ProviderModelCompat {
-	supportsDeveloperRole?: boolean;
-	supportsReasoningEffort?: boolean;
-	thinkingFormat?: "openrouter" | string;
-	sessionAffinityFormat?: "openai-nosession" | string;
-	[key: string]: unknown;
+ supportsDeveloperRole?: boolean;
+ supportsReasoningEffort?: boolean;
+ thinkingFormat?: "openrouter" | string;
+ sessionAffinityFormat?: "openai-nosession" | string;
+ [key: string]: unknown;
 }
 
 export interface ProviderModelConfig {
-	id: string;
-	name: string;
-	api?: ProviderApi;
-	reasoning?: boolean;
-	thinking?: {
-		mode: string;
-		efforts?: string[];
-		[key: string]: unknown;
-	};
-	thinkingLevelMap?: ThinkingLevelMap;
-	input?: ModelInputType[];
-	contextWindow?: number;
-	maxTokens?: number;
-	cost?: ProviderModelCost;
-	compat?: ProviderModelCompat;
+ id: string;
+ name: string;
+ api?: ProviderApi;
+ owned_by?: string;
+ reasoning?: boolean;
+ thinking?: {
+  mode: string;
+  efforts?: string[];
+  [key: string]: unknown;
+ };
+ thinkingLevelMap?: ThinkingLevelMap;
+ input?: ModelInputType[];
+ contextWindow?: number;
+ maxTokens?: number;
+ cost?: ProviderModelCost;
+ compat?: ProviderModelCompat;
 }
 
 export interface ProviderConfig {
-	baseUrl: string;
-	apiKey: string;
-	api: ProviderApi;
-	compat?: {
-		supportsDeveloperRole?: boolean;
-		[key: string]: unknown;
-	};
-	models: ProviderModelConfig[];
+ baseUrl: string;
+ apiKey: string;
+ api: ProviderApi;
+ compat?: {
+  supportsDeveloperRole?: boolean;
+  [key: string]: unknown;
+ };
+ models: ProviderModelConfig[];
 }
 
 export interface ExtensionAPI {
-	registerProvider(name: string, config: ProviderConfig): void;
-	registerCommand(name: string, spec: RegisteredCommand): void;
-	on?(event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void): void;
-	sendUserMessage?(message: string, options?: { deliverAs?: string }): void;
-	[key: string]: unknown;
+ registerProvider(name: string, config: ProviderConfig): void;
+ registerCommand(name: string, spec: RegisteredCommand): void;
+ on?(event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void): void;
+ sendUserMessage?(message: string, options?: { deliverAs?: string }): void;
+ [key: string]: unknown;
 }

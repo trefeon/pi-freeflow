@@ -413,3 +413,162 @@ export function injectFingerprintTools(
  }
  return tools;
 }
+
+/**
+ * Responses <-> Chat body translation. Cline serves chat completions only, so
+ * responses-path requests for Cline models are translated to chat upstream
+ * and the chat answer is translated back. Tool shape conversion reuses
+ * translateToolsForPath; only the message envelopes are remapped here.
+ * Server-side pointers (`previous_response_id`) and caller-bound reasoning
+ * blobs never cross: text is extracted, everything else is dropped, so the
+ * translated body stays portable by construction.
+ */
+
+/** Extract plain text from a Responses content field (string or parts array). */
+function responsesTextOf(content: unknown): string | null {
+ if (typeof content === "string") return content;
+ if (!Array.isArray(content)) return null;
+ let text = "";
+ let saw = false;
+ for (const part of content) {
+  if (typeof part !== "object" || part === null || Array.isArray(part)) continue;
+  const rec = part as Record<string, unknown>;
+  if ((rec.type === "text" || rec.type === "input_text" || rec.type === "output_text" || rec.type === "summary_text") && typeof rec.text === "string") {
+   text += rec.text;
+   saw = true;
+  }
+ }
+ return saw ? text : null;
+}
+
+/** Chat role for a Responses item role; unknown roles ride as user text. */
+function chatRoleFor(role: unknown): string {
+ if (role === "assistant" || role === "system" || role === "tool") return role;
+ if (role === "developer") return "system";
+ return "user";
+}
+
+/**
+ * Map a Responses `input` (string or item array) to Chat `messages`.
+ * function_call items become assistant tool_calls, function_call_output
+ * items become tool messages, reasoning items keep only their summary text.
+ */
+export function responsesInputToChatMessages(input: unknown): Record<string, unknown>[] {
+ if (typeof input === "string") return input.length > 0 ? [{ role: "user", content: input }] : [];
+ if (!Array.isArray(input)) return [];
+ const messages: Record<string, unknown>[] = [];
+ for (const item of input) {
+  if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+  const rec = item as Record<string, unknown>;
+  if (rec.type === "function_call") {
+   const args = typeof rec.arguments === "string" ? rec.arguments : JSON.stringify(rec.arguments ?? {});
+   const name = typeof rec.name === "string" ? rec.name : "tool";
+   const id = typeof rec.call_id === "string" ? rec.call_id : typeof rec.id === "string" ? rec.id : "";
+   messages.push({ role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name, arguments: args } }] });
+   continue;
+  }
+  if (rec.type === "function_call_output") {
+   const output = typeof rec.output === "string" ? rec.output : JSON.stringify(rec.output ?? "");
+   const callId = typeof rec.call_id === "string" ? rec.call_id : typeof rec.id === "string" ? rec.id : "";
+   messages.push({ role: "tool", tool_call_id: callId, content: output });
+   continue;
+  }
+  if (rec.type === "reasoning") {
+   const summary = Array.isArray(rec.summary) ? responsesTextOf(rec.summary) : null;
+   if (summary !== null && summary.length > 0) messages.push({ role: "assistant", content: summary });
+   continue;
+  }
+  const text = responsesTextOf(rec.content);
+  messages.push({ role: chatRoleFor(rec.role), content: text ?? JSON.stringify(item) });
+ }
+ return messages;
+}
+
+/**
+ * Build a Chat Completions body from a Responses body. Carries model,
+ * instructions (as the leading system message), input, tools (reshaped to
+ * chat via translateToolsForPath), tool_choice, and plain sampling scalars.
+ * Stream policy stays with the caller: this maps shape, never behavior.
+ */
+export function clineChatBodyFromResponsesBody(body: Record<string, unknown>): Record<string, unknown> {
+ const out: Record<string, unknown> = {};
+ if (typeof body.model === "string") out.model = body.model;
+ const messages: Record<string, unknown>[] = [];
+ if (typeof body.instructions === "string" && body.instructions.length > 0) {
+  messages.push({ role: "system", content: body.instructions });
+ }
+ messages.push(...responsesInputToChatMessages(body.input));
+ out.messages = messages;
+ if (Array.isArray(body.tools)) out.tools = translateToolsForPath(body.tools, "/v1/chat/completions");
+ if (body.tool_choice !== undefined) out.tool_choice = body.tool_choice;
+ for (const key of ["temperature", "top_p", "max_tokens", "max_completion_tokens", "stop", "presence_penalty", "frequency_penalty", "seed", "user", "parallel_tool_calls", "response_format"] as const) {
+  if (body[key] !== undefined) out[key] = body[key];
+ }
+ return out;
+}
+
+/** First chat choice message, or null when the completion carries none. */
+function firstChatMessage(chat: Record<string, unknown>): Record<string, unknown> | null {
+ const choices = chat.choices;
+ if (!Array.isArray(choices) || choices.length === 0) return null;
+ const first = choices[0];
+ if (typeof first !== "object" || first === null || Array.isArray(first)) return null;
+ const message = (first as Record<string, unknown>).message;
+ if (typeof message !== "object" || message === null || Array.isArray(message)) return null;
+ return message as Record<string, unknown>;
+}
+
+/**
+ * Build a Responses object from a Chat Completion object. Text becomes the
+ * assistant message item, tool_calls become function_call items, usage rides
+ * verbatim. `finish_reason: "length"` reports incomplete, else completed.
+ */
+export function chatResponsesJsonFromChatCompletion(chat: Record<string, unknown>, fallbackModel: string): Record<string, unknown> {
+ const message = firstChatMessage(chat);
+ const model = typeof chat.model === "string" && chat.model.length > 0 ? chat.model : fallbackModel;
+ const id = typeof chat.id === "string" ? chat.id.replace(/^chatcmpl/, "resp") : "resp_cline";
+ const output: Record<string, unknown>[] = [];
+ if (message) {
+  const text = typeof message.content === "string" ? message.content : null;
+  if (text !== null && text.length > 0) {
+   output.push({ type: "message", role: "assistant", content: [{ type: "output_text", text }] });
+  }
+  const toolCalls = message.tool_calls;
+  if (Array.isArray(toolCalls)) {
+   for (const tc of toolCalls) {
+    if (typeof tc !== "object" || tc === null || Array.isArray(tc)) continue;
+    const rec = tc as Record<string, unknown>;
+    const fn = typeof rec.function === "object" && rec.function !== null && !Array.isArray(rec.function) ? (rec.function as Record<string, unknown>) : {};
+    const args = typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments ?? {});
+    const callId = typeof rec.id === "string" && rec.id.length > 0 ? rec.id : `call_cline_${output.length}`;
+    output.push({ type: "function_call", id: callId, call_id: callId, name: typeof fn.name === "string" ? fn.name : "tool", arguments: args });
+   }
+  }
+ }
+ const choices = chat.choices;
+ const first = Array.isArray(choices) && choices.length > 0 && typeof choices[0] === "object" && choices[0] !== null ? (choices[0] as Record<string, unknown>) : {};
+ const out: Record<string, unknown> = {
+  id,
+  object: "response",
+  created_at: typeof chat.created === "number" ? chat.created : Math.floor(Date.now() / 1000),
+  model,
+  output,
+  status: first.finish_reason === "length" ? "incomplete" : "completed",
+ };
+ if (chat.usage !== undefined) out.usage = chat.usage;
+ return out;
+}
+
+/**
+ * Wrap a Responses object in the minimal valid Responses SSE sequence
+ * (created + completed + DONE) so streamed responses-path clients get a
+ * stream even though Cline only serves chat upstream. Round-trips through
+ * sseToResponsesJson: the completed event carries the full object.
+ */
+export function chatResponsesSseFromChatCompletion(resp: Record<string, unknown>): string {
+ const head = { type: "response.created", response: { id: resp.id, object: "response", model: resp.model } };
+ const done = { type: "response.completed", response: resp };
+ return `event: response.created\ndata: ${JSON.stringify(head)}\n\n` +
+  `event: response.completed\ndata: ${JSON.stringify(done)}\n\n` +
+  `data: [DONE]\n\n`;
+}

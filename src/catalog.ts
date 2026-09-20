@@ -18,8 +18,8 @@ import {
 import { log, logDebug, logWarn } from "./logger.ts";
 import {
 	ALL_MODELS,
-	KILO_MODEL_IDS,
 	MODEL_MAP,
+	getModelUpstream,
 } from "./models.ts";
 import type {
 	CatalogCacheData,
@@ -68,7 +68,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 		if (!m || typeof m.id !== "string" || !isFreeCatalogId(m.id)) continue;
 		const known = MODEL_MAP.get(m.id);
 		if (known) {
-			out.push({ ...known, source: m.source ?? (KILO_MODEL_IDS.has(m.id) ? "kilo" : "opencode") });
+			out.push({ ...known, source: m.source ?? getModelUpstream(m.id) });
 		} else {
 			out.push(m);
 		}
@@ -77,11 +77,11 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 27 verified models for 0ms instant availability.
+ * Initialized with all 31 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
 	...m,
-	source: KILO_MODEL_IDS.has(m.id) ? ("kilo" as const) : ("opencode" as const),
+	source: getModelUpstream(m.id),
 }));
 /**
  * Get current in-memory alive catalog
@@ -170,7 +170,11 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
 		idLower.includes("r1") ||
 		idLower.includes("o1") ||
 		idLower.includes("think") ||
-		idLower.includes("spark");
+		idLower.includes("spark") ||
+		idLower.includes("flash") ||
+		idLower.includes("deepseek") ||
+		idLower.includes("glm") ||
+		idLower.includes("solar");
 
 	let contextWindow =
 		typeof raw.context_length === "number" ? raw.context_length : 262_144;
@@ -194,7 +198,8 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
 
 	const isResponses =
 		raw.id === "muse-spark-1.2-contributor-free" ||
-		raw.id === "muse-spark-1.3-contributor-free";
+		raw.id === "muse-spark-1.3-contributor-free" ||
+		raw.id === "cline-free/muse-spark-1.3-contributor";
 
 	return {
 		id: raw.id,

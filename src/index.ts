@@ -20,7 +20,7 @@ import { ensureDaemon as ensureClientDaemon, ensureProxyReady, getClientPort, ha
 import { createCommandSpec, stopLogsFollow, updateStatusBar } from "./commands.ts";
 import { HOST, ONBOARDED_FLAG_FILE, PORT } from "./config.ts";
 import { logInfo, logWarn } from "./logger.ts";
-import { ALL_MODELS, KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
+import { ALL_MODELS, MODEL_MAP, getModelUpstream, resolveCanonicalModelId } from "./models.ts";
 import { checkForUpdateInBackground } from "./update-checker.ts";
 import {
  ensureRelay,
@@ -126,6 +126,7 @@ export function buildProviderConfig(
     id: m.id,
     name: m.name,
     api: m.api,
+    owned_by: m.source === "kilo" ? "kilocode" : m.source === "cline" ? "clinecode" : "opencode",
     reasoning: m.reasoning,
     thinking: m.reasoning
      ? {
@@ -150,7 +151,12 @@ export function buildProviderConfig(
         supportsDeveloperRole: false,
         supportsReasoningEffort: !!m.thinkingLevelMap,
        }
-       : {
+       : m.source === "cline"
+        ? {
+         supportsDeveloperRole: false,
+         supportsReasoningEffort: !!m.thinkingLevelMap,
+        }
+        : {
         supportsDeveloperRole: false,
         supportsReasoningEffort: true,
        },
@@ -174,7 +180,7 @@ export default async function(pi: ExtensionAPI): Promise<void> {
  // Register static models immediately on boot so Pi/OMP picker is populated with zero latency!
  const registeredCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
   ...m,
-  source: KILO_MODEL_IDS.has(m.id) ? "kilo" : "opencode",
+  source: getModelUpstream(m.id),
  }));
  setAliveCatalog(registeredCatalog);
  const registerCatalog = (models: RegisteredModel[]): void => {
