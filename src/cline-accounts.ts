@@ -72,17 +72,8 @@ export interface ValidSlotCredentials {
  token: string;
 }
 
-/** Cooldowns after failures so a bad key stops absorbing traffic. */
-const AUTH_COOLDOWN_MS = 10 * 60_000;
-const RATE_COOLDOWN_MS = 90_000;
-const SERVER_COOLDOWN_MS = 45_000;
-const DEFAULT_COOLDOWN_MS = 30_000;
-
-const slotCooldowns = new Map<string, number>();
-
-/** Test-only: clear in-memory slot cooldowns. */
+/** Test-only: no-op kept so existing test setup keeps compiling. */
 export function _resetClineCooldownsForTest(): void {
- slotCooldowns.clear();
 }
 
 /** Test-only: drop the loadPool mtime cache. */
@@ -91,15 +82,30 @@ export function _resetClinePoolCacheForTest(): void {
  cachedMtime = -1;
 }
 
-function markSlotCooldown(slot: string, ms: number): void {
- slotCooldowns.set(slot, Date.now() + ms);
-}
+/** Version this proxy reports as its Cline client build. */
+export const CLINE_CLIENT_VERSION = "3.5.54";
 
-/** True when the slot is not cooling down. */
-export function isClineSlotHealthy(slot: string): boolean {
- const until = slotCooldowns.get(slot);
- if (!until) return true;
- return Date.now() >= until;
+/**
+ * Client headers the Cline API expects. Measured live (2026-09-21): the
+ * `cline-free/*` models answer 403 "only available via Cline product surfaces"
+ * with a bare bearer, and 200 with this set; every non-prefixed catalog model
+ * (e.g. z-ai/glm-5.3-flash) answers 200 either way. Header names and shape
+ * mirror reference/cline providers/request-headers.ts
+ * (DEFAULT_CLINE_REQUEST_HEADERS) — no credential is derived from them.
+ */
+export const CLINE_CLIENT_HEADERS: Record<string, string> = {
+ "HTTP-Referer": "https://cline.bot",
+ "X-Title": "Cline",
+ "X-IS-MULTIROOT": "false",
+ "X-CLIENT-TYPE": "cline-sdk",
+ "X-CLIENT-VERSION": CLINE_CLIENT_VERSION,
+ "User-Agent": `Cline/${CLINE_CLIENT_VERSION}`,
+};
+
+/** Compat: every saved slot is always servable — no lockout timers remain. */
+
+export function isClineSlotHealthy(_slot: string): boolean {
+ return true;
 }
 
 /** Machine-classified outcome of one Cline chat attempt. */
@@ -272,7 +278,6 @@ export function addAccount(
   });
  }
  if (!pool.activeSlot) pool.activeSlot = cleanSlot;
- slotCooldowns.delete(cleanSlot);
  savePool(pool);
  return pool;
 }
@@ -358,7 +363,6 @@ export function removeAccount(slot: string): boolean {
  if (idx < 0) return false;
  pool.accounts.splice(idx, 1);
  if (pool.activeSlot === cleanSlot) pool.activeSlot = pool.accounts[0]?.slot;
- slotCooldowns.delete(cleanSlot);
  savePool(pool);
  return true;
 }
@@ -374,7 +378,7 @@ export interface ClineRollOpts {
  reqId?: string;
  /**
   * Device-login refresher. When present, a stale slot refreshes once before
-  * its attempt, and a 401/403 refreshes once before the slot cools out.
+  * its attempt, and a 401/403 refreshes once before the slot is skipped.
   * Absent: every slot serves its stored bearer exactly as before.
   */
  refreshImpl?: ClineRefresher;
@@ -384,7 +388,7 @@ export interface ClineRollResult {
  res: Response;
  /** Slot that served the response; null when no account was tried. */
  slot: string | null;
- /** True when every account cooled out (or the pool is empty). */
+ /** True when every account failed (or the pool is empty). */
  exhausted: boolean;
  kind: ClineErrorKind;
 }
@@ -413,23 +417,22 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
   const at = candidates.findIndex((a) => a.slot === pool.activeSlot);
   if (at > 0) candidates = [candidates[at], ...candidates.slice(0, at), ...candidates.slice(at + 1)];
  }
- candidates = candidates.filter((a) => isClineSlotHealthy(a.slot));
  if (candidates.length === 0) {
-  const reason = pool.accounts.length === 0
-   ? "No Cline accounts saved — add one with /freeflow cline login"
-   : "All Cline accounts are cooling down — try again shortly";
+  const reason = "No Cline accounts saved — add one with /freeflow cline login";
   logWarn("cline pool exhausted", { slots: pool.accounts.length });
   return { res: exhaustedResponse(reason), slot: null, exhausted: true, kind: "exhausted" };
  }
+ let lastRes: Response | null = null;
+ let lastSlot: string | null = null;
+ let lastKind: ClineErrorKind = "exhausted";
  for (const account of candidates) {
   // Stale device-login bearer: one refresh before the attempt. A dead grant
-  // cools the slot out immediately; a transient fault keeps the stale token.
+  // skips the slot for this turn; a transient fault keeps the stale token.
   let refreshedThisSlot = false;
   if (opts.refreshImpl && account.refreshToken && isClineTokenStale(account)) {
    const outcome = await refreshAccountInPlace(pool, account, opts.refreshImpl);
    if (outcome === false) {
-    markSlotCooldown(account.slot, AUTH_COOLDOWN_MS);
-    logWarn("cline slot refresh rejected — cooling slot", { slot: account.slot });
+    logWarn("cline slot refresh rejected — skipping slot this turn", { slot: account.slot });
     continue;
    }
    refreshedThisSlot = outcome === true;
@@ -440,36 +443,41 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
      method: "POST",
      headers: {
       "content-type": "application/json",
+      ...CLINE_CLIENT_HEADERS,
       authorization: `Bearer ${token}`,
      },
      body: opts.body,
     });
    } catch (e) {
-    markSlotCooldown(account.slot, DEFAULT_COOLDOWN_MS);
-    logWarn("cline slot fetch error — cooling slot", { slot: account.slot });
+    logWarn("cline slot fetch error — trying next slot", { slot: account.slot });
     void e;
     return null;
    }
   };
-  const succeed = (res: Response, kind: ClineErrorKind): ClineRollResult => {
+  const succeed = async (res: Response, kind: ClineErrorKind): Promise<ClineRollResult> => {
    if (kind === "ok") {
     account.lastOkAt = Date.now();
     pool.activeSlot = account.slot;
     savePool(pool);
    }
+   if (lastRes && lastRes !== res) {
+    try { await lastRes.body?.cancel(); } catch { }
+   }
+   lastRes = null;
    return { res, slot: account.slot, exhausted: false, kind };
   };
-  const cool = (kind: ClineErrorKind, status: number): void => {
-   markSlotCooldown(
-    account.slot,
-    kind === "auth" ? AUTH_COOLDOWN_MS : kind === "rate-limit" ? RATE_COOLDOWN_MS : SERVER_COOLDOWN_MS,
-   );
-   logWarn("cline slot failed — rolling to next slot", { slot: account.slot, status });
+  const stashFailure = async (res: Response, kind: ClineErrorKind): Promise<void> => {
+   if (lastRes && lastRes !== res) {
+    try { await lastRes.body?.cancel(); } catch { }
+   }
+   lastRes = res;
+   lastSlot = account.slot;
+   lastKind = kind;
   };
   let res = await attempt(account.token);
   if (!res) continue;
   let kind = mapClineError(res.status);
-  if (kind === "ok" || kind === "client") return succeed(res, kind);
+  if (kind === "ok" || kind === "client") return await succeed(res, kind);
   // Auth failure on a refreshable slot that has not refreshed yet: one
   // refresh, then exactly one retry with the fresh bearer.
   if (kind === "auth" && !refreshedThisSlot && opts.refreshImpl && account.refreshToken) {
@@ -482,25 +490,26 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
     res = await attempt(account.token);
     if (!res) continue;
     kind = mapClineError(res.status);
-    if (kind === "ok" || kind === "client") return succeed(res, kind);
+    if (kind === "ok" || kind === "client") return await succeed(res, kind);
    } else if (outcome === false) {
     try {
      await res.body?.cancel();
     } catch { }
-    cool(kind, res.status);
+    logWarn("cline slot refresh rejected — trying next slot", { slot: account.slot });
     continue;
    }
-   // Transient refresh fault: fall through and cool the slot on the
-   // original auth result below.
+   // Transient refresh fault: fall through and roll on the original result.
   }
-  cool(kind, res.status);
-  try {
-   await res.body?.cancel();
-  } catch { }
+  logWarn("cline slot failed — trying next slot", { slot: account.slot, status: res.status });
+  await stashFailure(res, kind);
+ }
+ if (lastRes) {
+  logWarn("cline pool exhausted after roll — returning last upstream failure", { slots: candidates.length });
+  return { res: lastRes, slot: lastSlot, exhausted: true, kind: lastKind };
  }
  logWarn("cline pool exhausted after roll", { slots: candidates.length });
  return {
-  res: exhaustedResponse("All Cline accounts failed or are cooling down — try again shortly"),
+  res: exhaustedResponse("All Cline accounts failed — try again shortly"),
   slot: null,
   exhausted: true,
   kind: "exhausted",

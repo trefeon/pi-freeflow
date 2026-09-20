@@ -58,7 +58,7 @@ import {
  formatRelayPickerItem,
  formatRelayStatusLabel,
 } from "./relay-state.ts";
-import { addAccount, isClineSlotHealthy, loadPool, redactedToken, removeAccount } from "./cline-accounts.ts";
+import { addAccount, loadPool, redactedToken, removeAccount } from "./cline-accounts.ts";
 import type { ClinePoolState } from "./cline-accounts.ts";
 import { pollDeviceToken, registerClineToken, startDeviceAuth, toApiKey } from "./cline-device-auth.ts";
 import { isCertError } from "./system-ca-fetch.ts";
@@ -367,8 +367,7 @@ function nextClineSlot(pool: ClinePoolState): string {
 function formatClineAccountLines(pool: ClinePoolState): string[] {
  return pool.accounts.map((a, idx) => {
   const star = a.slot === pool.activeSlot ? "*" : " ";
-  const health = isClineSlotHealthy(a.slot) ? "ready" : "cooling";
-  return `${star} [${idx + 1}] [${a.slot}] key ending ${redactedToken(a.token)} — ${health}`;
+  return `${star} [${idx + 1}] [${a.slot}] key ending ${redactedToken(a.token)}`;
  });
 }
 /** User-safe one-line message for caught values (never echoes secrets). */
@@ -1506,21 +1505,50 @@ export function createCommandSpec(
      if (!pool.accounts.length) {
       ctx.ui.notify("No Cline logins saved — add one with /freeflow cline login", "info");
      } else {
-      const lines = pool.accounts.map((a, idx) => {
-       const star = a.slot === pool.activeSlot ? "*" : " ";
-       const health = isClineSlotHealthy(a.slot) ? "ready" : "cooling";
-       return `${star} [${idx + 1}] [${a.slot}] key ending ${redactedToken(a.token)} — ${health}`;
-      });
-      ctx.ui.notify(`Cline logins (${pool.accounts.length}):\n${lines.join("\n")}`, "info");
+      ctx.ui.notify(`Cline logins (${pool.accounts.length}):\n${formatClineAccountLines(pool).join("\n")}`, "info");
      }
     } else if (action === "logout" || action === "remove") {
-     const slot = arg || ((await ctx.ui.input("Cline slot to remove:", ""))?.trim() || "");
-     if (!slot) {
-      ctx.ui.notify("Cancelled — no slot provided", "warning");
-     } else if (!removeAccount(slot)) {
-      ctx.ui.notify(`Cline slot '${slot}' not found`, "warning");
+     const pool = loadPool();
+     if (!pool.accounts.length) {
+      ctx.ui.notify("No Cline logins saved — nothing to remove", "info");
      } else {
-      ctx.ui.notify(`Removed Cline login [${slot}]`, "info");
+      const resolveSlot = (raw: string): string | null => {
+       const clean = (raw || "").trim();
+       if (!clean) return null;
+       const byIndex = Number.parseInt(clean, 10);
+       if (String(byIndex) === clean && byIndex >= 1 && byIndex <= pool.accounts.length) return pool.accounts[byIndex - 1].slot;
+       const exact = pool.accounts.find((a) => a.slot === clean);
+       if (exact) return exact.slot;
+       const folded = pool.accounts.find((a) => a.slot.toLowerCase() === clean.toLowerCase());
+       return folded ? folded.slot : null;
+      };
+      let slot = resolveSlot(arg);
+      if (arg && !slot) {
+       const saved = pool.accounts.map((a, idx) => `${idx + 1}=${a.slot}`).join(", ");
+       ctx.ui.notify(`Cline slot '${arg}' not found. Saved: ${saved}`, "warning");
+      } else {
+       if (!slot) {
+        if (pool.accounts.length === 1) {
+         slot = pool.accounts[0].slot;
+        } else {
+         const opts = pool.accounts.map((a, idx) => `[${idx + 1}] [${a.slot}] key ending ${redactedToken(a.token)}`);
+         const choice = await ctx.ui.select("Remove Cline login", [...opts, "Cancel"]);
+         if (!choice || choice === "Cancel") {
+          ctx.ui.notify("Cancelled — no slot removed", "warning");
+          return;
+         }
+         const hit = pool.accounts.find((a, idx) => opts[idx] === choice);
+         slot = hit ? hit.slot : null;
+        }
+       }
+       if (!slot) {
+        ctx.ui.notify("Cancelled — no slot removed", "warning");
+       } else if (!removeAccount(slot)) {
+        ctx.ui.notify(`Cline slot '${slot}' not found`, "warning");
+       } else {
+        ctx.ui.notify(`Removed Cline login [${slot}]`, "info");
+       }
+      }
      }
     } else {
      ctx.ui.notify("Usage: /freeflow cline login [--key] [slot] | /freeflow cline accounts | /freeflow cline logout [slot]", "warning");

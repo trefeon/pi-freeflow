@@ -141,13 +141,13 @@ test("rollChat: rolls past a rate-limited slot to the next one", async () => {
   assert.equal(res.slot, "b");
   assert.equal(res.exhausted, false);
   assert.equal(res.res.status, 200);
-  assert.equal(isClineSlotHealthy("a"), false);
+  assert.equal(isClineSlotHealthy("a"), true);
   assert.equal(isClineSlotHealthy("b"), true);
   assert.ok(seen.every((h) => h.startsWith("Bearer workos:")));
  });
 });
 
-test("rollChat: all slots failing returns an exhausted 429", async () => {
+test("rollChat: all slots failing returns the last real failure", async () => {
  await withIsolatedPool(async () => {
   addAccount("a", SLOT_A);
   const res = await rollChat({
@@ -155,7 +155,7 @@ test("rollChat: all slots failing returns an exhausted 429", async () => {
    chatUrl: "https://api.cline.bot/api/v1/chat/completions",
    fetchImpl: (async () => jsonResponse(429)) as typeof fetch,
   });
-  assert.equal(res.slot, null);
+  assert.equal(res.slot, "a");
   assert.equal(res.exhausted, true);
   assert.equal(res.res.status, 429);
  });
@@ -249,5 +249,38 @@ test("command: /freeflow cline logout removes the slot", async () => {
   await spec.handler("cline logout main", ctx);
   assert.deepEqual(loadPool().accounts, []);
   assert.ok(notifications.some((n) => n.message.includes("[main]")));
+ });
+});
+
+test("command: /freeflow cline logout accepts the accounts number", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("main", SLOT_A);
+  addAccount("second", SLOT_B);
+  const spec = createCommandSpec(mockApi);
+  const { ctx } = cliContext([]);
+  await spec.handler("cline logout 1", ctx);
+  assert.deepEqual(loadPool().accounts.map((a) => a.slot), ["second"]);
+ });
+});
+
+test("command: /freeflow cline logout with one login removes it directly", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("main", SLOT_A);
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = cliContext([]);
+  await spec.handler("cline logout", ctx);
+  assert.deepEqual(loadPool().accounts, []);
+  assert.ok(notifications.some((n) => n.message.includes("[main]")));
+ });
+});
+
+test("command: /freeflow cline logout offers a picker for several logins", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("main", SLOT_A);
+  addAccount("second", SLOT_B);
+  const spec = createCommandSpec(mockApi);
+  const { ctx } = cliContext([]);
+  await spec.handler("cline logout", ctx);
+  assert.deepEqual(loadPool().accounts.map((a) => a.slot), ["second"]);
  });
 });

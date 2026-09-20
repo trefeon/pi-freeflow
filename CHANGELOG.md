@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.22.3
+
+### Patch Changes
+
+- Cline free models now work for real: DeepSeek V4.1 Flash, Muse Spark 1.3, GLM 5.3 Flash, and Solar Pro 4 all answered live against a signed-in account, over both the chat and responses endpoints, with and without tools. Removed the account lockouts that turned one failed attempt into a long "accounts are cooling down" wait, so every request now tries your saved logins fresh and reports the real upstream error instead of a made-up one. Removing a login is now a picker (`/freeflow cline logout`) instead of typing an exact slot name, and model list correctly labels Cline models as `clinecode`.
+
 ## 1.22.2
 
 ### Patch Changes

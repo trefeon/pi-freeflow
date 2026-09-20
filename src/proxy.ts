@@ -766,7 +766,7 @@ export function startProxy(
      id: m.id,
      object: "model",
      created: 0,
-     owned_by: m.source === "kilo" ? "kilocode" : "opencode",
+     owned_by: m.source === "kilo" ? "kilocode" : m.source === "cline" ? "clinecode" : "opencode",
     })),
    });
    res.writeHead(200, {
