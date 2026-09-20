@@ -59,6 +59,8 @@ import {
  formatRelayStatusLabel,
 } from "./relay-state.ts";
 import { addAccount, isClineSlotHealthy, loadPool, redactedToken, removeAccount } from "./cline-accounts.ts";
+import type { ClinePoolState } from "./cline-accounts.ts";
+import { pollDeviceToken, registerClineToken, startDeviceAuth, toApiKey } from "./cline-device-auth.ts";
 import type {
  ExtensionAPI,
  ExtensionContext,
@@ -348,20 +350,45 @@ function startLogsFollow(
  logsFollowTimer.unref?.();
 }
 
+/**
+ * Pick the login slot when the user gives none: "default" for the first
+ * login, then the smallest free "slot-2", "slot-3", … — never overwriting
+ * a saved login. Pure — takes the pool, returns a name.
+ */
+function nextClineSlot(pool: ClinePoolState): string {
+ if (!pool.accounts.some((a) => a.slot === "default")) return "default";
+ let n = 2;
+ while (pool.accounts.some((a) => a.slot === `slot-${n}`)) n += 1;
+ return `slot-${n}`;
+}
+
+/** One notify-ready line per saved login, in pool order. */
+function formatClineAccountLines(pool: ClinePoolState): string[] {
+ return pool.accounts.map((a, idx) => {
+  const star = a.slot === pool.activeSlot ? "*" : " ";
+  const health = isClineSlotHealthy(a.slot) ? "ready" : "cooling";
+  return `${star} [${idx + 1}] [${a.slot}] key ending ${redactedToken(a.token)} — ${health}`;
+ });
+}
+/** User-safe one-line message for caught values (never echoes secrets). */
+function clineErrorMessage(e: unknown): string {
+ if (e instanceof Error && e.message) return e.message;
+ if (typeof e === "string" && e) return e;
+ return "unknown error";
+}
 export function createCommandSpec(
  _pi: ExtensionAPI,
  onCatalogRefreshed?: (models: RegisteredModel[]) => void,
 ): Omit<RegisteredCommand, "name"> {
  return {
   description:
-   "Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno | install-startup | uninstall-startup | cline login [slot] | cline accounts | cline logout [slot]",
+   "Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot]",
   getArgumentCompletions: (prefix: string) =>
    [
     "auto",
     "on",
     "off",
     "hide",
-    "show",
     "widget hide",
     "widget show",
     "status",
@@ -384,6 +411,7 @@ export function createCommandSpec(
     "uninstall-startup",
     "cline",
     "cline login",
+    "cline login --key",
     "cline accounts",
     "cline logout",
     "refresh",
@@ -1399,17 +1427,72 @@ export function createCommandSpec(
     const action = (tokens[0] || "accounts").toLowerCase();
     const arg = tokens.slice(1).join(" ").trim();
     if (action === "login") {
-     const slot = arg || ((await ctx.ui.input("Cline slot name (empty = default):", "default"))?.trim() || "default");
-     const token = ((await ctx.ui.input(`Paste the API key for Cline slot [${slot}]:`, ""))?.trim() || "");
-     if (!token) {
-      ctx.ui.notify("Cancelled — no API key provided", "warning");
-     } else {
-      try {
-       addAccount(slot, token);
-       ctx.ui.notify(`Saved Cline login [${slot}] (key ending ${redactedToken(token)}) — free Cline models are ready to use`, "info");
-      } catch (e) {
-       ctx.ui.notify((e as Error).message, "warning");
+     const raw = tokens.slice(1);
+     const pasteMode = raw.some((t) => t === "--key");
+     const slotArg = raw.filter((t) => t !== "--key").join(" ").trim();
+     if (pasteMode) {
+      // Manual fallback: paste a workos: API key (never shown back).
+      const slot = slotArg || ((await ctx.ui.input("Cline slot name (empty = default):", "default"))?.trim() || "default");
+      const token = ((await ctx.ui.input(`Paste the API key for Cline slot [${slot}]:`, ""))?.trim() || "");
+      if (!token) {
+       ctx.ui.notify("Cancelled — no API key provided", "warning");
+      } else {
+       try {
+        addAccount(slot, token);
+        ctx.ui.notify(`Saved Cline login [${slot}] (key ending ${redactedToken(token)}) — free Cline models are ready to use`, "info");
+       } catch (e) {
+        ctx.ui.notify((e as Error).message, "warning");
+       }
       }
+      return;
+     }
+     // Device login inside the extension: approve in the browser, no paste.
+     const slot = slotArg || nextClineSlot(loadPool());
+     let started;
+     try {
+      started = await startDeviceAuth();
+     } catch (e) {
+      ctx.ui.notify(`Could not reach Cline to start login: ${clineErrorMessage(e)}`, "error");
+      return;
+     }
+     const link = started.verificationUriComplete ?? started.verificationUri;
+     const minutes = Math.max(1, Math.round(started.expiresIn / 60));
+     ctx.ui.notify(`Cline login [${slot}]: open ${link} and enter code ${started.userCode} (expires in ~${minutes} min)`, "info");
+     ctx.ui.notify("Waiting for approval in the browser — approve or cancel there; this finishes on its own.", "info");
+     const progress = setInterval(() => {
+      ctx.ui.notify("Still waiting for Cline approval — approve or cancel in the browser.", "info");
+     }, 45000);
+     // @ts-ignore allow unref to not block process exit in CLI
+     progress.unref?.();
+     try {
+      const deviceTokens = await pollDeviceToken(undefined, started.deviceCode, started.interval);
+      const creds = await registerClineToken(undefined, deviceTokens.accessToken, deviceTokens.refreshToken);
+      const apiKey = toApiKey(creds.access);
+      addAccount(slot, apiKey, {
+       refreshToken: creds.refresh,
+       expiresAt: creds.expires,
+       ...(creds.accountId ? { accountId: creds.accountId } : {}),
+       ...(creds.email ? { email: creds.email } : {}),
+      });
+      ctx.ui.notify(`Saved Cline login [${slot}] (key ending ${redactedToken(apiKey)}) — free Cline models are ready to use`, "info");
+      const pool = loadPool();
+      ctx.ui.notify(`Cline logins (${pool.accounts.length}):\n${formatClineAccountLines(pool).join("\n")}`, "info");
+     } catch (e) {
+      let code: string | undefined;
+      if (e && typeof e === "object" && "errorCode" in e && typeof e.errorCode === "string") {
+       code = e.errorCode;
+      }
+      if (code === "authorization_pending") {
+       ctx.ui.notify("Still waiting for Cline approval — approve or cancel in the browser.", "info");
+      } else if (code === "access_denied" || code === "cancelled") {
+       ctx.ui.notify("Cline login cancelled.", "warning");
+      } else if (code === "expired_token") {
+       ctx.ui.notify("Cline login code expired — run /freeflow cline login again for a fresh code.", "warning");
+      } else {
+       ctx.ui.notify(`Cline login did not finish: ${clineErrorMessage(e)}`, "warning");
+      }
+     } finally {
+      clearInterval(progress);
      }
     } else if (action === "accounts" || action === "list") {
      const pool = loadPool();
@@ -1433,7 +1516,7 @@ export function createCommandSpec(
       ctx.ui.notify(`Removed Cline login [${slot}]`, "info");
      }
     } else {
-     ctx.ui.notify("Usage: /freeflow cline login [slot] | /freeflow cline accounts | /freeflow cline logout [slot]", "warning");
+     ctx.ui.notify("Usage: /freeflow cline login [--key] [slot] | /freeflow cline accounts | /freeflow cline logout [slot]", "warning");
     }
    } else if (sub === "export") {
     const tokens = rest.trim() ? rest.trim().split(/\s+/) : [];

@@ -221,7 +221,7 @@ test("command: /freeflow cline login saves without leaking the key", async () =>
  await withIsolatedPool(async () => {
   const spec = createCommandSpec(mockApi);
   const { ctx, notifications } = cliContext([SLOT_A]);
-  await spec.handler("cline login main", ctx);
+  await spec.handler("cline login main --key", ctx);
   assert.equal(loadPool().accounts.length, 1);
   const shown = notifications.map((n) => n.message).join("\n");
   assert.ok(shown.includes("[main]"));

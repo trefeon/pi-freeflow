@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.22.0
+
+### Minor Changes
+
+- Sign in to Cline right inside the extension: `/freeflow cline login` shows a browser link and code, approves your own Cline account, and saves it to a per-user pool on your machine — no pasting keys. Extra logins auto-name themselves (`default`, `slot-2`, …), saved logins refresh on their own, and requests roll across them when one hits its daily free limit. Pasting a key stays available behind `login --key`. Model selection labels every free model with its source ([OpenCode], [Kilo], [Cline]).
+
 ## 1.21.0
 
 ### Minor Changes

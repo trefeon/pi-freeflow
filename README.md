@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 27 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 31 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **27 free models** | 8 from OpenCode Zen, 19 from KiloCode Gateway, context windows up to 1M. Full list below. | **$0** |
+| **31 free models** | 8 from OpenCode Zen, 19 from KiloCode Gateway, 4 from Cline, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own Cloudflare Workers and Vercel Edge relays. Requests rotate across the pool. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Every model has a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`. | **$0** |
@@ -174,13 +174,16 @@ The same command set works identically in OMP and Pi:
 /freeflow update                  # Check for and install a package update
 /freeflow debug on | off          # Toggle full HTTP lifecycle debug logging
 /freeflow kill                    # Stop the shared proxy daemon now (restarts on next use)
+/freeflow cline login               # Sign in through the browser, save to the per-user pool
+/freeflow cline accounts            # List saved Cline logins
+/freeflow cline logout              # Remove a saved Cline login
 /freeflow export [path] [--include-secrets]  # Save the relay pool to a file (default freeflow-relays.json; passwords left out unless asked)
 /freeflow import <path> [--merge|--replace] [--dry-run]  # Load a relay pool from a file (merge is default; replace asks first; dry-run previews only)
 ```
 
 ---
 
-### 27 models, one command
+### 31 models, one command
 
 ```bash
 /model → freeflow → pick
@@ -229,6 +232,17 @@ Keyless access. Short aliases work for every row (the full ID is in parentheses)
 
 \* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.
 
+#### Cline (4 models), OpenAI compatible
+
+Rotating per-account promo, direct only (never through the relay pool). Sign in through your browser with `/freeflow cline login`, manage with `/freeflow cline accounts` and `/freeflow cline logout`. Requests roll across saved logins when one hits its daily free limit.
+
+| Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `cline-free/deepseek-v4.1-flash` | DeepSeek | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
+| `cline-free/muse-spark-1.3-contributor` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal…xhigh`\* | ✅ |
+| `z-ai/glm-5.3-flash` | Zhipu AI | **262K** (262.144) | **64K** (65.536) | `minimal…xhigh`\* | ❌ |
+| `cline-free/solar-pro4` | Upstage | **131K** (131.072) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
+
 ---
 
 ### Logs and debugging
@@ -254,7 +268,7 @@ About 19k lines including tests. The full suite (sandboxed, network-mocked) and 
 ### FAQ
 
 **Do I need API keys?**
-No. Kilo uses a shared free credential and OpenCode free models need no header. You never paste a key.
+No. Kilo uses a shared free credential and OpenCode free models need no header. You never paste a key. Cline free models need a browser login instead: `/freeflow cline login` saves it to a per-user pool on your machine.
 
 **What if all relays hit rate limits?**
 The proxy tries direct upstream. If that is also rate-limited, the host shows the limit. That number is the shared upstream cap; without relays you would hit the same wall sooner.
@@ -322,7 +336,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
 src/
 ├── index.ts          # extension entry, lifecycle hooks
-├── models.ts         # 27-model catalog definitions
+├── models.ts         # 31-model catalog definitions
 ├── catalog.ts        # model catalog cache (24h disk)
 ├── proxy.ts          # local proxy server (127.0.0.1:28180)
 ├── relay.ts          # relay selection and round-robin

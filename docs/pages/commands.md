@@ -21,6 +21,9 @@ All commands are available inside the OMP or Pi TUI via `/freeflow`:
 | `/freeflow refresh` | Force reload models from live upstream APIs |
 | `/freeflow update` | Check for and install a package update |
 | `/freeflow debug on &vert; off` | Toggle full HTTP lifecycle debug logging |
+| `/freeflow cline login` | Sign in through the browser, save to the per-user pool |
+| `/freeflow cline accounts` | List saved Cline logins |
+| `/freeflow cline logout` | Remove a saved Cline login |
 
 ## Logging
 

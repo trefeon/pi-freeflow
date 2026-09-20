@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **27 curated free models** across two upstream providers: **OpenCode Zen** and **KiloCode Gateway**.
+pi-freeflow provides unified access to **31 curated free models** across three upstream providers: **OpenCode Zen**, **KiloCode Gateway**, and **Cline**.
 
 ## Upstream Protocol Distinction
 
@@ -23,7 +23,13 @@ pi-freeflow provides unified access to **27 curated free models** across two ups
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: `Authorization: Bearer kilo-free` (keyless, 200 req/hr per IP)
 - **Models**: 19 models with OpenRouter-style thinking format
-## 27 Model Specifications
+
+### Cline (`/api/v1/chat/completions`)
+- **Endpoint**: `https://api.cline.bot/api/v1/chat/completions`
+- **Auth**: per-user login via `/freeflow cline login` (browser approval, saved to a per-user pool on your machine)
+- **Models**: 4 models from Cline's rotating free promo; requests roll across saved logins on the daily free limit
+- **Routing**: direct only, never through the relay pool
+## 31 Model Specifications
 
 ### OpenCode Zen (8 models)
 
@@ -62,14 +68,26 @@ pi-freeflow provides unified access to **27 curated free models** across two ups
 | `nex-n2.5-mini` | 262,144 | 235,929 | OpenRouter | ✅ |
 | `ling-3.0-flash-vl` | 262,144 | 32,768 | OpenRouter | ✅ |
 
+### Cline (4 models)
+
+Cline free models come from a rotating per-account promo and need a browser login (`/freeflow cline login`; manage with `/freeflow cline accounts` and `/freeflow cline logout`). They run direct only, never through the relay pool.
+
+| Model ID | Context | Max Output | Thinking | Vision |
+| :--- | ---: | ---: | :--- | :--- |
+| `cline-free/deepseek-v4.1-flash` | 262,144 | 32,768 | OpenRouter | ❌ |
+| `cline-free/muse-spark-1.3-contributor` | 1,048,576 | 131,072 | OpenRouter | ✅ |
+| `z-ai/glm-5.3-flash` | 262,144 | 65,536 | OpenRouter | ❌ |
+| `cline-free/solar-pro4` | 131,072 | 32,768 | OpenRouter | ❌ |
+
 \* MiMo collapses `minimal→low` and `xhigh→high` upstream — 5 labels, 3 effective effort values (low/medium/high).
 
-## Dual-Upstream Routing Matrix
+## Upstream Routing Matrix
 
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :--- | :--- | :--- | :--- |
 | **OpenCode Zen** | 8 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat + Messages) | Keyless |
 | **KiloCode Gateway** | 19 | `api.kilo.ai` | `/api/gateway/chat/completions` | `Bearer kilo-free` |
+| **Cline** | 4 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 
 ## Stealth previews
 
