@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.22.1
+
+### Patch Changes
+
+- Correct Cline free-model specs: DeepSeek V4.1 Flash and GLM 5.3 Flash are 1M context (not 262K) with vision support and low/high/max thinking levels; Solar Pro 4 is 512K context with the full thinking range. Model selection and docs now show the right numbers.
+
 ## 1.22.0
 
 ### Minor Changes

@@ -74,10 +74,10 @@ Cline free models come from a rotating per-account promo and need a browser logi
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
-| `cline-free/deepseek-v4.1-flash` | 262,144 | 32,768 | OpenRouter | ❌ |
+| `cline-free/deepseek-v4.1-flash` | 1,000,000 | 384,000 | OpenRouter | ✅ |
 | `cline-free/muse-spark-1.3-contributor` | 1,048,576 | 131,072 | OpenRouter | ✅ |
-| `z-ai/glm-5.3-flash` | 262,144 | 65,536 | OpenRouter | ❌ |
-| `cline-free/solar-pro4` | 131,072 | 32,768 | OpenRouter | ❌ |
+| `z-ai/glm-5.3-flash` | 1,000,000 | 131,072 | OpenRouter | ✅ |
+| `cline-free/solar-pro4` | 524,288 | 131,072 | OpenRouter | ❌ |
 
 \* MiMo collapses `minimal→low` and `xhigh→high` upstream — 5 labels, 3 effective effort values (low/medium/high).
 

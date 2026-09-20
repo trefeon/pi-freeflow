@@ -238,10 +238,10 @@ Rotating per-account promo, direct only (never through the relay pool). Sign in 
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `cline-free/deepseek-v4.1-flash` | DeepSeek | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
+| `cline-free/deepseek-v4.1-flash` | DeepSeek | **1M** (1.000.000) | **384K** (384.000) | `low/high/max` | ✅ |
 | `cline-free/muse-spark-1.3-contributor` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal…xhigh`\* | ✅ |
-| `z-ai/glm-5.3-flash` | Zhipu AI | **262K** (262.144) | **64K** (65.536) | `minimal…xhigh`\* | ❌ |
-| `cline-free/solar-pro4` | Upstage | **131K** (131.072) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
+| `z-ai/glm-5.3-flash` | Zhipu AI | **1M** (1.000.000) | **131K** (131.072) | `low/high/max` | ✅ |
+| `cline-free/solar-pro4` | Upstage | **512K** (524.288) | **131K** (131.072) | `minimal…max`\* | ❌ |
 
 ---
 

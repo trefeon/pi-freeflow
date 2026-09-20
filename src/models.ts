@@ -370,9 +370,9 @@ export const KILO_MODELS: ModelDef[] = [
 ];
 
 /**
- * Shared effort map for Cline free models — same flat reasoning_effort
- * minimal..xhigh shape as the Kilo map; the proxy passes effort through
- * verbatim and upstream serves the levels it supports.
+ * Full-range effort map (Solar Pro 4 — reference lists none..max; off stays
+ * null per repo convention). The proxy passes effort through verbatim and
+ * upstream serves the levels it supports.
  */
 const CLINE_REASONING_MAP: ThinkingLevelMap = {
  off: null,
@@ -381,7 +381,22 @@ const CLINE_REASONING_MAP: ThinkingLevelMap = {
  medium: "medium",
  high: "high",
  xhigh: "xhigh",
- max: null,
+ max: "max",
+};
+/**
+ * Narrow effort map for DeepSeek V4 Flash + GLM Flash — reference
+ * reasoningOptions list effort values [low, high, max] only (no toggle
+ * on GLM); minimal/medium/xhigh are not offered so the host never sends
+ * an unsupported level (the proxy forwards effort verbatim).
+ */
+const CLINE_FLASH_REASONING_MAP: ThinkingLevelMap = {
+ off: null,
+ minimal: null,
+ low: "low",
+ medium: null,
+ high: "high",
+ xhigh: null,
+ max: "max",
 };
 
 /**
@@ -396,10 +411,10 @@ export const CLINE_MODELS: ModelDef[] = [
   id: "cline-free/deepseek-v4.1-flash",
   name: "DeepSeek V4.1 Flash [Cline]",
   reasoning: true,
-  contextWindow: 262_144,
-  maxTokens: 32_768,
-  input: ["text"],
-  thinkingLevelMap: CLINE_REASONING_MAP,
+  contextWindow: 1_000_000,
+  maxTokens: 384_000,
+  input: ["text", "image"],
+  thinkingLevelMap: CLINE_FLASH_REASONING_MAP,
  },
  {
   id: "cline-free/muse-spark-1.3-contributor",
@@ -423,17 +438,17 @@ export const CLINE_MODELS: ModelDef[] = [
   id: "z-ai/glm-5.3-flash",
   name: "GLM 5.3 Flash [Cline]",
   reasoning: true,
-  contextWindow: 262_144,
-  maxTokens: 65_536,
-  input: ["text"],
-  thinkingLevelMap: CLINE_REASONING_MAP,
+  contextWindow: 1_000_000,
+  maxTokens: 131_072,
+  input: ["text", "image"],
+  thinkingLevelMap: CLINE_FLASH_REASONING_MAP,
  },
  {
   id: "cline-free/solar-pro4",
   name: "Solar Pro4 [Cline]",
   reasoning: true,
-  contextWindow: 131_072,
-  maxTokens: 32_768,
+  contextWindow: 524_288,
+  maxTokens: 131_072,
   input: ["text"],
   thinkingLevelMap: CLINE_REASONING_MAP,
  },
