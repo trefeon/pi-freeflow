@@ -15,6 +15,7 @@ import {
  removeAccount,
  rollChat,
 } from "../src/cline-accounts.ts";
+import { CLINE_BROWSER_SIGNOUT_URL } from "../src/cline-device-auth.ts";
 import { createCommandSpec } from "../src/commands.ts";
 import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "../src/types.ts";
 
@@ -304,6 +305,23 @@ test("command: /freeflow cline logout with one login removes it directly", async
   await spec.handler("cline logout", ctx);
   assert.deepEqual(loadPool().accounts, []);
   assert.ok(notifications.some((n) => n.message.includes("[main]")));
+ });
+});
+
+test("command: /freeflow cline signout shows the browser sign-out link and keeps saved logins", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("default", SLOT_A);
+  addAccount("slot-2", SLOT_B);
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = cliContext([]);
+  await spec.handler("cline signout", ctx);
+  const shown = notifications.map((n) => n.message).join("\n");
+  assert.ok(shown.includes(CLINE_BROWSER_SIGNOUT_URL), "must show the sign-out link");
+  assert.ok(shown.includes("you have 2"), "must count the saved logins");
+  assert.ok(shown.includes("slot-3"), "must name the slot the next account would use");
+  // Browser sign-out is not local removal.
+  assert.deepEqual(loadPool().accounts.map((a) => a.slot), ["default", "slot-2"]);
+  assert.ok(!shown.includes(SLOT_A) && !shown.includes(SLOT_B), "must never echo a key");
  });
 });
 

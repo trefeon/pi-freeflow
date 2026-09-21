@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.23.0
+
+### Minor Changes
+
+- Adding more Cline logins is now easy. Every login gets its own slot (`default`, `slot-2`, `slot-3`, …) and requests roll across all of them, so a second or third account keeps you working when one hits its free daily limit. The sign-in prompt now shows the link to sign out of Cline in your browser (`/freeflow cline signout` prints it any time), which is what you need to approve the next account with a different email — or use a private window and keep the session you already have. `/freeflow cline accounts` shows each login's email so you can tell them apart.
+
 ## 1.22.4
 
 ### Patch Changes

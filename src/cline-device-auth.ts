@@ -45,6 +45,16 @@ export const DEFAULT_WORKOS_BASE = "https://api.workos.com";
 export const DEFAULT_API_BASE = "https://api.cline.bot";
 export const WORKOS_TOKEN_PREFIX = "workos:";
 
+/**
+ * Cline's own sign-out route, for switching accounts in the browser. Verified
+ * live: it answers 302 -> https://app.cline.bot/dashboard. Cline ships no
+ * hosted sign-out page on its auth host (every /logout, /sign-out, /signout,
+ * /account path there is 404), so this app route is the one to point at.
+ * The device flow reuses whatever account the browser is signed in with, and
+ * a private window clears that without ending the current session.
+ */
+export const CLINE_BROWSER_SIGNOUT_URL = "https://api.cline.bot/api/v1/auth/logout";
+
 /** Env override for the WorkOS client id (wins over the bundled default). */
 export const CLINE_WORKOS_CLIENT_ID_ENV = "PI_FREEFLOW_CLINE_WORKOS_CLIENT_ID";
 

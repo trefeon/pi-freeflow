@@ -60,7 +60,7 @@ import {
 } from "./relay-state.ts";
 import { addAccount, loadPool, redactedToken, removeAccount } from "./cline-accounts.ts";
 import type { ClinePoolState } from "./cline-accounts.ts";
-import { pollDeviceToken, registerClineToken, startDeviceAuth, toApiKey } from "./cline-device-auth.ts";
+import { CLINE_BROWSER_SIGNOUT_URL, pollDeviceToken, registerClineToken, startDeviceAuth, toApiKey } from "./cline-device-auth.ts";
 import { isCertError } from "./system-ca-fetch.ts";
 import type {
  ExtensionAPI,
@@ -1463,7 +1463,7 @@ export function createCommandSpec(
      }
      const link = started.verificationUriComplete ?? started.verificationUri;
      const minutes = Math.max(1, Math.round(started.expiresIn / 60));
-     const loginLine = `Cline login [${slot}]\nOpen this link in your browser:\n${link}\nEnter code: ${started.userCode} (expires in ~${minutes} min)\nWaiting for approval — approve or cancel in the browser; this finishes on its own.`;
+     const loginLine = `Cline login [${slot}]\nOpen this link in your browser:\n${link}\nEnter code: ${started.userCode} (expires in ~${minutes} min)\nWaiting for approval — approve or cancel in the browser; this finishes on its own.\nDifferent account? Sign out first: ${CLINE_BROWSER_SIGNOUT_URL} (or use a private window)`;
      ctx.ui.notify(loginLine, "info");
      try { ctx.ui.setStatus("cline-login", `Cline login [${slot}] code ${started.userCode}`); } catch { }
      const progress = setInterval(() => {
@@ -1550,8 +1550,15 @@ export function createCommandSpec(
        }
       }
      }
+    } else if (action === "signout" || action === "sign-out" || action === "switch") {
+     // Signing out is a browser action; it never touches saved logins here.
+     const saved = loadPool().accounts.length;
+     ctx.ui.notify(
+      `Sign out of Cline in your browser to use a different account:\n${CLINE_BROWSER_SIGNOUT_URL}\nA private window works too, and keeps your current session.\nThen run /freeflow cline login again — each login gets its own slot (${saved ? `you have ${saved}; next is ` : "next is "}${nextClineSlot(loadPool())}).`,
+      "info",
+     );
     } else {
-     ctx.ui.notify("Usage: /freeflow cline login [--key] [slot] | /freeflow cline accounts | /freeflow cline logout [slot]", "warning");
+     ctx.ui.notify("Usage: /freeflow cline login [--key] [slot] | /freeflow cline accounts | /freeflow cline logout [slot] | /freeflow cline signout", "warning");
     }
    } else if (sub === "export") {
     const tokens = rest.trim() ? rest.trim().split(/\s+/) : [];

@@ -177,6 +177,7 @@ The same command set works identically in OMP and Pi:
 /freeflow cline login               # Sign in through the browser, save to the per-user pool
 /freeflow cline accounts            # List saved Cline logins
 /freeflow cline logout              # Remove a saved Cline login
+/freeflow cline signout             # Link to sign out of Cline in your browser (to add another account)
 /freeflow export [path] [--include-secrets]  # Save the relay pool to a file (default freeflow-relays.json; passwords left out unless asked)
 /freeflow import <path> [--merge|--replace] [--dry-run]  # Load a relay pool from a file (merge is default; replace asks first; dry-run previews only)
 ```
@@ -235,6 +236,8 @@ Keyless access. Short aliases work for every row (the full ID is in parentheses)
 #### Cline (4 models), OpenAI compatible
 
 Rotating per-account promo, direct only (never through the relay pool). Sign in through your browser with `/freeflow cline login`, manage with `/freeflow cline accounts` and `/freeflow cline logout`. Requests roll across saved logins when one hits its daily free limit.
+
+Add as many logins as you want — each one gets its own slot (`default`, `slot-2`, `slot-3`, …) and a request that hits a limit on one rolls straight to the next. To sign in with a different email, sign out of Cline in that browser first (`/freeflow cline signout` prints the link), or use a private window so your current session stays put.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
