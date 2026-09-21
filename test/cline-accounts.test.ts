@@ -12,9 +12,11 @@ import {
  addAccount,
  loadPool,
  mapClineError,
+ parseClineFreeLimit,
  redactedToken,
  removeAccount,
  rollChat,
+ savePool,
 } from "../src/cline-accounts.ts";
 import { CLINE_BROWSER_SIGNOUT_URL } from "../src/cline-device-auth.ts";
 import { createCommandSpec } from "../src/commands.ts";
@@ -22,6 +24,16 @@ import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "../src/
 
 const SLOT_A = "workos:test-key-aaa111";
 const SLOT_B = "workos:test-key-bbb222";
+
+/** Captured live 2026-09-22 from a saved login sitting on the daily free cap. */
+const LIVE_LIMIT_BODY =
+ '{"error":{"code":"INFERENCE_CAP_ERROR","message":"Error 429: Daily free limit reached on model deepseek/deepseek-v4.1-flash. Try again in 20h 4m"}}';
+/**
+ * The id this proxy asks Cline for. Cline names the model in a namespace of its
+ * own inside the 429 body, so only the requested id can key a later lookup.
+ */
+const MODEL = "cline-free/deepseek-v4.1-flash";
+const CAP_DELAY_MS = (20 * 60 + 4) * 60_000;
 
 async function withIsolatedPool(fn: () => Promise<void> | void): Promise<void> {
  // Both the pool and its recovery copy: savePool snapshots the main file to
@@ -128,6 +140,35 @@ test("mapClineError: status to retryable kind", () => {
  assert.equal(mapClineError(402), "exhausted");
  assert.equal(mapClineError(500), "server");
  assert.equal(mapClineError(400), "client");
+});
+
+test("parseClineFreeLimit: reads the live daily-cap body", () => {
+ const now = Date.now();
+ const limit = parseClineFreeLimit(LIVE_LIMIT_BODY, now);
+ assert.ok(limit, "the live cap body must be recognised");
+ assert.equal(limit.modelId, "deepseek/deepseek-v4.1-flash");
+ assert.equal(limit.resetAt, now + CAP_DELAY_MS);
+});
+
+test("parseClineFreeLimit: minutes-only and bare-hour deltas", () => {
+ const now = 1_000_000;
+ assert.equal(
+  parseClineFreeLimit("Error 429: Daily free limit reached on model a/b. Try again in 35m", now)?.resetAt,
+  now + 35 * 60_000,
+ );
+ assert.equal(
+  parseClineFreeLimit("Error 429: Daily free limit reached on model a/b. Try again in 2", now)?.resetAt,
+  now + 2 * 3600_000,
+ );
+ assert.equal(
+  parseClineFreeLimit("Error 429: Daily free limit reached on model a/b. Try again in 1h 5m", now)?.resetAt,
+  now + 65 * 60_000,
+ );
+});
+
+test("parseClineFreeLimit: an ordinary 429 body is not a cap", () => {
+ assert.equal(parseClineFreeLimit('{"error":{"message":"Error 429: rate limited"}}'), null);
+ assert.equal(parseClineFreeLimit(""), null);
 });
 
 test("rollChat: rolls past a rate-limited slot to the next one", async () => {
@@ -252,6 +293,149 @@ test("rollChat: a caller error returns on the first slot without rolling", async
   });
   assert.equal(res.slot, "a");
   assert.equal(res.kind, "client");
+ });
+});
+
+test("rollChat: a login capped for this model is tried last", async () => {
+ await withIsolatedPool(async () => {
+  const cap = Date.now() + 3600_000;
+  fs.writeFileSync(
+   CLINE_POOL_FILE,
+   JSON.stringify({
+    accounts: [
+     { slot: "a", token: SLOT_A, addedAt: new Date().toISOString() },
+     { slot: "b", token: SLOT_B, addedAt: new Date().toISOString() },
+    ],
+    activeSlot: "a",
+    limits: { a: { [MODEL]: cap } },
+   }),
+   "utf8",
+  );
+  _resetClinePoolCacheForTest();
+  const asked: string[] = [];
+  const res = await rollChat({
+   body: JSON.stringify({ model: MODEL, stream: true }),
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   fetchImpl: (async (url: unknown, init: unknown) => {
+    asked.push(new Headers((init as RequestInit).headers).get("authorization") ?? "");
+    return jsonResponse(200, '{"ok":true}');
+   }) as typeof fetch,
+  });
+  // The active login is capped for this model, so the healthy one serves first.
+  assert.equal(res.slot, "b");
+  assert.deepEqual(asked, [`Bearer ${SLOT_B}`]);
+ });
+});
+
+test("rollChat: a capped login is still tried when nothing else serves", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("a", SLOT_A);
+  addAccount("b", SLOT_B);
+  const before = Date.now();
+  const asked: string[] = [];
+  const res = await rollChat({
+   body: JSON.stringify({ model: MODEL, stream: true }),
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   fetchImpl: (async (url: unknown, init: unknown) => {
+    asked.push(new Headers((init as RequestInit).headers).get("authorization") ?? "");
+    return jsonResponse(429, LIVE_LIMIT_BODY);
+   }) as typeof fetch,
+  });
+  // A recorded cap only reorders the roll: a lifted cap must be discoverable.
+  assert.equal(asked.length, 2, "every saved login must still be attempted");
+  assert.equal(res.exhausted, true);
+  assert.equal(res.attempts, 2);
+  assert.equal(res.limitOnly, true);
+  assert.ok(res.earliestResetAt !== null && res.earliestResetAt >= before + CAP_DELAY_MS - 1_000);
+  // Reading the 429 body to classify it must not consume the caller's copy.
+  const body = await res.res.text();
+  assert.ok(body.includes("Daily free limit reached"), `caller body must survive, got ${JSON.stringify(body)}`);
+  // Keyed by the id we requested, never by the name Cline put in its own body.
+  const doc = JSON.parse(fs.readFileSync(CLINE_POOL_FILE, "utf8"));
+  for (const slot of ["a", "b"]) {
+   const resetAt = doc.limits?.[slot]?.[MODEL];
+   assert.ok(typeof resetAt === "number", `slot ${slot} must record the cap under ${MODEL}`);
+   assert.ok(resetAt >= before + CAP_DELAY_MS - 1_000, `unexpected reset ${resetAt}`);
+  }
+ });
+});
+
+test("rollChat: an ordinary 429 is not reported as a cap", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("a", SLOT_A);
+  addAccount("b", SLOT_B);
+  const res = await rollChat({
+   body: JSON.stringify({ model: MODEL, stream: true }),
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   fetchImpl: (async () => jsonResponse(429)) as typeof fetch,
+  });
+  assert.equal(res.attempts, 2);
+  assert.equal(res.limitOnly, false);
+  assert.equal(res.earliestResetAt, null);
+  assert.equal(loadPool().limits, undefined);
+ });
+});
+
+test("cline pool: an expired cap is dropped on read", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("a", SLOT_A);
+  const capped = await rollChat({
+   body: JSON.stringify({ model: MODEL, stream: true }),
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   fetchImpl: (async () => jsonResponse(429, LIVE_LIMIT_BODY)) as typeof fetch,
+  });
+  assert.equal(capped.limitOnly, true);
+  const doc = JSON.parse(fs.readFileSync(CLINE_POOL_FILE, "utf8"));
+  assert.ok(typeof doc.limits?.a?.[MODEL] === "number", "the cap must be persisted with its reset");
+  fs.writeFileSync(
+   CLINE_POOL_FILE,
+   JSON.stringify({
+    accounts: [{ slot: "a", token: SLOT_A, addedAt: new Date().toISOString() }],
+    limits: { a: { [MODEL]: Date.now() - 1 } },
+   }),
+   "utf8",
+  );
+  _resetClinePoolCacheForTest();
+  assert.equal(loadPool().limits, undefined);
+ });
+});
+
+test("cline pool: a document without limits loads and saves unchanged", async () => {
+ await withIsolatedPool(async () => {
+  fs.writeFileSync(
+   CLINE_POOL_FILE,
+   JSON.stringify({
+    accounts: [{ slot: "a", token: SLOT_A, addedAt: new Date().toISOString() }],
+    activeSlot: "a",
+   }),
+   "utf8",
+  );
+  _resetClinePoolCacheForTest();
+  const pool = loadPool();
+  assert.equal(pool.accounts.length, 1);
+  assert.equal(pool.activeSlot, "a");
+  assert.equal(pool.limits, undefined);
+  savePool(pool);
+  _resetClinePoolCacheForTest();
+  const again = loadPool();
+  assert.equal(again.accounts.length, 1);
+  assert.equal(again.limits, undefined);
+  assert.ok(!fs.readFileSync(CLINE_POOL_FILE, "utf8").includes("limits"));
+ });
+});
+
+test("cline pool: unusable limits shapes are ignored", async () => {
+ await withIsolatedPool(async () => {
+  fs.writeFileSync(
+   CLINE_POOL_FILE,
+   JSON.stringify({
+    accounts: [{ slot: "a", token: SLOT_A, addedAt: new Date().toISOString() }],
+    limits: { a: 5, b: { [MODEL]: "soon" }, "": { [MODEL]: Date.now() + 60_000 } },
+   }),
+   "utf8",
+  );
+  _resetClinePoolCacheForTest();
+  assert.equal(loadPool().limits, undefined);
  });
 });
 
