@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.23.2
+
+### Patch Changes
+
+- Saved Cline logins are now recoverable. The pool keeps a backup copy beside it, so a pool that is missing or unreadable restores itself from the last good set of logins instead of silently coming back empty — losing every saved login to one bad write is no longer permanent. The backup also holds the largest set of logins ever seen, so it survives a run of smaller bad writes rather than being overwritten by the first one. Removing your last login still sticks: an intentionally empty pool is left alone rather than being repopulated from the backup.
+
 ## 1.23.1
 
 ### Patch Changes

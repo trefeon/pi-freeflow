@@ -27,6 +27,15 @@ export function resolveClinePoolPath(): string {
 
 export const CLINE_POOL_FILE = resolveClinePoolPath();
 
+/**
+ * Recovery copy of the pool, read only when the main file is missing or
+ * unreadable. Mirrors the relay-state `.bak` convention, with one deliberate
+ * difference: an empty pool is a legitimate state here (`/freeflow cline
+ * logout` of the last login must stick), so a valid empty main file is never
+ * overridden from the backup.
+ */
+export const CLINE_POOL_BACKUP_FILE = `${CLINE_POOL_FILE}.bak`;
+
 /** One saved login slot. The token is only ever sent as an explicit bearer header. */
 export interface ClineAccount {
  slot: string;
@@ -108,60 +117,89 @@ function emptyPool(): ClinePoolState {
  return { accounts: [] };
 }
 
+/**
+ * Parse a pool document. Returns null when the blob is unusable (bad JSON,
+ * wrong shape) so callers can fall back to the backup copy. A valid document
+ * with zero accounts is NOT null: that is a real empty pool.
+ */
+function parsePoolDoc(raw: string): ClinePoolState | null {
+ let parsed: unknown;
+ try {
+  parsed = JSON.parse(raw);
+ } catch {
+  logWarn("cline pool file corrupt", { path: CLINE_POOL_FILE });
+  return null;
+ }
+ if (typeof parsed !== "object" || parsed === null) {
+  logWarn("cline pool file unusable", { path: CLINE_POOL_FILE });
+  return null;
+ }
+ // Boundary-narrowed once: the on-disk blob is external input, so check
+ // its shape here and read only validated fields below.
+ const doc: Record<string, unknown> = parsed as Record<string, unknown>;
+ if (!Array.isArray(doc.accounts)) {
+  logWarn("cline pool file unusable", { path: CLINE_POOL_FILE });
+  return null;
+ }
+ const accounts: ClineAccount[] = [];
+ for (const entry of doc.accounts as unknown[]) {
+  if (typeof entry !== "object" || entry === null) continue;
+  const rec: Record<string, unknown> = entry as Record<string, unknown>;
+  const slot = typeof rec.slot === "string" ? rec.slot.trim() : "";
+  const token = typeof rec.token === "string" ? rec.token : "";
+  if (!slot || (!token.startsWith("workos:") && !isWorkosJwt(token) && !token.startsWith("clp_"))) continue;
+  const refreshRaw: unknown = rec.refreshToken;
+  const refreshToken = typeof refreshRaw === "string" && refreshRaw.length > 0 ? refreshRaw : undefined;
+  const expiresRaw: unknown = rec.expiresAt;
+  const expiresAt = typeof expiresRaw === "number" && Number.isFinite(expiresRaw) && expiresRaw > 0
+   ? expiresRaw
+   : undefined;
+  const accountIdRaw: unknown = rec.accountId;
+  const accountId = typeof accountIdRaw === "string" && accountIdRaw.trim() ? accountIdRaw.trim() : undefined;
+  const emailRaw: unknown = rec.email;
+  const email = typeof emailRaw === "string" && emailRaw.trim() ? emailRaw.trim() : undefined;
+  accounts.push({
+   slot,
+   token,
+   addedAt: typeof rec.addedAt === "string" ? rec.addedAt : new Date().toISOString(),
+   ...(refreshToken ? { refreshToken } : {}),
+   ...(expiresAt !== undefined ? { expiresAt } : {}),
+   ...(accountId ? { accountId } : {}),
+   ...(email ? { email } : {}),
+  });
+ }
+ const activeRaw: unknown = doc.activeSlot;
+ const activeSlot = typeof activeRaw === "string" && accounts.some((a) => a.slot === activeRaw.trim())
+  ? activeRaw.trim()
+  : undefined;
+ return activeSlot ? { accounts, activeSlot } : { accounts };
+}
+
+/**
+ * Recover the pool from the backup copy and heal the main file so the recovery
+ * sticks. Returns null when no usable backup exists. Only ever called for a
+ * missing or unusable main file — never to override a valid empty pool.
+ */
+function recoverPoolFromBackup(description: string): ClinePoolState | null {
+ try {
+  const parsed = parsePoolDoc(fs.readFileSync(CLINE_POOL_BACKUP_FILE, "utf8"));
+  if (parsed && parsed.accounts.length > 0) {
+   logWarn(`cline pool ${description} — recovered from backup`, { slots: parsed.accounts.length, path: CLINE_POOL_BACKUP_FILE });
+   savePool(parsed);
+   return parsed;
+  }
+ } catch { }
+ return null;
+}
+
 function readPoolFile(): ClinePoolState {
  try {
-  if (!fs.existsSync(CLINE_POOL_FILE)) return emptyPool();
-  const raw = fs.readFileSync(CLINE_POOL_FILE, "utf8");
-  let parsed: unknown;
-  try {
-   parsed = JSON.parse(raw);
-  } catch {
-   logWarn("cline pool file corrupt — starting with an empty pool", { path: CLINE_POOL_FILE });
-   return emptyPool();
+  if (!fs.existsSync(CLINE_POOL_FILE)) {
+   return recoverPoolFromBackup("main file missing") ?? emptyPool();
   }
-  if (typeof parsed !== "object" || parsed === null) {
-   logWarn("cline pool file unusable — starting with an empty pool", { path: CLINE_POOL_FILE });
-   return emptyPool();
-  }
-  // Boundary-narrowed once: the on-disk blob is external input, so check
-  // its shape here and read only validated fields below.
-  const doc: Record<string, unknown> = parsed as Record<string, unknown>;
-  if (!Array.isArray(doc.accounts)) {
-   logWarn("cline pool file unusable — starting with an empty pool", { path: CLINE_POOL_FILE });
-   return emptyPool();
-  }
-  const accounts: ClineAccount[] = [];
-  for (const entry of doc.accounts as unknown[]) {
-   if (typeof entry !== "object" || entry === null) continue;
-   const rec: Record<string, unknown> = entry as Record<string, unknown>;
-   const slot = typeof rec.slot === "string" ? rec.slot.trim() : "";
-   const token = typeof rec.token === "string" ? rec.token : "";
-   if (!slot || (!token.startsWith("workos:") && !isWorkosJwt(token) && !token.startsWith("clp_"))) continue;
-   const refreshRaw: unknown = rec.refreshToken;
-   const refreshToken = typeof refreshRaw === "string" && refreshRaw.length > 0 ? refreshRaw : undefined;
-   const expiresRaw: unknown = rec.expiresAt;
-   const expiresAt = typeof expiresRaw === "number" && Number.isFinite(expiresRaw) && expiresRaw > 0
-    ? expiresRaw
-    : undefined;
-   const accountIdRaw: unknown = rec.accountId;
-   const accountId = typeof accountIdRaw === "string" && accountIdRaw.trim() ? accountIdRaw.trim() : undefined;
-   const emailRaw: unknown = rec.email;
-   const email = typeof emailRaw === "string" && emailRaw.trim() ? emailRaw.trim() : undefined;
-   accounts.push({
-    slot,
-    token,
-    addedAt: typeof rec.addedAt === "string" ? rec.addedAt : new Date().toISOString(),
-    ...(refreshToken ? { refreshToken } : {}),
-    ...(expiresAt !== undefined ? { expiresAt } : {}),
-    ...(accountId ? { accountId } : {}),
-    ...(email ? { email } : {}),
-   });
-  }
-  const activeRaw: unknown = doc.activeSlot;
-  const activeSlot = typeof activeRaw === "string" && accounts.some((a) => a.slot === activeRaw.trim())
-   ? activeRaw.trim()
-   : undefined;
-  return activeSlot ? { accounts, activeSlot } : { accounts };
+  const parsed = parsePoolDoc(fs.readFileSync(CLINE_POOL_FILE, "utf8"));
+  if (parsed) return parsed;
+  return recoverPoolFromBackup("file unusable") ?? emptyPool();
  } catch {
   return emptyPool();
  }
@@ -190,17 +228,64 @@ export function loadPool(): ClinePoolState {
  return cached;
 }
 
+/**
+ * Keep the largest pool ever seen as the recovery copy.
+ *
+ * Largest-wins rather than last-write-wins, deliberately. The backup is read
+ * only when the main file is missing or unreadable, and two failure modes had
+ * to be covered at once:
+ *   - an existing richer pool being overwritten (compare the file being
+ *     replaced, before the write), and
+ *   - growth being lost because the backup always lagged one write (compare
+ *     the pool just written, after the write).
+ * Ties do not replace, so a run of equally-sized destructive writes cannot
+ * evict a good copy — which is how a real pool was lost: two good logins were
+ * replaced by fixtures, and the second fixture write replaced the backup too.
+ */
+function keepLargestBackup(raw: string): void {
+ try {
+  const count = accountCountIn(raw);
+  if (count <= 0) return;
+  let backupCount = -1;
+  try {
+   backupCount = accountCountIn(fs.readFileSync(CLINE_POOL_BACKUP_FILE, "utf8"));
+  } catch {
+   backupCount = -1;
+  }
+  if (count <= backupCount) return;
+  fs.writeFileSync(CLINE_POOL_BACKUP_FILE, raw, { encoding: "utf8", mode: 0o600 });
+  try { fs.chmodSync(CLINE_POOL_BACKUP_FILE, 0o600); } catch { }
+ } catch { }
+}
+
+/** How many accounts a raw pool blob holds; -1 when it is unreadable. */
+function accountCountIn(raw: string): number {
+ try {
+  const doc = JSON.parse(raw) as { accounts?: unknown };
+  return Array.isArray(doc.accounts) ? doc.accounts.length : -1;
+ } catch {
+  return -1;
+ }
+}
+
 /** Atomically persist the pool with owner-only permissions. Never logs secrets. */
 export function savePool(pool: ClinePoolState): void {
  try {
   const dir = path.dirname(CLINE_POOL_FILE);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  // The pool being replaced is the only copy of itself: secure it first.
+  try {
+   if (fs.existsSync(CLINE_POOL_FILE)) keepLargestBackup(fs.readFileSync(CLINE_POOL_FILE, "utf8"));
+  } catch { }
   const tmp = `${CLINE_POOL_FILE}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(pool, null, 2), { encoding: "utf8", mode: 0o600 });
+  const serialized = JSON.stringify(pool, null, 2);
+  fs.writeFileSync(tmp, serialized, { encoding: "utf8", mode: 0o600 });
   try {
    fs.chmodSync(tmp, 0o600);
   } catch { }
   fs.renameSync(tmp, CLINE_POOL_FILE);
+  // Compare the pool just written too, so growth is never the copy that lags.
+  keepLargestBackup(serialized);
   cached = pool;
   cachedMtime = diskMtime();
  } catch (e) {

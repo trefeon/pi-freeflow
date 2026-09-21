@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
  _resetClinePoolCacheForTest,
+ CLINE_POOL_BACKUP_FILE,
  CLINE_POOL_FILE,
  addAccount,
  loadPool,
@@ -23,21 +24,29 @@ const SLOT_A = "workos:test-key-aaa111";
 const SLOT_B = "workos:test-key-bbb222";
 
 async function withIsolatedPool(fn: () => Promise<void> | void): Promise<void> {
- const before = fs.existsSync(CLINE_POOL_FILE) ? fs.readFileSync(CLINE_POOL_FILE, "utf8") : null;
+ // Both the pool and its recovery copy: savePool snapshots the main file to
+ // .bak, so a helper that restores only the main file leaks test data into the
+ // next test and can resurrect its own fixtures.
+ const read = (p: string) => (fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null);
+ const before = read(CLINE_POOL_FILE);
+ const beforeBak = read(CLINE_POOL_BACKUP_FILE);
+ const restore = (p: string, content: string | null) => {
+  if (content !== null) fs.writeFileSync(p, content, "utf8");
+  else {
+   try { fs.rmSync(p, { force: true }); } catch { }
+  }
+ };
  try {
   fs.rmSync(CLINE_POOL_FILE, { force: true });
+  fs.rmSync(CLINE_POOL_BACKUP_FILE, { force: true });
  } catch { }
  _resetClinePoolCacheForTest();
  try {
   await fn();
  } finally {
   _resetClinePoolCacheForTest();
-  if (before !== null) fs.writeFileSync(CLINE_POOL_FILE, before, "utf8");
-  else {
-   try {
-    fs.rmSync(CLINE_POOL_FILE, { force: true });
-   } catch { }
-  }
+  restore(CLINE_POOL_FILE, before);
+  restore(CLINE_POOL_BACKUP_FILE, beforeBak);
  }
 }
 
@@ -396,6 +405,65 @@ test("command: /freeflow cline accounts marks a duplicate account", async () => 
   await spec.handler("cline accounts", ctx);
   const shown = notifications.map((n) => n.message).join("\n");
   assert.ok(shown.includes("same account as [default]"), `must mark the duplicate, got: ${shown}`);
+ });
+});
+
+test("cline pool: an unreadable main file recovers from the backup copy", async () => {
+ await withIsolatedPool(() => {
+  addAccount("default", SLOT_A);
+  addAccount("slot-2", SLOT_B);
+  // Second save snapshots the first, so the backup holds the earlier state.
+  addAccount("slot-2", SLOT_B);
+  assert.ok(fs.existsSync(CLINE_POOL_BACKUP_FILE), "savePool must keep a recovery copy");
+  fs.writeFileSync(CLINE_POOL_FILE, "{not json", "utf8");
+  _resetClinePoolCacheForTest();
+  const recovered = loadPool();
+  assert.deepEqual(recovered.accounts.map((a) => a.slot), ["default", "slot-2"]);
+  // Recovery heals the main file so it is not redone on every load.
+  assert.doesNotThrow(() => JSON.parse(fs.readFileSync(CLINE_POOL_FILE, "utf8")));
+ });
+});
+
+test("cline pool: a deleted main file recovers from the backup copy", async () => {
+ await withIsolatedPool(() => {
+  addAccount("default", SLOT_A);
+  addAccount("slot-2", SLOT_B);
+  fs.rmSync(CLINE_POOL_FILE, { force: true });
+  _resetClinePoolCacheForTest();
+  assert.deepEqual(loadPool().accounts.map((a) => a.slot), ["default", "slot-2"]);
+ });
+});
+
+test("cline pool: a legitimately empty pool is never resurrected from the backup", async () => {
+ await withIsolatedPool(() => {
+  addAccount("default", SLOT_A);
+  addAccount("slot-2", SLOT_B);
+  assert.deepEqual(removeAccount("default"), true);
+  assert.deepEqual(removeAccount("slot-2"), true);
+  assert.deepEqual(loadPool().accounts, []);
+  // The backup still holds the old logins; removing the last one must stick.
+  _resetClinePoolCacheForTest();
+  assert.deepEqual(loadPool().accounts, []);
+ });
+});
+
+test("cline pool: a run of smaller writes cannot clobber the good backup", async () => {
+ await withIsolatedPool(() => {
+  // The incident this guards: a real 2-login pool replaced by a 1-login
+  // fixture, then a second fixture write replacing the backup too.
+  addAccount("default", SLOT_A, { email: "real-one@example.com" });
+  addAccount("slot-2", SLOT_B, { email: "real-two@example.com" });
+  fs.writeFileSync(CLINE_POOL_FILE, JSON.stringify({ accounts: [{ slot: "fixture", token: "workos:fx" }] }), "utf8");
+  _resetClinePoolCacheForTest();
+  addAccount("fixture-2", "workos:fx2");
+  fs.writeFileSync(CLINE_POOL_FILE, "{broken", "utf8");
+  _resetClinePoolCacheForTest();
+  assert.deepEqual(loadPool().accounts.map((a) => a.slot), ["default", "slot-2"], "the larger good pool must survive");
+  assert.deepEqual(
+   loadPool().accounts.map((a) => a.email),
+   ["real-one@example.com", "real-two@example.com"],
+   "the recovered copy must be the real logins, not the fixtures",
+  );
  });
 });
 
