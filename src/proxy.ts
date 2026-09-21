@@ -130,16 +130,45 @@ const CLINE_MODEL_HINT =
  "Cline has no such model. Refresh the model list and retry.";
 
 /**
+ * What the roll knows about a free-limit exhaustion, for the 429 hint: how many
+ * saved logins answered the cap and the nearest reset any of them stated.
+ */
+export interface ClineLimitHint {
+ logins: number;
+ /** Epoch ms, or null when no login's body stated a reset. */
+ resetAt: number | null;
+}
+
+/** Coarse reset delay ("20h 4m", "35m") — the hint names what the body stated. */
+function formatResetDelay(resetAt: number): string {
+ const minutes = Math.max(1, Math.round((resetAt - Date.now()) / 60_000));
+ const hours = Math.floor(minutes / 60);
+ const rest = minutes % 60;
+ if (hours === 0) return `${rest}m`;
+ return rest > 0 ? `${hours}h ${rest}m` : `${hours}h`;
+}
+
+/** Every saved login is out of free use for this model: say what helps next. */
+function clineAllLimitedHint(limit: ClineLimitHint): string {
+ const reset = limit.resetAt === null ? "" : ` Nearest reset in about ${formatResetDelay(limit.resetAt)}.`;
+ return `Cline's daily free limit is used up on all ${limit.logins} saved logins.${reset} Switch models, or add another login with /freeflow cline login.`;
+}
+
+/**
  * Attach the matching hint to a Cline marker error JSON body (free-limit
  * 429, 403, 401, model 404). Anything else — other statuses, non-JSON
  * bodies — passes through untouched.
+ *
+ * `limit` is present only when the roll tried every saved login and every one
+ * of them answered the daily free cap; then "for this login" would be wrong and
+ * hide that another login is the way out.
  */
-export function mapClineError(status: number, data: string): string {
+export function mapClineError(status: number, data: string, limit?: ClineLimitHint): string {
  // Synthetic pool-exhausted bodies already tell the user exactly what to do
  // (sign in again) — a rate-limit hint would mislead.
  if (data.includes("cline_pool_exhausted")) return data;
  const hint = status === 429
-  ? CLINE_RATE_LIMIT_HINT
+  ? (limit ? clineAllLimitedHint(limit) : CLINE_RATE_LIMIT_HINT)
   : status === 403
    ? CLINE_FORBIDDEN_HINT
    : status === 401
@@ -208,11 +237,17 @@ async function handleClineRequest(opts: {
  }
  chatBody.stream = true;
  let upstreamRes: Response;
+ let limitHint: ClineLimitHint | undefined;
  try {
   const result = await rollChat({ body: JSON.stringify(chatBody), chatUrl: CLINE_CHAT_URL, refreshImpl: clineRefreshImpl, fetchImpl: fetchWithSystemCA });
   upstreamRes = result.res;
   if (typeof result.slot === "string" && result.slot.length > 0) {
    log("debug", `cline served by slot ${result.slot}`, { model }, reqId);
+  }
+  // Every saved login answered the daily free cap: name that instead of
+  // blaming "this login", which hides that another login or another model works.
+  if (result.limitOnly && result.attempts > 1) {
+   limitHint = { logins: result.attempts, resetAt: result.earliestResetAt };
   }
  } catch (e) {
   log("error", "cline pool error", { error: String(e), model }, reqId);
@@ -239,7 +274,7 @@ async function handleClineRequest(opts: {
    }
    return;
   }
-  const data = mapClineError(upstreamRes.status, raw);
+  const data = mapClineError(upstreamRes.status, raw, limitHint);
   if (!res.headersSent) {
    res.writeHead(upstreamRes.status, { "content-type": upstreamRes.headers.get("content-type") || "application/json" });
    res.end(data);

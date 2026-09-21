@@ -54,6 +54,14 @@ export interface ClineAccount {
 export interface ClinePoolState {
  accounts: ClineAccount[];
  activeSlot?: string;
+ /**
+  * Daily free-limit resets per slot per *requested* model id (epoch ms):
+  * `limits[slot][modelId] = resetAt`. Cline reports its own model name in the
+  * 429 body, which never matches the id we asked for, so the requested id is
+  * the only key a later request can look up. Expired entries are dropped on
+  * read. Optional: pools written before this existed load unchanged.
+  */
+ limits?: Record<string, Record<string, number>>;
 }
 
 /**
@@ -111,6 +119,59 @@ export const CLINE_CLIENT_HEADERS: Record<string, string> = {
  "User-Agent": `Cline/${CLINE_CLIENT_VERSION}`,
 };
 
+/**
+ * Free-limit report carried by a Cline 429 body, e.g.
+ * {"error":{"code":"INFERENCE_CAP_ERROR","message":"Error 429: Daily free limit
+ * reached on model deepseek/deepseek-v4.1-flash. Try again in 20h 4m"}}.
+ *
+ * `modelId` is the name Cline spells in its own body, which is a different
+ * namespace from the id this proxy requests (measured live 2026-09-22: we ask
+ * for `cline-free/deepseek-v4.1-flash`, Cline answers about
+ * `deepseek/deepseek-v4.1-flash`). The limit cache is therefore keyed by the
+ * requested id; `modelId` is diagnostics only.
+ */
+export interface ClineFreeLimit {
+ /** Model name as the upstream body spells it. */
+ modelId?: string;
+ /** Epoch ms the cap lifts; absent when the body stated no delay. */
+ resetAt?: number;
+}
+
+const CLINE_FREE_LIMIT_MARKER = /free limit reached on model/i;
+
+/**
+ * Delay stated as `try again in <N>h <N>m`, `<N>m`, or a bare `<N>` (hours).
+ * Returns null when the body states no delay this parser understands.
+ */
+function parseResetDelayMs(text: string): number | null {
+ const hoursMinutes = text.match(/try again in\s+([0-9]+)\s*h(?:ours?|rs?)?(?:\s*([0-9]+)\s*m(?:in(?:utes?)?)?)?/i);
+ if (hoursMinutes) {
+  const hours = Number(hoursMinutes[1]);
+  const minutes = hoursMinutes[2] ? Number(hoursMinutes[2]) : 0;
+  return (hours * 60 + minutes) * 60_000;
+ }
+ const minutesOnly = text.match(/try again in\s+([0-9]+)\s*m(?:in(?:utes?)?)?/i);
+ if (minutesOnly) return Number(minutesOnly[1]) * 60_000;
+ const bareHours = text.match(/try again in\s+([0-9]+)(?![0-9a-z])/i);
+ return bareHours ? Number(bareHours[1]) * 3600_000 : null;
+}
+
+/**
+ * Parse an upstream 429 body for the daily free-limit marker. Returns null for
+ * anything else, so a plain edge 429 keeps its existing behavior.
+ */
+export function parseClineFreeLimit(raw: string, now = Date.now()): ClineFreeLimit | null {
+ if (typeof raw !== "string" || !CLINE_FREE_LIMIT_MARKER.test(raw)) return null;
+ const named = raw.match(/free limit reached on model\s+(\S+)/i);
+ // The model name ends the sentence, so a trailing "." belongs to the prose.
+ const modelId = named ? named[1].replace(/[.,;:]+$/, "") : "";
+ const delay = parseResetDelayMs(raw);
+ return {
+  ...(modelId ? { modelId } : {}),
+  ...(delay !== null ? { resetAt: now + delay } : {}),
+ };
+}
+
 /** Machine-classified outcome of one Cline chat attempt. */
 export type ClineErrorKind = "ok" | "auth" | "rate-limit" | "exhausted" | "server" | "client";
 
@@ -125,6 +186,29 @@ export function mapClineError(status: number): ClineErrorKind {
 
 function emptyPool(): ClinePoolState {
  return { accounts: [] };
+}
+
+/**
+ * Read the optional `limits` map out of a pool document, dropping anything
+ * malformed and every entry whose reset has already passed. Returns undefined
+ * when nothing usable is left, so a pool that never saw a cap keeps its old
+ * shape on disk.
+ */
+function parseLimits(raw: unknown, now: number): Record<string, Record<string, number>> | undefined {
+ if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+ const limits: Record<string, Record<string, number>> = {};
+ for (const [slot, modelsRaw] of Object.entries(raw as Record<string, unknown>)) {
+  if (!slot.trim()) continue;
+  if (typeof modelsRaw !== "object" || modelsRaw === null || Array.isArray(modelsRaw)) continue;
+  const models: Record<string, number> = {};
+  for (const [model, resetRaw] of Object.entries(modelsRaw as Record<string, unknown>)) {
+   if (!model.trim()) continue;
+   if (typeof resetRaw !== "number" || !Number.isFinite(resetRaw) || resetRaw <= now) continue;
+   models[model] = resetRaw;
+  }
+  if (Object.keys(models).length > 0) limits[slot.trim()] = models;
+ }
+ return Object.keys(limits).length > 0 ? limits : undefined;
 }
 
 /**
@@ -182,7 +266,11 @@ function parsePoolDoc(raw: string): ClinePoolState | null {
  const activeSlot = typeof activeRaw === "string" && accounts.some((a) => a.slot === activeRaw.trim())
   ? activeRaw.trim()
   : undefined;
- return activeSlot ? { accounts, activeSlot } : { accounts };
+ const limits = parseLimits(doc.limits, Date.now());
+ const state: ClinePoolState = { accounts };
+ if (activeSlot) state.activeSlot = activeSlot;
+ if (limits) state.limits = limits;
+ return state;
 }
 
 /**
@@ -330,6 +418,46 @@ function markActiveSlotOnDisk(slot: string): void {
  const live = readPoolFile();
  if (!live.accounts.some((a) => a.slot === slot)) return;
  live.activeSlot = slot;
+ savePool(live);
+}
+
+/** The reset still in force for one slot+requested model, or null when free. */
+function activeLimitFor(pool: ClinePoolState, slot: string, model: string, now: number): number | null {
+ if (!model) return null;
+ const at = pool.limits?.[slot]?.[model];
+ return typeof at === "number" && Number.isFinite(at) && at > now ? at : null;
+}
+
+/**
+ * Persist one free-limit observation against the file as it is on disk right
+ * now: a request holds its pool snapshot across round trips, and the host
+ * process writes the same file for login/logout, so writing the snapshot back
+ * would revert a login added or removed while the request was in flight.
+ */
+function recordLimitOnDisk(slot: string, model: string, resetAt: number): void {
+ if (!model) return;
+ const live = readPoolFile();
+ if (!live.accounts.some((a) => a.slot === slot)) return;
+ const known = live.limits?.[slot]?.[model];
+ // Keep the later of the two: a fresh report must not shorten a window that is
+ // already known, and repeating the same reset writes nothing.
+ if (typeof known === "number" && known >= resetAt) return;
+ const limits = live.limits ?? {};
+ limits[slot] = { ...(limits[slot] ?? {}), [model]: resetAt };
+ live.limits = limits;
+ savePool(live);
+}
+
+/** Drop one slot+model limit once that slot serves the model again. */
+function clearLimitOnDisk(slot: string, model: string): void {
+ if (!model) return;
+ const live = readPoolFile();
+ const limits = live.limits;
+ const forSlot = limits?.[slot];
+ if (!limits || !forSlot || typeof forSlot[model] !== "number") return;
+ delete forSlot[model];
+ if (Object.keys(forSlot).length === 0) delete limits[slot];
+ if (Object.keys(limits).length === 0) delete live.limits;
  savePool(live);
 }
 
@@ -494,6 +622,34 @@ export function removeAccount(slot: string): boolean {
  return true;
 }
 
+/**
+ * The model id this request asks Cline for — the key every recorded limit is
+ * looked up under. Empty when the body carries no usable model, which
+ * disables limit bookkeeping for the roll rather than guessing a key.
+ */
+function requestedModelId(body: string): string {
+ try {
+  const parsed: unknown = JSON.parse(body);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
+  const model = (parsed as Record<string, unknown>).model;
+  return typeof model === "string" ? model.trim() : "";
+ } catch {
+  return "";
+ }
+}
+
+/**
+ * Read a free-limit report off a 429 body through a clone: the response handed
+ * back to the caller must stay readable, so its body is never consumed here.
+ */
+async function freeLimitFrom(res: Response, now: number): Promise<ClineFreeLimit | null> {
+ try {
+  return parseClineFreeLimit(await res.clone().text(), now);
+ } catch {
+  return null;
+ }
+}
+
 export interface ClineRollOpts {
  /** Serialized chat-completions body, reused verbatim on every attempt. */
  body: string;
@@ -515,6 +671,21 @@ export interface ClineRollResult {
  /** True when every account failed (or the pool is empty). */
  exhausted: boolean;
  kind: ClineErrorKind;
+ /**
+  * Slots that received an upstream answer on this roll. Slots skipped without
+  * one (dead login grant, network fault) are not counted, so this tells the
+  * difference between "every login answered" and "some login never got through".
+  */
+ attempts: number;
+ /**
+  * True when every saved login was asked and every one answered a free-limit
+  * 429 for the requested model — nothing else was tried and nothing succeeded.
+  */
+ limitOnly: boolean;
+ /** Earliest reset among the free-limit 429s seen (epoch ms); null when none was stated. */
+ earliestResetAt: number | null;
+ /** Model name as Cline spelled it in its own body, when a free limit was reported. */
+ limitModelId?: string;
 }
 
 /**
@@ -539,19 +710,37 @@ function exhaustedResponse(reason: string, status: number): Response {
 export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
  const fetchImpl = opts.fetchImpl ?? fetch;
  const pool = loadPool();
+ const now = Date.now();
+ const requestedModel = requestedModelId(opts.body);
  let candidates = [...pool.accounts];
  if (pool.activeSlot) {
   const at = candidates.findIndex((a) => a.slot === pool.activeSlot);
   if (at > 0) candidates = [candidates[at], ...candidates.slice(0, at), ...candidates.slice(at + 1)];
  }
+ if (requestedModel) {
+  // A slot recorded on this model's daily cap almost always answers 429 again:
+  // it is tried last so a healthy login serves the turn without paying the
+  // extra round trip. It stays in the list — a cap can lift before its
+  // recorded reset, and only a real attempt can discover that.
+  const open: ClineAccount[] = [];
+  const capped: ClineAccount[] = [];
+  for (const account of candidates) {
+   (activeLimitFor(pool, account.slot, requestedModel, now) === null ? open : capped).push(account);
+  }
+  candidates = [...open, ...capped];
+ }
  if (candidates.length === 0) {
   const reason = "No Cline logins saved — add one with /freeflow cline login";
   logWarn("cline pool empty", { slots: pool.accounts.length });
-  return { res: exhaustedResponse(reason, 401), slot: null, exhausted: true, kind: "exhausted" };
+  return { res: exhaustedResponse(reason, 401), slot: null, exhausted: true, kind: "exhausted", attempts: 0, limitOnly: false, earliestResetAt: null };
  }
  let lastRes: Response | null = null;
  let lastSlot: string | null = null;
  let lastKind: ClineErrorKind = "exhausted";
+ let attempts = 0;
+ let limitAttempts = 0;
+ let earliestResetAt: number | null = null;
+ let limitModelId: string | undefined;
  for (const account of candidates) {
   // Stale device-login bearer: one refresh before the attempt. A dead grant
   // skips the slot for this turn; a transient fault keeps the stale token.
@@ -582,12 +771,26 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
    }
   };
   const succeed = async (res: Response, kind: ClineErrorKind): Promise<ClineRollResult> => {
-   if (kind === "ok") markActiveSlotOnDisk(account.slot);
+   if (kind === "ok") {
+    markActiveSlotOnDisk(account.slot);
+    // This slot just served the model, so whatever cap it was on has lifted.
+    // Reads the file as it is on disk and writes only when an entry exists.
+    clearLimitOnDisk(account.slot, requestedModel);
+   }
    if (lastRes && lastRes !== res) {
     try { await lastRes.body?.cancel(); } catch { }
    }
    lastRes = null;
-   return { res, slot: account.slot, exhausted: false, kind };
+   return {
+    res,
+    slot: account.slot,
+    exhausted: false,
+    kind,
+    attempts,
+    limitOnly: false,
+    earliestResetAt,
+    ...(limitModelId ? { limitModelId } : {}),
+   };
   };
   const stashFailure = async (res: Response, kind: ClineErrorKind): Promise<void> => {
    if (lastRes && lastRes !== res) {
@@ -599,6 +802,7 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
   };
   let res = await attempt(account.token);
   if (!res) continue;
+  attempts += 1;
   let kind = mapClineError(res.status);
   if (kind === "ok" || kind === "client") return await succeed(res, kind);
   // Auth failure on a refreshable slot that has not refreshed yet: one
@@ -624,12 +828,48 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
    // Transient refresh fault: the original response is still intact, so it is
    // stashed below and can be surfaced to the caller.
   }
+  // A 429 carrying the free-limit marker means this login is out of free use
+  // for the requested model until the stated reset: remember it, so the next
+  // turn tries the other logins first.
+  if (res.status === 429) {
+   const limit = await freeLimitFrom(res, now);
+   if (limit) {
+    limitAttempts += 1;
+    if (limit.modelId) limitModelId = limit.modelId;
+    if (typeof limit.resetAt === "number") {
+     if (earliestResetAt === null || limit.resetAt < earliestResetAt) earliestResetAt = limit.resetAt;
+     recordLimitOnDisk(account.slot, requestedModel, limit.resetAt);
+    }
+    logWarn("cline slot is on this model's daily free cap", {
+     slot: account.slot,
+     model: requestedModel || limit.modelId || "unknown",
+     resetInMs: typeof limit.resetAt === "number" ? limit.resetAt - now : null,
+    });
+   }
+  }
   logWarn("cline slot failed — trying next slot", { slot: account.slot, status: res.status });
   await stashFailure(res, kind);
  }
  if (lastRes) {
-  logWarn("cline pool exhausted after roll — returning last upstream failure", { slots: candidates.length });
-  return { res: lastRes, slot: lastSlot, exhausted: true, kind: lastKind };
+  // Only every saved login answering the cap counts as a limit-only roll: a
+  // login that never got through is a login problem, not a capped one.
+  const limitOnly = attempts > 0 && limitAttempts === attempts && attempts === candidates.length;
+  logWarn("cline pool exhausted after roll — returning last upstream failure", {
+   slots: candidates.length,
+   attempts,
+   limitOnly,
+   ...(limitModelId ? { limitModel: limitModelId } : {}),
+  });
+  return {
+   res: lastRes,
+   slot: lastSlot,
+   exhausted: true,
+   kind: lastKind,
+   attempts,
+   limitOnly,
+   earliestResetAt,
+   ...(limitModelId ? { limitModelId } : {}),
+  };
  }
  // Every slot was skipped before producing a response: its saved login was
  // rejected, or the network call threw. Nothing is rate-limited here, so say
@@ -640,5 +880,9 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
   slot: null,
   exhausted: true,
   kind: "exhausted",
+  attempts,
+  limitOnly: false,
+  earliestResetAt,
+  ...(limitModelId ? { limitModelId } : {}),
  };
 }
