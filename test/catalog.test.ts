@@ -7,7 +7,12 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeCatalog, refreshCatalog } from "../src/catalog.ts";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { DEAD_MODEL_IDS, isFreeCatalogId, mergeCatalog, refreshCatalog } from "../src/catalog.ts";
+import { CATALOG_CACHE_FILE, CATALOG_CACHE_TTL_MS } from "../src/config.ts";
+import { ALL_MODELS, getModelUpstream } from "../src/models.ts";
 import type { RegisteredModel } from "../src/types.ts";
 
 function model(id: string, maxTokens: number, source: "opencode" | "kilo"): RegisteredModel {
@@ -87,4 +92,128 @@ test("refreshCatalog passes an abortable timeout signal and falls back instead o
 	} finally {
 		globalThis.fetch = realFetch;
 	}
+});
+
+/**
+ * Static ids an older catalog cache cannot know about: the Cline entries were
+ * added after earlier releases wrote their cache, so a legacy list can hold as
+ * many entries as the static set while still missing these two ids.
+ */
+const STATIC_IDS_ABSENT_FROM_LEGACY_CACHE = [
+	"cline-free/muse-spark-1.3-contributor",
+	"z-ai/glm-5.3-flash",
+];
+
+/** Persist a catalog cache fixture; ageMs > TTL makes it stale (hidden from readCatalogCache). */
+function writeCacheFile(models: RegisteredModel[], ageMs: number): void {
+	assert.ok(
+		CATALOG_CACHE_FILE.startsWith(os.tmpdir()),
+		"catalog cache must live in the test sandbox (run with --import ./test/setup.mjs)",
+	);
+	fs.mkdirSync(path.dirname(CATALOG_CACHE_FILE), { recursive: true });
+	fs.writeFileSync(
+		CATALOG_CACHE_FILE,
+		JSON.stringify({
+			timestamp: Date.now() - ageMs,
+			opencode: [],
+			kilo: [],
+			models,
+			etag: '"legacy-cache"',
+		}),
+		"utf8",
+	);
+}
+
+/** Run a refresh with a stubbed fetch, restoring the real one afterwards. */
+async function withFetch<T>(impl: typeof fetch, run: () => Promise<T>): Promise<T> {
+	const realFetch = globalThis.fetch;
+	try {
+		globalThis.fetch = impl;
+		return await run();
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+}
+
+/**
+ * Cache fixture imitating a catalog written before the Cline entries existed:
+ * every static id except those two, padded with rotated-in upstream frees so
+ * the total still matches the static size (the old "cache is big enough"
+ * heuristic accepted it).
+ */
+function legacyCacheModels(): RegisteredModel[] {
+	const models: RegisteredModel[] = ALL_MODELS.filter(
+		(m) => !STATIC_IDS_ABSENT_FROM_LEGACY_CACHE.includes(m.id),
+	).map((m) => ({ ...m, source: getModelUpstream(m.id) }));
+	let i = 0;
+	while (models.length < ALL_MODELS.length) {
+		models.push(model(`zen-rotated-${i++}-free`, 100, "opencode"));
+	}
+	return models;
+}
+
+function assertIdsPresent(result: readonly RegisteredModel[], ids: readonly string[], why: string): void {
+	for (const id of ids) {
+		assert.ok(
+			result.some((m) => m.id === id),
+			`${id} must stay in the catalog: ${why}`,
+		);
+	}
+}
+
+test("refreshCatalog keeps static ids a stale >= static-size cache omits (network down)", async () => {
+	writeCacheFile(legacyCacheModels(), CATALOG_CACHE_TTL_MS + 60_000);
+	const result = await withFetch(
+		async () => {
+			throw new Error("network down");
+		},
+		() => refreshCatalog(false),
+	);
+	assertIdsPresent(
+		result,
+		STATIC_IDS_ABSENT_FROM_LEGACY_CACHE,
+		"an oversized stale cache overlaid on the static base never drops static ids",
+	);
+});
+
+test("refreshCatalog(true) keeps static ids a fresh oversized cache omits when upstream returns 500", async () => {
+	writeCacheFile(legacyCacheModels(), 0);
+	const result = await withFetch(
+		async () => new Response("upstream down", { status: 500 }),
+		() => refreshCatalog(true),
+	);
+	assertIdsPresent(
+		result,
+		STATIC_IDS_ABSENT_FROM_LEGACY_CACHE,
+		"a forced refresh against a failing upstream overlays the cache on the static base",
+	);
+});
+
+test("refreshCatalog overlays a partial cache without losing static ids or the cached entries", async () => {
+	const partial = [
+		model("zen-partial-one-free", 111, "opencode"),
+		model("zen-partial-two-free", 222, "opencode"),
+	];
+	writeCacheFile(partial, CATALOG_CACHE_TTL_MS + 60_000);
+	const result = await withFetch(
+		async () => {
+			throw new Error("network down");
+		},
+		() => refreshCatalog(false),
+	);
+	assertIdsPresent(
+		result,
+		ALL_MODELS.map((m) => m.id),
+		"a partial cache must not shrink the catalog below the static set",
+	);
+	for (const entry of partial) {
+		const kept = result.find((m) => m.id === entry.id);
+		assert.ok(kept, `${entry.id} from the partial cache must be kept`);
+		assert.equal(kept.maxTokens, entry.maxTokens);
+	}
+});
+test("union-alpha is a dead model id (pruned, never re-enters)", () => {
+	assert.equal(DEAD_MODEL_IDS.has("union-alpha"), true);
+	assert.equal(isFreeCatalogId("union-alpha"), false);
+	assert.equal(ALL_MODELS.some((m) => m.id === "union-alpha"), false);
 });

@@ -73,8 +73,9 @@ test("zero hardcoded API keys exist in source tree", () => {
   assert.fail(`${file}:${num} must not hardcode an API key literal`);
  }
 
- // Every Bearer credential line is either the known kilo-free free-tier
- // token or a `${token}` interpolation — nothing else may hardcode a secret.
+ // Every Bearer credential line must be a `${token}` interpolation of a
+ // credential supplied at call time — nothing else may hardcode a secret.
+ // (Kilo and Zen are keyless: no Authorization header is sent for either.)
  const bearerLines = lines.filter(({ line }) => /Bearer /.test(line));
  assert.ok(bearerLines.length > 0, "expected Bearer credential lines in src");
  for (const { file, line, num } of bearerLines) {

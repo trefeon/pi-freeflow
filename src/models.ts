@@ -1,9 +1,10 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 27 verified free models:
- * - 8 OpenCode Zen models (2 Responses API + 5 Chat Completions + 1 Anthropic Messages)
+ * Defines the 31 verified free models:
+ * - 7 OpenCode Zen models (2 Responses API + 5 Chat Completions)
  * - 19 KiloCode Keyless Gateway models (18 OpenRouter format + 1 Standard format)
+ * - 5 Cline direct-only models (per-user pool)
  */
 
 import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
@@ -129,28 +130,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
    minimal: "minimal",
    low: "low",
    medium: "medium",
-   high: "high",
-   xhigh: "xhigh",
-   max: null,
-  },
- },
- {
-  id: "union-alpha",
-  name: "Union Alpha Free [OpenCode]",
-  reasoning: true,
-  contextWindow: 262_144,
-  maxTokens: 131_072,
-  api: "anthropic-messages",
-  input: ["text", "image"],
-  // Effort wire values verified live 2026-09-17: POST /zen/v1/messages
-  // with output_config.effort returns 200 for low/high/xhigh, 503 for
-  // max. Passed through verbatim so the picker exposes exactly the
-  // levels upstream serves (minimal/medium hidden, unprobed).
-  thinkingLevelMap: {
-   off: null,
-   minimal: null,
-   low: "low",
-   medium: null,
    high: "high",
    xhigh: "xhigh",
    max: null,
@@ -384,7 +363,7 @@ const CLINE_REASONING_MAP: ThinkingLevelMap = {
  max: "max",
 };
 /**
- * Narrow effort map for DeepSeek V4 Flash + GLM Flash — reference
+ * Narrow effort map for DeepSeek V4 Flash + GLM Flash + Kimi K3 — reference
  * reasoningOptions list effort values [low, high, max] only (no toggle
  * on GLM); minimal/medium/xhigh are not offered so the host never sends
  * an unsupported level (the proxy forwards effort verbatim).
@@ -439,6 +418,19 @@ export const CLINE_MODELS: ModelDef[] = [
   name: "GLM 5.3 Flash [Cline]",
   reasoning: true,
   contextWindow: 1_000_000,
+  maxTokens: 131_072,
+  input: ["text", "image"],
+  thinkingLevelMap: CLINE_FLASH_REASONING_MAP,
+ },
+ {
+  // Cline advertises this sixth free model only to its desktop client
+  // identity (see CLINE_CLIENT_HEADERS). Specs follow the vendored Cline
+  // catalog; maxTokens keeps the tighter chat value so a request can never
+  // overrun what the chat endpoint accepts.
+  id: "cline-free/kimi-k3",
+  name: "Kimi K3 [Cline]",
+  reasoning: true,
+  contextWindow: 1_048_576,
   maxTokens: 131_072,
   input: ["text", "image"],
   thinkingLevelMap: CLINE_FLASH_REASONING_MAP,

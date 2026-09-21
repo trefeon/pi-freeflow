@@ -91,12 +91,22 @@ export const CLINE_CLIENT_VERSION = "3.5.54";
  * (e.g. z-ai/glm-5.3-flash) answers 200 either way. Header names and shape
  * mirror reference/cline providers/request-headers.ts
  * (DEFAULT_CLINE_REQUEST_HEADERS) — no credential is derived from them.
+ *
+ * `X-CLIENT-TYPE` is the Cline desktop app's identity, and it is what the
+ * free-model feed keys on (measured live 2026-09-22). The recommended-models
+ * endpoint returns five free entries for `cline-sdk` / `cline-cli` / the
+ * `VSCode Extension` label, but six for `cline-desktop` — the extra one being
+ * `cline-free/kimi-k3`. The identity header alone flips that list
+ * (`X-PLATFORM: Cline Desktop` does not; `X-CLIENT-TYPE` decides), and the
+ * sixth model serves live chat completions (HTTP 200 + SSE) for the saved
+ * per-user login under either identity. Version and User-Agent stay as-is:
+ * the feed serves the six-model list with them unchanged.
  */
 export const CLINE_CLIENT_HEADERS: Record<string, string> = {
  "HTTP-Referer": "https://cline.bot",
  "X-Title": "Cline",
  "X-IS-MULTIROOT": "false",
- "X-CLIENT-TYPE": "cline-sdk",
+ "X-CLIENT-TYPE": "cline-desktop",
  "X-CLIENT-VERSION": CLINE_CLIENT_VERSION,
  "User-Agent": `Cline/${CLINE_CLIENT_VERSION}`,
 };

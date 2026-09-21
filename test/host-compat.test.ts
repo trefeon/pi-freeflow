@@ -328,20 +328,26 @@ test("F: buildProviderConfig emits the host-compatible provider contract", () =>
 	assert.equal(kilo!.compat?.supportsDeveloperRole, false);
 });
 
-test("F2: buildProviderConfig passes anthropic-messages api through for union-alpha", () => {
-	const cfg = buildProviderConfig(
-		ALL_MODELS.map((m) => ({
-			...m,
-			source: KILO_MODEL_IDS.has(m.id) ? "kilo" : "opencode",
-		})),
-		29752,
-	);
+test("F2: buildProviderConfig passes the anthropic-messages api through", () => {
+	// The messages flavor stays supported even though no current catalog model
+	// declares it, so lock the passthrough with a synthetic model.
+	const flavorFixture: RegisteredModel = {
+		id: "flavor-fixture-alpha",
+		name: "Flavor Fixture Alpha",
+		reasoning: false,
+		contextWindow: 262_144,
+		maxTokens: 131_072,
+		api: "anthropic-messages",
+		input: ["text", "image"],
+		source: "opencode",
+	};
+	const cfg = buildProviderConfig([flavorFixture], 29752);
 
-	const union = cfg.models.find((m) => m.id === "union-alpha");
-	assert.ok(union, "union-alpha must be present in provider config");
-	assert.equal(union!.api, "anthropic-messages");
-	assert.equal(union!.contextWindow, 262_144);
-	assert.equal(union!.maxTokens, 131_072);
+	const fixture = cfg.models.find((m) => m.id === "flavor-fixture-alpha");
+	assert.ok(fixture, "flavor fixture must be present in provider config");
+	assert.equal(fixture!.api, "anthropic-messages");
+	assert.equal(fixture!.contextWindow, 262_144);
+	assert.equal(fixture!.maxTokens, 131_072);
 });
 
 // ── G. Package manifest contract ──────────────────────────────────────────────

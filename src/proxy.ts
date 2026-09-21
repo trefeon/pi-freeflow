@@ -937,11 +937,11 @@ export function startProxy(
 
    const isStream = clientRequestedStream;
 
-   // Stale-registration guard: responses-only models (muse-spark-*) must
-   // reach upstream via /v1/responses, and messages-only models (union-alpha)
-   // via /v1/messages. A request on the wrong path means the host still holds
-   // a pre-fix provider registration (stale disk cache or no restart after
-   // upgrade) and upstream answers 500.
+   // Stale-registration guard: each model's declared api decides its upstream
+   // path — responses models (muse-spark-*) reach /v1/responses and
+   // anthropic-messages models reach /v1/messages. A request on the wrong path
+   // means the host still holds a pre-fix provider registration (stale disk
+   // cache or no restart after upgrade) and upstream answers 500.
    if (!isKilo && !isCline && typeof parsedBody?.model === "string") {
     const knownDef = MODEL_MAP.get(String(parsedBody.model));
     if (target.pathname.endsWith("/chat/completions") && knownDef?.api && knownDef.api !== "openai-completions") {
@@ -984,8 +984,10 @@ export function startProxy(
        {
         method: "POST",
         headers: {
+         // Keyless, like Zen: Kilo's gateway rejects a placeholder bearer
+         // (live 2026-09-22 — "Bearer kilo-free" answers 401 INVALID_TOKEN,
+         // omitting Authorization answers 200 for every free catalog model).
          "Content-Type": "application/json",
-         Authorization: "Bearer kilo-free",
         },
         body: JSON.stringify(parsedBody),
         signal: kiloController.signal,

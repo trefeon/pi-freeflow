@@ -151,6 +151,25 @@ test("rollChat: rolls past a rate-limited slot to the next one", async () => {
  });
 });
 
+test("rollChat: a chat attempt carries the Cline desktop client identity", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("a", SLOT_A);
+  const sent: Headers[] = [];
+  const res = await rollChat({
+   body: JSON.stringify({ model: "cline-free/kimi-k3", stream: true }),
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   fetchImpl: (async (url: unknown, init: unknown) => {
+    sent.push(new Headers((init as RequestInit).headers));
+    return jsonResponse(200, '{"ok":true}');
+   }) as typeof fetch,
+  });
+  assert.equal(res.res.status, 200);
+  assert.equal(sent.length, 1, "one attempt must have reached Cline");
+  // The desktop identity is what makes Cline advertise its sixth free model.
+  assert.equal(sent[0].get("x-client-type"), "cline-desktop");
+ });
+});
+
 test("rollChat: all slots failing returns the last real failure", async () => {
  await withIsolatedPool(async () => {
   addAccount("a", SLOT_A);

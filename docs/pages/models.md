@@ -16,8 +16,8 @@ pi-freeflow provides unified access to **31 curated free models** across three u
 
 ### OpenCode Zen — Messages API (`/v1/messages`)
 - **Endpoint**: `https://opencode.ai/zen/v1/messages`
-- **Models**: `union-alpha` (Union Alpha Free, 262,144 context, 131,072 max output, vision)
-- **Config**: `api: "anthropic-messages"`, no effort levels — the host sends a plain Anthropic body
+- **Models**: none right now — the flavor is wired and supported, but no current free model serves it
+- **Config**: `api: "anthropic-messages"`, no effort levels — the host sends a plain Anthropic body when a model declares this flavor
 
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
@@ -27,12 +27,12 @@ pi-freeflow provides unified access to **31 curated free models** across three u
 ### Cline (`/api/v1/chat/completions`)
 - **Endpoint**: `https://api.cline.bot/api/v1/chat/completions`
 - **Auth**: per-user login via `/freeflow cline login` (browser approval, saved to a per-user pool on your machine)
-- **Models**: 4 models from Cline's rotating free promo; requests roll across saved logins on the daily free limit
+- **Models**: 5 models from Cline's rotating free promo; requests roll across saved logins on the daily free limit
 - **Routing**: direct only, never through the relay pool
 
 ## 31 Model Specifications
 
-### OpenCode Zen (8 models)
+### OpenCode Zen (7 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -43,7 +43,6 @@ pi-freeflow provides unified access to **31 curated free models** across three u
 | `nemotron-3-ultra-free` | 1,000,000 | 128,000 | minimal..xhigh | ❌ |
 | `big-pickle` | 200,000 | 32,000 | high, max | ❌ |
 | `ling-3.0-flash-fin-free` | 262,144 | 131,072 | minimal..xhigh | ❌ |
-| `union-alpha` | 262,144 | 131,072 | — *(no effort levels)* | ✅ |
 
 ### KiloCode Gateway (19 models)
 
@@ -69,7 +68,7 @@ pi-freeflow provides unified access to **31 curated free models** across three u
 | `nex-n2.5-mini` | 262,144 | 235,929 | OpenRouter | ✅ |
 | `ling-3.0-flash-vl` | 262,144 | 32,768 | OpenRouter | ✅ |
 
-### Cline (4 models)
+### Cline (5 models)
 
 Cline free models come from a rotating per-account promo and need a browser login (`/freeflow cline login`; manage with `/freeflow cline accounts` and `/freeflow cline logout`). They run direct only, never through the relay pool.
 
@@ -78,6 +77,7 @@ Cline free models come from a rotating per-account promo and need a browser logi
 | `cline-free/deepseek-v4.1-flash` | 1,000,000 | 384,000 | `low`, `high`, `max` | ✅ |
 | `cline-free/muse-spark-1.3-contributor` | 1,048,576 | 131,072 | `minimal`..`xhigh` | ✅ |
 | `z-ai/glm-5.3-flash` | 1,000,000 | 131,072 | `low`, `high`, `max` | ✅ |
+| `cline-free/kimi-k3` | 1,048,576 | 131,072 | `low`, `high`, `max` | ✅ |
 | `cline-free/solar-pro4` | 524,288 | 131,072 | `minimal`..`max` | ❌ |
 
 \* MiMo collapses `minimal→low` and `xhigh→high` upstream — 5 labels, 3 effective effort values (low/medium/high).
@@ -86,9 +86,9 @@ Cline free models come from a rotating per-account promo and need a browser logi
 
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :--- | :--- | :--- | :--- |
-| **OpenCode Zen** | 8 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat + Messages) | Keyless |
+| **OpenCode Zen** | 7 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat) | Keyless |
 | **KiloCode Gateway** | 19 | `api.kilo.ai` | `/api/gateway/chat/completions` | `Bearer kilo-free` |
-| **Cline** | 4 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
+| **Cline** | 5 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 
 ## Stealth previews
 
