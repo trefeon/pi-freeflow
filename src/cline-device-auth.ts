@@ -60,9 +60,6 @@ export function resolveClineWorkosClientId(): string {
  return BUNDLED_CLINE_WORKOS_CLIENT_ID;
 }
 
-/** Resolved client id used by start/poll. */
-export const CLINE_WORKOS_CLIENT_ID = resolveClineWorkosClientId();
-
 /**
  * Wire form of a Cline credential. Cline OAuth access tokens are WorkOS JWTs
  * (base64url eyJ header) and must ride as workos:<jwt>; dashboard API keys
@@ -212,7 +209,7 @@ export async function pollDeviceToken(
    }
    if (error instanceof ClineAuthError) throw error;
    if (Date.now() > deadline) throw new Error("WorkOS device authorization timed out");
-   await sleepMs(interval * 1000, outerSignal);
+   await sleepMs(remainingMs(deadline, interval), outerSignal);
    continue;
   }
   const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
@@ -232,6 +229,9 @@ export async function pollDeviceToken(
    payload.error === "invalid_grant"
   ) {
    throwDenied(payload, response.status, `Device login refused (${String(payload.error)})`);
+  } else if (response.status >= 500 || response.status === 429) {
+   // Transient WorkOS blip: keep polling until the code's own deadline rather
+   // than failing a login that would have succeeded seconds later.
   } else {
    throw new ClineAuthError(
     typeof payload.error_description === "string"
@@ -241,8 +241,17 @@ export async function pollDeviceToken(
    );
   }
   if (Date.now() > deadline) throw new Error("WorkOS device authorization timed out");
-  await sleepMs(interval * 1000, outerSignal);
+  await sleepMs(remainingMs(deadline, interval), outerSignal);
  }
+}
+
+/**
+ * Wait before the next poll, never past the device code's own expiry: a
+ * `slow_down` reply grows the interval, and sleeping the full interval after
+ * the deadline check would keep a dead login alive for minutes.
+ */
+function remainingMs(deadline: number, intervalSeconds: number): number {
+ return Math.max(0, Math.min(intervalSeconds * 1000, deadline - Date.now()));
 }
 
 async function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
@@ -271,7 +280,7 @@ interface ClineTokenData {
  refreshToken?: string;
  tokenType: string;
  expiresAt: string;
- userInfo: { email: string; clineUserId: string | null };
+ userInfo?: { email?: string; clineUserId?: string | null };
 }
 
 function toCredentials(data: ClineTokenData, fallbackRefresh?: string): OAuthCredentials {
@@ -287,8 +296,8 @@ function toCredentials(data: ClineTokenData, fallbackRefresh?: string): OAuthCre
   access: data.accessToken,
   refresh,
   expires: deriveExpiry(explicit, data.accessToken),
-  accountId: data.userInfo.clineUserId ?? undefined,
-  email: data.userInfo.email || undefined,
+  accountId: data.userInfo?.clineUserId ?? undefined,
+  email: data.userInfo?.email || undefined,
   metadata: { tokenType: data.tokenType },
  };
 }

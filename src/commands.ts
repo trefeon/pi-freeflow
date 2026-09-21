@@ -367,7 +367,9 @@ function nextClineSlot(pool: ClinePoolState): string {
 function formatClineAccountLines(pool: ClinePoolState): string[] {
  return pool.accounts.map((a, idx) => {
   const star = a.slot === pool.activeSlot ? "*" : " ";
-  return `${star} [${idx + 1}] [${a.slot}] key ending ${redactedToken(a.token)}`;
+  const who = a.email || a.accountId;
+  const whoPart = who ? ` ${who}` : "";
+  return `${star} [${idx + 1}] [${a.slot}]${whoPart} key ending ${redactedToken(a.token)}`;
  });
 }
 /** User-safe one-line message for caught values (never echoes secrets). */
@@ -1487,9 +1489,7 @@ export function createCommandSpec(
       if (e && typeof e === "object" && "errorCode" in e && typeof e.errorCode === "string") {
        code = e.errorCode;
       }
-      if (code === "authorization_pending") {
-       ctx.ui.notify(loginLine, "info");
-      } else if (code === "access_denied" || code === "cancelled") {
+      if (code === "access_denied") {
        ctx.ui.notify("Cline login cancelled.", "warning");
       } else if (code === "expired_token") {
        ctx.ui.notify("Cline login code expired — run /freeflow cline login again for a fresh code.", "warning");
@@ -1531,7 +1531,7 @@ export function createCommandSpec(
         if (pool.accounts.length === 1) {
          slot = pool.accounts[0].slot;
         } else {
-         const opts = pool.accounts.map((a, idx) => `[${idx + 1}] [${a.slot}] key ending ${redactedToken(a.token)}`);
+         const opts = formatClineAccountLines(pool);
          const choice = await ctx.ui.select("Remove Cline login", [...opts, "Cancel"]);
          if (!choice || choice === "Cancel") {
           ctx.ui.notify("Cancelled — no slot removed", "warning");

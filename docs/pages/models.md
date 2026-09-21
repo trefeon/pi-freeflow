@@ -29,6 +29,7 @@ pi-freeflow provides unified access to **31 curated free models** across three u
 - **Auth**: per-user login via `/freeflow cline login` (browser approval, saved to a per-user pool on your machine)
 - **Models**: 4 models from Cline's rotating free promo; requests roll across saved logins on the daily free limit
 - **Routing**: direct only, never through the relay pool
+
 ## 31 Model Specifications
 
 ### OpenCode Zen (8 models)
@@ -74,10 +75,10 @@ Cline free models come from a rotating per-account promo and need a browser logi
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
-| `cline-free/deepseek-v4.1-flash` | 1,000,000 | 384,000 | OpenRouter | ✅ |
-| `cline-free/muse-spark-1.3-contributor` | 1,048,576 | 131,072 | OpenRouter | ✅ |
-| `z-ai/glm-5.3-flash` | 1,000,000 | 131,072 | OpenRouter | ✅ |
-| `cline-free/solar-pro4` | 524,288 | 131,072 | OpenRouter | ❌ |
+| `cline-free/deepseek-v4.1-flash` | 1,000,000 | 384,000 | `low`, `high`, `max` | ✅ |
+| `cline-free/muse-spark-1.3-contributor` | 1,048,576 | 131,072 | `minimal`..`xhigh` | ✅ |
+| `z-ai/glm-5.3-flash` | 1,000,000 | 131,072 | `low`, `high`, `max` | ✅ |
+| `cline-free/solar-pro4` | 524,288 | 131,072 | `minimal`..`max` | ❌ |
 
 \* MiMo collapses `minimal→low` and `xhigh→high` upstream — 5 labels, 3 effective effort values (low/medium/high).
 

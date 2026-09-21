@@ -12,38 +12,37 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-	DAEMON_GC_MS,
-	DAEMON_GRACE_MS,
-	DAEMON_TTL_MS,
-	HOST,
-	PKG_VERSION,
-	PORT,
+ DAEMON_GC_MS,
+ DAEMON_GRACE_MS,
+ DAEMON_TTL_MS,
+ HOST,
+ PKG_VERSION,
+ PORT,
 } from "./config.ts";
 import { setShutdownShouldExit } from "./proxy.ts";
 import {
-	getAliveCatalog,
-	readCatalogCache,
-	refreshCatalog,
-	setAliveCatalog,
+ getAliveCatalog,
+ refreshCatalog,
+ setAliveCatalog,
 } from "./catalog.ts";
 import { log, logInfo, logWarn } from "./logger.ts";
 import {
-	startLeaseGC,
-	stopLeaseGC,
-	touchActivity,
+ startLeaseGC,
+ stopLeaseGC,
+ touchActivity,
 } from "./lease.ts";
 import { getActiveRequests, startProxy } from "./proxy.ts";
 import { loadRelayState, setActiveRelayState } from "./relay-state.ts";
 
 /** True when this module was run as the entry script (not imported by tests). */
 export function isDaemonMain(): boolean {
-	try {
-		const entry = process.argv[1];
-		if (!entry) return false;
-		return path.resolve(entry) === fileURLToPath(import.meta.url);
-	} catch {
-		return false;
-	}
+ try {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  return path.resolve(entry) === fileURLToPath(import.meta.url);
+ } catch {
+  return false;
+ }
 }
 
 /**
@@ -51,11 +50,11 @@ export function isDaemonMain(): boolean {
  * uses the latest client edits without a daemon restart. Non-fatal on failure.
  */
 export function syncRelayStateFromDisk(): void {
-	try {
-		setActiveRelayState(loadRelayState(), false);
-	} catch (e) {
-		log("warn", "daemon failed to load relay state from disk", { error: String(e) });
-	}
+ try {
+  setActiveRelayState(loadRelayState(), false);
+ } catch (e) {
+  log("warn", "daemon failed to load relay state from disk", { error: String(e) });
+ }
 }
 
 /**
@@ -64,21 +63,17 @@ export function syncRelayStateFromDisk(): void {
  * 24h cache TTL without requiring a daemon restart.
  */
 export async function seedCatalog(): Promise<void> {
-	const cached = readCatalogCache();
-	if (cached && Array.isArray(cached.models) && cached.models.length > 0) {
-		setAliveCatalog(cached.models);
-	}
-	try {
-		const fresh = await refreshCatalog(false);
-		if (fresh.length > 0) {
-			setAliveCatalog(fresh);
-		}
-	} catch (e) {
-		logWarn("daemon catalog refresh failed; retaining cached catalog", {
-			error: String(e),
-		});
-	}
-	logInfo(`daemon catalog ready: ${getAliveCatalog().length} models`);
+ try {
+  const fresh = await refreshCatalog(false);
+  if (fresh.length > 0) {
+   setAliveCatalog(fresh);
+  }
+ } catch (e) {
+  logWarn("daemon catalog refresh failed; retaining static catalog", {
+   error: String(e),
+  });
+ }
+ logInfo(`daemon catalog ready: ${getAliveCatalog().length} models`);
 }
 
 /**
@@ -87,63 +82,63 @@ export async function seedCatalog(): Promise<void> {
  * cleanly on SIGTERM/SIGINT (e.g. /freeflow kill, taskkill, Ctrl+C).
  */
 export async function runDaemon(): Promise<void> {
-	let server: { close(): void } | null = null;
-	const retire = (why: string): void => {
-		logInfo(`daemon retiring: ${why}`);
-		stopLeaseGC();
-		try {
-			server?.close();
-		} catch {}
-		process.exit(0);
-	};
-	process.on("SIGTERM", () => retire("SIGTERM"));
-	process.on("SIGINT", () => retire("SIGINT"));
-	process.on("uncaughtException", (err) => {
-		log("error", "daemon uncaughtException", { error: String(err), stack: (err as Error)?.stack, activeRequests: getActiveRequests() });
-	});
-	process.on("unhandledRejection", (reason) => {
-		log("error", "daemon unhandledRejection", { error: String(reason), activeRequests: getActiveRequests() });
-	});
-	setShutdownShouldExit(true);
-	try {
-		const r = await startProxy();
-		if (!r.server) {
-			// Port was taken by another (possibly newer) daemon — the parent
-			// attaches to the winner; this spawn exits quietly.
-			logInfo(`daemon found an existing proxy on http://${HOST}:${r.port} — exiting`);
-			process.exit(0);
-		}
-		server = r.server;
-	} catch (e) {
-		log("error", "daemon failed to bind proxy port", { error: String(e) });
-		process.exit(1);
-	}
+ let server: { close(): void } | null = null;
+ const retire = (why: string): void => {
+  logInfo(`daemon retiring: ${why}`);
+  stopLeaseGC();
+  try {
+   server?.close();
+  } catch { }
+  process.exit(0);
+ };
+ process.on("SIGTERM", () => retire("SIGTERM"));
+ process.on("SIGINT", () => retire("SIGINT"));
+ process.on("uncaughtException", (err) => {
+  log("error", "daemon uncaughtException", { error: String(err), stack: (err as Error)?.stack, activeRequests: getActiveRequests() });
+ });
+ process.on("unhandledRejection", (reason) => {
+  log("error", "daemon unhandledRejection", { error: String(reason), activeRequests: getActiveRequests() });
+ });
+ setShutdownShouldExit(true);
+ try {
+  const r = await startProxy();
+  if (!r.server) {
+   // Port was taken by another (possibly newer) daemon — the parent
+   // attaches to the winner; this spawn exits quietly.
+   logInfo(`daemon found an existing proxy on http://${HOST}:${r.port} — exiting`);
+   process.exit(0);
+  }
+  server = r.server;
+ } catch (e) {
+  log("error", "daemon failed to bind proxy port", { error: String(e) });
+  process.exit(1);
+ }
 
-	// lastActivityAt is still seeded AT BIND TIME for the /_health snapshot, but
-	// retirement no longer reads it — only the zero-lease persistence window
-	// gates the GC, so a fresh spawn always survives its re-attach window.
-	touchActivity();
-	syncRelayStateFromDisk();
-	void seedCatalog();
+ // lastActivityAt is still seeded AT BIND TIME for the /_health snapshot, but
+ // retirement no longer reads it — only the zero-lease persistence window
+ // gates the GC, so a fresh spawn always survives its re-attach window.
+ touchActivity();
+ syncRelayStateFromDisk();
+ void seedCatalog();
 
-	// Retire only when zero leases persist past the grace window with nothing
-	// in flight — never for request-idleness.
-	startLeaseGC({
-		ttlMs: DAEMON_TTL_MS,
-		gcMs: DAEMON_GC_MS,
-		graceMs: DAEMON_GRACE_MS,
-		getActiveRequests,
-		onIdle: () => retire("no clients"),
-	});
+ // Retire only when zero leases persist past the grace window with nothing
+ // in flight — never for request-idleness.
+ startLeaseGC({
+  ttlMs: DAEMON_TTL_MS,
+  gcMs: DAEMON_GC_MS,
+  graceMs: DAEMON_GRACE_MS,
+  getActiveRequests,
+  onIdle: () => retire("no clients"),
+ });
 
-	logInfo(`pi-freeflow daemon v${PKG_VERSION} listening on http://${HOST}:${PORT}`);
+ logInfo(`pi-freeflow daemon v${PKG_VERSION} listening on http://${HOST}:${PORT}`);
 }
 
 // Entry guard: run only when executed as the entry script. When imported by
 // tests, isDaemonMain() is false and no port is bound.
 if (isDaemonMain()) {
-	runDaemon().catch((e) => {
-		log("error", "daemon crashed", { error: String(e) });
-		process.exit(1);
-	});
+ runDaemon().catch((e) => {
+  log("error", "daemon crashed", { error: String(e) });
+  process.exit(1);
+ });
 }

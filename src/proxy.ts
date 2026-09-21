@@ -42,7 +42,7 @@ import {
 } from "./opencode-fingerprint.ts";
 import { isDebugEnabled, log } from "./logger.ts";
 import { getModelUpstream, isClineModel, KILO_MODEL_IDS, MODEL_MAP, resolveCanonicalModelId } from "./models.ts";
-import { refreshClineToken, toApiKey } from "./cline-device-auth.ts";
+import { ClineAuthError, refreshClineToken, toApiKey } from "./cline-device-auth.ts";
 import { rollChat } from "./cline-accounts.ts";
 import { fetchWithSystemCA } from "./system-ca-fetch.ts";
 import {
@@ -136,7 +136,7 @@ const CLINE_MODEL_HINT =
  */
 export function mapClineError(status: number, data: string): string {
  // Synthetic pool-exhausted bodies already tell the user exactly what to do
- // (add a login / wait out cooldowns) — a rate-limit hint would mislead.
+ // (sign in again) — a rate-limit hint would mislead.
  if (data.includes("cline_pool_exhausted")) return data;
  const hint = status === 429
   ? CLINE_RATE_LIMIT_HINT
@@ -158,12 +158,26 @@ export function mapClineError(status: number, data: string): string {
 }
 /**
  * Device-login refresher for the Cline pool: one refresh per stale slot per
- * turn. A throw keeps the stale bearer (transient); only a well-formed fresh
- * grant replaces it — the pool module owns that decision.
+ * turn. A grant Cline rejects outright (HTTP 4xx, or a 200 without usable
+ * tokens) is dead — it resolves null so the pool stops trying that slot until
+ * the user logs in again. Anything else (network fault, upstream 5xx) throws,
+ * which keeps the stale bearer for this turn.
  */
 async function clineRefreshImpl(refreshToken: string): Promise<{ token: string; refreshToken?: string; expiresAt?: number } | null> {
- const creds = await refreshClineToken(undefined, refreshToken);
- return { token: toApiKey(creds.access), refreshToken: creds.refresh, expiresAt: creds.expires };
+ try {
+  const creds = await refreshClineToken(undefined, refreshToken);
+  return { token: toApiKey(creds.access), refreshToken: creds.refresh, expiresAt: creds.expires };
+ } catch (e) {
+  if (e instanceof ClineAuthError && typeof e.status === "number" && e.status >= 400 && e.status < 500) {
+   log("warn", "cline refresh grant rejected — slot needs a fresh login", { status: e.status });
+   return null;
+  }
+  if (e instanceof Error && /^Invalid token response|^Token response did not include a refresh token/.test(e.message)) {
+   log("warn", "cline refresh returned no usable tokens — slot needs a fresh login", { reason: e.message });
+   return null;
+  }
+  throw e;
+ }
 }
 
 /**
@@ -214,10 +228,23 @@ async function handleClineRequest(opts: {
  }
  if (!upstreamRes.ok) {
   log("warn", `cline upstream ${upstreamRes.status} for model ${model}`, { status: upstreamRes.status, model }, reqId);
-  const data = mapClineError(upstreamRes.status, await upstreamRes.text());
+  const raw = await upstreamRes.text().catch(() => null);
+  if (raw === null) {
+   log("error", "cline upstream body unreadable", { status: upstreamRes.status, model }, reqId);
+   if (!res.headersSent) {
+    res.writeHead(502, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "upstream error" }));
+   } else if (!res.writableEnded) {
+    res.end();
+   }
+   return;
+  }
+  const data = mapClineError(upstreamRes.status, raw);
   if (!res.headersSent) {
    res.writeHead(upstreamRes.status, { "content-type": upstreamRes.headers.get("content-type") || "application/json" });
    res.end(data);
+  } else if (!res.writableEnded) {
+   res.end();
   }
   return;
  }
@@ -237,12 +264,24 @@ async function handleClineRequest(opts: {
   );
   return;
  }
- const sseText = await upstreamRes.text();
+ const sseText = await upstreamRes.text().catch(() => null);
+ if (sseText === null) {
+  log("error", "cline upstream stream unreadable", { status: upstreamRes.status, model }, reqId);
+  if (!res.headersSent) {
+   res.writeHead(502, { "content-type": "application/json" });
+   res.end(JSON.stringify({ error: "upstream error" }));
+  } else if (!res.writableEnded) {
+   res.end();
+  }
+  return;
+ }
  if (!responsesRequest) {
   const data = convertSseToJson(sseText, pathname);
   if (!res.headersSent) {
    res.writeHead(upstreamRes.status, { "content-type": "application/json" });
    res.end(data);
+  } else if (!res.writableEnded) {
+   res.end();
   }
   return;
  }
@@ -257,12 +296,16 @@ async function handleClineRequest(opts: {
     "x-accel-buffering": "no",
    });
    res.end(chatResponsesSseFromChatCompletion(resp));
+  } else if (!res.writableEnded) {
+   res.end();
   }
   return;
  }
  if (!res.headersSent) {
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify(resp));
+ } else if (!res.writableEnded) {
+  res.end();
  }
 }
 
@@ -271,13 +314,15 @@ async function handleClineRequest(opts: {
  * when the model is a non-empty string present in MODEL_MAP or KILO_MODEL_IDS
  * (Kilo traffic leaves via its own branch regardless), and when the model is
  * missing/empty (e.g. GET /v1/models carries no body — preserve routing).
- * Anything else (unknown/paid model ids, non-strings) goes direct upstream.
+ * Cline models are direct-only and never relay-eligible. Anything else
+ * (unknown/paid model ids, non-strings) goes direct upstream.
  */
 export function isRelayEligibleModel(model: unknown): boolean {
  if (model === undefined || model === null) return true;
  if (typeof model !== "string") return false;
  if (model.trim() === "") return true;
  const canonical = resolveCanonicalModelId(model.trim());
+ if (isClineModel(canonical)) return false;
  return MODEL_MAP.has(canonical) || KILO_MODEL_IDS.has(canonical);
 }
 

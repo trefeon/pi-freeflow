@@ -4,7 +4,8 @@
  * Cline serves its free models direct-only (never through the relay pool),
  * one bearer key per login slot. Keys live in a 0600 file beside the relay
  * state; a corrupt file reads back as an empty pool (never throws, never
- * logs secrets). Request failover walks the pool with per-slot cooldowns.
+ * logs secrets). Request failover walks the pool in order, trying every slot
+ * fresh on every request — no slot is ever locked out.
  */
 
 import fs from "node:fs";
@@ -31,14 +32,13 @@ export interface ClineAccount {
  slot: string;
  token: string;
  addedAt: string;
- lastOkAt?: number;
  /** WorkOS refresh token for device-login slots; absent on legacy key slots. */
  refreshToken?: string;
  /** Epoch-ms when `token` expires; absent means "no known expiry" (legacy slots). */
  expiresAt?: number;
- /** WorkOS account id, kept for display/diagnostics only. */
+ /** WorkOS account id, shown when choosing which login to remove. */
  accountId?: string;
- /** Login email, kept for display/diagnostics only. */
+ /** Login email, shown when choosing which login to remove. */
  email?: string;
 }
 
@@ -66,16 +66,6 @@ export interface ClineRefreshResult {
  */
 export type ClineRefresher = (refreshToken: string) => Promise<ClineRefreshResult | null>;
 
-/** Usable bearer for one slot, resolved via refresh when stale. */
-export interface ValidSlotCredentials {
- slot: string;
- token: string;
-}
-
-/** Test-only: no-op kept so existing test setup keeps compiling. */
-export function _resetClineCooldownsForTest(): void {
-}
-
 /** Test-only: drop the loadPool mtime cache. */
 export function _resetClinePoolCacheForTest(): void {
  cached = null;
@@ -101,12 +91,6 @@ export const CLINE_CLIENT_HEADERS: Record<string, string> = {
  "X-CLIENT-VERSION": CLINE_CLIENT_VERSION,
  "User-Agent": `Cline/${CLINE_CLIENT_VERSION}`,
 };
-
-/** Compat: every saved slot is always servable — no lockout timers remain. */
-
-export function isClineSlotHealthy(_slot: string): boolean {
- return true;
-}
 
 /** Machine-classified outcome of one Cline chat attempt. */
 export type ClineErrorKind = "ok" | "auth" | "rate-limit" | "exhausted" | "server" | "client";
@@ -167,7 +151,6 @@ function readPoolFile(): ClinePoolState {
     slot,
     token,
     addedAt: typeof rec.addedAt === "string" ? rec.addedAt : new Date().toISOString(),
-    ...(typeof rec.lastOkAt === "number" ? { lastOkAt: rec.lastOkAt } : {}),
     ...(refreshToken ? { refreshToken } : {}),
     ...(expiresAt !== undefined ? { expiresAt } : {}),
     ...(accountId ? { accountId } : {}),
@@ -230,6 +213,29 @@ export function savePool(pool: ClinePoolState): void {
 export function redactedToken(token: string): string {
  const tail = (token || "").slice(-4) || "????";
  return `…${tail}`;
+}
+
+/**
+ * Persist a patch to one slot against the file as it is on disk right now.
+ * A request holds its pool snapshot across network round trips, and the host
+ * process writes the same file for login/logout, so writing the snapshot back
+ * would revert a login added or removed while the request was in flight. A
+ * slot that no longer exists is left alone rather than resurrected.
+ */
+function patchAccountOnDisk(slot: string, patch: Partial<ClineAccount>): void {
+ const live = readPoolFile();
+ const target = live.accounts.find((a) => a.slot === slot);
+ if (!target) return;
+ Object.assign(target, patch);
+ savePool(live);
+}
+
+/** Record which slot served a turn, without clobbering concurrent edits. */
+function markActiveSlotOnDisk(slot: string): void {
+ const live = readPoolFile();
+ if (!live.accounts.some((a) => a.slot === slot)) return;
+ live.activeSlot = slot;
+ savePool(live);
 }
 
 /**
@@ -301,7 +307,6 @@ export function isClineTokenStale(account: ClineAccount, skewMs = CLINE_REFRESH_
  * caller should fall back to the stale bearer (`null`).
  */
 async function refreshAccountInPlace(
- pool: ClinePoolState,
  account: ClineAccount,
  refreshImpl: ClineRefresher,
 ): Promise<boolean | null> {
@@ -328,31 +333,16 @@ async function refreshAccountInPlace(
  }
  if (fresh.accountId?.trim()) account.accountId = fresh.accountId.trim();
  if (fresh.email?.trim()) account.email = fresh.email.trim();
- savePool(pool);
+ // Persist only the refreshed fields: the snapshot this request holds may
+ // predate a login added or removed in the host process.
+ patchAccountOnDisk(account.slot, {
+  token: account.token,
+  ...(account.refreshToken ? { refreshToken: account.refreshToken } : {}),
+  expiresAt: account.expiresAt,
+  ...(account.accountId ? { accountId: account.accountId } : {}),
+  ...(account.email ? { email: account.email } : {}),
+ });
  return true;
-}
-
-/**
- * Resolve a usable bearer for one slot. Fresh slots and legacy slots without
- * a known expiry return immediately; stale slots with a refresh grant try one
- * refresh and persist it. Resolves null when the slot is unknown or its grant
- * is dead (invalid_grant) — the caller should prompt for a fresh login.
- */
-export async function getValidSlotCredentials(
- slot: string,
- opts?: { refreshImpl?: ClineRefresher; skewMs?: number },
-): Promise<ValidSlotCredentials | null> {
- const cleanSlot = (slot || "").trim();
- if (!cleanSlot) return null;
- const pool = loadPool();
- const account = pool.accounts.find((a) => a.slot === cleanSlot);
- if (!account) return null;
- if (!isClineTokenStale(account, opts?.skewMs)) return { slot: account.slot, token: account.token };
- if (!account.refreshToken || !opts?.refreshImpl) return { slot: account.slot, token: account.token };
- const outcome = await refreshAccountInPlace(pool, account, opts.refreshImpl);
- if (outcome === true) return { slot: account.slot, token: account.token };
- if (outcome === false) return null;
- return { slot: account.slot, token: account.token };
 }
 
 /** Drop one login slot. Returns false when the slot was not saved. */
@@ -372,10 +362,7 @@ export interface ClineRollOpts {
  body: string;
  /** Chat completions endpoint (proxy passes its configured URL explicitly). */
  chatUrl: string;
- /** Restrict the roll to these slots; default is the whole pool. */
- slots?: string[];
  fetchImpl?: FetchImpl;
- reqId?: string;
  /**
   * Device-login refresher. When present, a stale slot refreshes once before
   * its attempt, and a 401/403 refreshes once before the slot is skipped.
@@ -393,34 +380,37 @@ export interface ClineRollResult {
  kind: ClineErrorKind;
 }
 
-function exhaustedResponse(reason: string): Response {
+/**
+ * Synthetic body for the two states that never reached Cline: nothing is
+ * saved to sign in with, or no saved login could reach Cline. Neither is a
+ * rate limit, so it must not answer 429 — that status makes hosts back off
+ * and hide the actionable message behind a "rate limited" notice.
+ */
+function exhaustedResponse(reason: string, status: number): Response {
  return new Response(
   JSON.stringify({ error: { message: reason, code: "cline_pool_exhausted" } }),
-  { status: 429, headers: { "content-type": "application/json" } },
+  { status, headers: { "content-type": "application/json" } },
  );
 }
 
 /**
- * POST one chat body to the Cline endpoint, rolling across saved slots with
- * per-slot cooldowns. Each attempt sends its slot bearer explicitly; raw
- * tokens never leave this module. Response bodies are never consumed here —
- * the caller owns the returned Response.
+ * POST one chat body to the Cline endpoint, rolling across every saved slot.
+ * Each attempt sends its slot bearer explicitly; raw tokens never leave this
+ * module. Superseded failure bodies are cancelled here; the response handed
+ * back to the caller is left untouched so the caller can read it.
  */
 export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
  const fetchImpl = opts.fetchImpl ?? fetch;
  const pool = loadPool();
- const wanted = opts.slots?.map((s) => s.trim()).filter(Boolean);
- let candidates = wanted?.length
-  ? pool.accounts.filter((a) => wanted.includes(a.slot))
-  : [...pool.accounts];
+ let candidates = [...pool.accounts];
  if (pool.activeSlot) {
   const at = candidates.findIndex((a) => a.slot === pool.activeSlot);
   if (at > 0) candidates = [candidates[at], ...candidates.slice(0, at), ...candidates.slice(at + 1)];
  }
  if (candidates.length === 0) {
-  const reason = "No Cline accounts saved — add one with /freeflow cline login";
-  logWarn("cline pool exhausted", { slots: pool.accounts.length });
-  return { res: exhaustedResponse(reason), slot: null, exhausted: true, kind: "exhausted" };
+  const reason = "No Cline logins saved — add one with /freeflow cline login";
+  logWarn("cline pool empty", { slots: pool.accounts.length });
+  return { res: exhaustedResponse(reason, 401), slot: null, exhausted: true, kind: "exhausted" };
  }
  let lastRes: Response | null = null;
  let lastSlot: string | null = null;
@@ -430,7 +420,7 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
   // skips the slot for this turn; a transient fault keeps the stale token.
   let refreshedThisSlot = false;
   if (opts.refreshImpl && account.refreshToken && isClineTokenStale(account)) {
-   const outcome = await refreshAccountInPlace(pool, account, opts.refreshImpl);
+   const outcome = await refreshAccountInPlace(account, opts.refreshImpl);
    if (outcome === false) {
     logWarn("cline slot refresh rejected — skipping slot this turn", { slot: account.slot });
     continue;
@@ -455,11 +445,7 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
    }
   };
   const succeed = async (res: Response, kind: ClineErrorKind): Promise<ClineRollResult> => {
-   if (kind === "ok") {
-    account.lastOkAt = Date.now();
-    pool.activeSlot = account.slot;
-    savePool(pool);
-   }
+   if (kind === "ok") markActiveSlotOnDisk(account.slot);
    if (lastRes && lastRes !== res) {
     try { await lastRes.body?.cancel(); } catch { }
    }
@@ -481,11 +467,11 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
   // Auth failure on a refreshable slot that has not refreshed yet: one
   // refresh, then exactly one retry with the fresh bearer.
   if (kind === "auth" && !refreshedThisSlot && opts.refreshImpl && account.refreshToken) {
-   try {
-    await res.body?.cancel();
-   } catch { }
-   const outcome = await refreshAccountInPlace(pool, account, opts.refreshImpl);
+   const outcome = await refreshAccountInPlace(account, opts.refreshImpl);
    if (outcome === true) {
+    try {
+     await res.body?.cancel();
+    } catch { }
     refreshedThisSlot = true;
     res = await attempt(account.token);
     if (!res) continue;
@@ -498,7 +484,8 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
     logWarn("cline slot refresh rejected — trying next slot", { slot: account.slot });
     continue;
    }
-   // Transient refresh fault: fall through and roll on the original result.
+   // Transient refresh fault: the original response is still intact, so it is
+   // stashed below and can be surfaced to the caller.
   }
   logWarn("cline slot failed — trying next slot", { slot: account.slot, status: res.status });
   await stashFailure(res, kind);
@@ -507,9 +494,12 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
   logWarn("cline pool exhausted after roll — returning last upstream failure", { slots: candidates.length });
   return { res: lastRes, slot: lastSlot, exhausted: true, kind: lastKind };
  }
- logWarn("cline pool exhausted after roll", { slots: candidates.length });
+ // Every slot was skipped before producing a response: its saved login was
+ // rejected, or the network call threw. Nothing is rate-limited here, so say
+ // what actually happened instead of implying the user should wait.
+ logWarn("cline pool exhausted with no upstream response", { slots: candidates.length });
  return {
-  res: exhaustedResponse("All Cline accounts failed — try again shortly"),
+  res: exhaustedResponse("Every saved Cline login failed to reach Cline — sign in again with /freeflow cline login", 502),
   slot: null,
   exhausted: true,
   kind: "exhausted",

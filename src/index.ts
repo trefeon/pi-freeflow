@@ -146,17 +146,12 @@ export function buildProviderConfig(
      }
      : m.api === "openai-responses"
       ? { sessionAffinityFormat: "openai-nosession" }
-      : m.source === "kilo"
+      : m.source === "kilo" || m.source === "cline"
        ? {
         supportsDeveloperRole: false,
         supportsReasoningEffort: !!m.thinkingLevelMap,
        }
-       : m.source === "cline"
-        ? {
-         supportsDeveloperRole: false,
-         supportsReasoningEffort: !!m.thinkingLevelMap,
-        }
-        : {
+       : {
         supportsDeveloperRole: false,
         supportsReasoningEffort: true,
        },

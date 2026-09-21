@@ -6,11 +6,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
- _resetClineCooldownsForTest,
  _resetClinePoolCacheForTest,
  CLINE_POOL_FILE,
  addAccount,
- isClineSlotHealthy,
  loadPool,
  mapClineError,
  redactedToken,
@@ -29,12 +27,10 @@ async function withIsolatedPool(fn: () => Promise<void> | void): Promise<void> {
   fs.rmSync(CLINE_POOL_FILE, { force: true });
  } catch { }
  _resetClinePoolCacheForTest();
- _resetClineCooldownsForTest();
  try {
   await fn();
  } finally {
   _resetClinePoolCacheForTest();
-  _resetClineCooldownsForTest();
   if (before !== null) fs.writeFileSync(CLINE_POOL_FILE, before, "utf8");
   else {
    try {
@@ -141,8 +137,6 @@ test("rollChat: rolls past a rate-limited slot to the next one", async () => {
   assert.equal(res.slot, "b");
   assert.equal(res.exhausted, false);
   assert.equal(res.res.status, 200);
-  assert.equal(isClineSlotHealthy("a"), true);
-  assert.equal(isClineSlotHealthy("b"), true);
   assert.ok(seen.every((h) => h.startsWith("Bearer workos:")));
  });
 });
@@ -174,12 +168,52 @@ test("rollChat: empty pool is exhausted with login guidance", async () => {
   });
   assert.equal(called, false);
   assert.equal(res.exhausted, true);
+  // Not a rate limit: hosts must not back off and hide the login guidance.
+  assert.equal(res.res.status, 401);
   const text = await res.res.text();
   assert.ok(text.includes("cline login"));
  });
 });
 
-test("rollChat: caller error returns on first slot without cooling it", async () => {
+test("rollChat: a transient refresh fault still yields a readable upstream body", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("a", SLOT_A, { refreshToken: "refresh-a", expiresAt: Date.now() - 1000 });
+  const res = await rollChat({
+   body: "{}",
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   // The saved bearer is stale, the attempt comes back 401, and the refresh
+   // itself blows up: the slot's real 401 must survive to the caller intact.
+   fetchImpl: (async () => jsonResponse(401, '{"error":{"message":"token expired"}}')) as typeof fetch,
+   refreshImpl: async () => {
+    throw new Error("network down");
+   },
+  });
+  assert.equal(res.exhausted, true);
+  assert.equal(res.res.status, 401);
+  const body = await res.res.text();
+  assert.ok(body.includes("token expired"), `upstream body must survive, got ${JSON.stringify(body)}`);
+ });
+});
+
+test("rollChat: a refresh grant Cline rejects marks the slot dead, not transient", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("a", SLOT_A, { refreshToken: "refresh-a", expiresAt: Date.now() - 1000 });
+  let refreshes = 0;
+  const res = await rollChat({
+   body: "{}",
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   fetchImpl: (async () => jsonResponse(401)) as typeof fetch,
+   refreshImpl: async () => {
+    refreshes += 1;
+    return null;
+   },
+  });
+  assert.equal(refreshes, 1, "a dead grant must not be retried within the same request");
+  assert.equal(res.exhausted, true);
+ });
+});
+
+test("rollChat: a caller error returns on the first slot without rolling", async () => {
  await withIsolatedPool(async () => {
   addAccount("a", SLOT_A);
   const res = await rollChat({
@@ -189,7 +223,6 @@ test("rollChat: caller error returns on first slot without cooling it", async ()
   });
   assert.equal(res.slot, "a");
   assert.equal(res.kind, "client");
-  assert.equal(isClineSlotHealthy("a"), true);
  });
 });
 

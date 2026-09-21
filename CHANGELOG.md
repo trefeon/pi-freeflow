@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.22.4
+
+### Patch Changes
+
+- Cline fixes after live testing with a real account. Restoring a signed-in Cline login could return a body that had already been discarded, so instead of Cline's actual error you got a bare "internal error" or an empty message; the real error text now reaches you. A login Cline itself rejects is now recognised as needing a fresh sign-in instead of being retried on every request forever. A request that finds no saved login no longer answers with a rate-limit status, so hosts stop treating "not signed in yet" as "wait and try later". Signing in through the browser no longer outlives its own code, survives a brief blip from the sign-in service, and a login added or removed while a request is running is no longer reverted. The model list now always includes every catalogued model even when a cached copy predates it, and `/freeflow cline accounts` and the remove picker show the account email so logins are easier to tell apart.
+
 ## 1.22.3
 
 ### Patch Changes
