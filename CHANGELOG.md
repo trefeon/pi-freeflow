@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.23.3
+
+### Patch Changes
+
+- Fix a test that failed intermittently on CI: it compared the whole response body of a chat request, including the timestamp each side stamps when it builds the body. When a request happened to cross a second boundary the two timestamps differed by one and the test went red even though nothing was wrong. The timestamp is no longer compared digit-for-digit, and the test now checks it is a real timestamp instead. No change to how the proxy behaves.
+
 ## 1.23.2
 
 ### Patch Changes

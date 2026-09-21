@@ -191,8 +191,18 @@ test("proxy e2e: chat non-stream carries mixed host tools upstream and restores 
 	// Client non-stream gets aggregated JSON via the convertSseToJson path.
 	const probe: Record<string, unknown> = { tools: JSON.parse(JSON.stringify(callerTools)), stream: false };
 	const fp = enforceOpencodeFingerprint(probe, "/v1/chat/completions");
-	const expected = JSON.parse(convertSseToJson(rawSse, "/v1/chat/completions", true, fp.caseRestore, fp.findGlob, fp.injected));
-	assert.deepEqual(JSON.parse(clientBody), expected);
+	const actual = JSON.parse(clientBody) as Record<string, unknown>;
+	const expected = JSON.parse(convertSseToJson(rawSse, "/v1/chat/completions", true, fp.caseRestore, fp.findGlob, fp.injected)) as Record<string, unknown>;
+	// `created` is stamped from the wall clock when each body is built, so a
+	// second boundary between the proxy's answer and this expectation moves it
+	// by one — comparing it made this test fail about once every few hundred
+	// runs (seen on CI). Compare every other field strictly, and check the
+	// stamp is a real epoch-seconds value rather than pinning its digit.
+	assert.ok(Number.isInteger(actual.created) && (actual.created as number) > 1_600_000_000, "created must be an epoch-seconds stamp");
+	assert.equal(typeof expected.created, "number");
+	delete actual.created;
+	delete expected.created;
+	assert.deepEqual(actual, expected);
 	const msg = (JSON.parse(clientBody) as { choices: Array<{ message: { tool_calls?: Array<{ function: { name: string } }> } }> }).choices[0].message;
 	const names = (msg.tool_calls ?? []).map((tc) => tc.function.name);
 	assert.deepEqual(names, ["find", "Bash", "ask"], "upstream glob restores to caller find, bash restores to caller Bash, injected read cloaked");
