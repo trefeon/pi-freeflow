@@ -58,7 +58,7 @@ import {
  formatRelayPickerItem,
  formatRelayStatusLabel,
 } from "./relay-state.ts";
-import { addAccount, loadPool, redactedToken, removeAccount } from "./cline-accounts.ts";
+import { addAccount, findClineAccountSlot, loadPool, redactedToken, removeAccount } from "./cline-accounts.ts";
 import type { ClinePoolState } from "./cline-accounts.ts";
 import { CLINE_BROWSER_SIGNOUT_URL, pollDeviceToken, registerClineToken, startDeviceAuth, toApiKey } from "./cline-device-auth.ts";
 import { isCertError } from "./system-ca-fetch.ts";
@@ -369,7 +369,12 @@ function formatClineAccountLines(pool: ClinePoolState): string[] {
   const star = a.slot === pool.activeSlot ? "*" : " ";
   const who = a.email || a.accountId;
   const whoPart = who ? ` ${who}` : "";
-  return `${star} [${idx + 1}] [${a.slot}]${whoPart} key ending ${redactedToken(a.token)}`;
+  // Two slots on one account share one quota, so rotation between them buys
+  // nothing. Mark the later one against the earlier slot it duplicates.
+  const earlier = { accounts: pool.accounts.slice(0, idx) };
+  const dup = findClineAccountSlot(earlier, a);
+  const dupPart = dup ? ` — same account as [${dup}]` : "";
+  return `${star} [${idx + 1}] [${a.slot}]${whoPart} key ending ${redactedToken(a.token)}${dupPart}`;
  });
 }
 /** User-safe one-line message for caught values (never echoes secrets). */
@@ -1475,6 +1480,15 @@ export function createCommandSpec(
       const deviceTokens = await pollDeviceToken(undefined, started.deviceCode, started.interval, { maxWaitMs: Math.max(60_000, started.expiresIn * 1000) });
       const creds = await registerClineToken(undefined, deviceTokens.accessToken, deviceTokens.refreshToken);
       const apiKey = toApiKey(creds.access);
+      const dup = findClineAccountSlot(loadPool(), { token: apiKey, accountId: creds.accountId, email: creds.email }, slot);
+      if (dup) {
+       // Same account twice shares one free quota, so it would never add capacity.
+       ctx.ui.notify(
+        `That Cline account${creds.email ? ` (${creds.email})` : ""} is already saved as [${dup}] — nothing added.\nUse a different account: /freeflow cline signout shows the sign-out link. Or drop the existing one first: /freeflow cline logout ${dup}`,
+        "warning",
+       );
+       return;
+      }
       addAccount(slot, apiKey, {
        refreshToken: creds.refresh,
        expiresAt: creds.expires,

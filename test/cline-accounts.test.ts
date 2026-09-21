@@ -325,6 +325,80 @@ test("command: /freeflow cline signout shows the browser sign-out link and keeps
  });
 });
 
+test("cline pool: a second slot for the same account is refused", async () => {
+ await withIsolatedPool(() => {
+  addAccount("default", SLOT_A, { accountId: "user-1", email: "someone@example.com" });
+  assert.throws(
+   () => addAccount("slot-2", SLOT_B, { accountId: "user-1", email: "someone@example.com" }),
+   (e: unknown) => {
+    const msg = (e as Error).message;
+    assert.ok(msg.includes("[default]"), `must name the existing slot, got: ${msg}`);
+    assert.ok(!msg.includes(SLOT_B), "must never echo the token");
+    return true;
+   },
+  );
+  assert.deepEqual(loadPool().accounts.map((a) => a.slot), ["default"]);
+ });
+});
+
+test("cline pool: identity falls back to email, then to an identical key", async () => {
+ await withIsolatedPool(() => {
+  addAccount("default", SLOT_A, { email: "Someone@Example.com" });
+  // Same person, different casing, no account id on either side.
+  assert.throws(() => addAccount("slot-2", SLOT_B, { email: "someone@example.com" }));
+  // No identity at all: only the same bearer proves the same credential.
+  addAccount("keyed", "workos:keyed-token-1");
+  assert.throws(() => addAccount("keyed-2", "workos:keyed-token-1"));
+  assert.equal(addAccount("keyed-3", "workos:keyed-token-2").accounts.length, 3);
+ });
+});
+
+test("cline pool: re-logging into an existing slot is not a duplicate", async () => {
+ await withIsolatedPool(() => {
+  addAccount("default", SLOT_A, { accountId: "user-1", email: "someone@example.com" });
+  addAccount("default", SLOT_B, { accountId: "user-1", email: "someone@example.com" });
+  assert.deepEqual(loadPool().accounts.map((a) => a.slot), ["default"]);
+  assert.equal(loadPool().accounts[0].token, SLOT_B, "the fresh grant replaces the old one");
+ });
+});
+
+test("command: /freeflow cline login --key refuses an account already saved", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("default", SLOT_A);
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = cliContext([SLOT_A]);
+  await spec.handler("cline login slot-2 --key", ctx);
+  assert.deepEqual(loadPool().accounts.map((a) => a.slot), ["default"]);
+  const shown = notifications.map((n) => n.message).join("\n");
+  assert.ok(shown.includes("[default]"), `must explain the clash, got: ${shown}`);
+  assert.ok(!shown.includes(SLOT_A), "must never echo the key");
+ });
+});
+
+test("command: /freeflow cline accounts marks a duplicate account", async () => {
+ await withIsolatedPool(async () => {
+  // Written straight to the pool file: this is a pool saved before the
+  // duplicate check existed, which is the only way such a pair can exist now.
+  fs.writeFileSync(
+   CLINE_POOL_FILE,
+   JSON.stringify({
+    accounts: [
+     { slot: "default", token: SLOT_A, addedAt: new Date().toISOString(), email: "someone@example.com" },
+     { slot: "slot-2", token: SLOT_B, addedAt: new Date().toISOString(), email: "someone@example.com" },
+    ],
+    activeSlot: "default",
+   }),
+   "utf8",
+  );
+  _resetClinePoolCacheForTest();
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = cliContext([]);
+  await spec.handler("cline accounts", ctx);
+  const shown = notifications.map((n) => n.message).join("\n");
+  assert.ok(shown.includes("same account as [default]"), `must mark the duplicate, got: ${shown}`);
+ });
+});
+
 test("command: /freeflow cline logout offers a picker for several logins", async () => {
  await withIsolatedPool(async () => {
   addAccount("main", SLOT_A);

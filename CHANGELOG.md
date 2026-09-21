@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.23.1
+
+### Patch Changes
+
+- Cline logins no longer accept the same account twice. Two logins for one account share a single free quota, so the second one added nothing while making it look like you had more capacity — signing in with an account you already saved now says which slot has it and leaves your logins untouched. If a set of logins already contains the same account twice, `/freeflow cline accounts` marks the later one `— same account as [slot]` so you can tell them apart and remove the spare.
+
 ## 1.23.0
 
 ### Minor Changes

@@ -239,6 +239,8 @@ Rotating per-account promo, direct only (never through the relay pool). Sign in 
 
 Add as many logins as you want — each one gets its own slot (`default`, `slot-2`, `slot-3`, …) and a request that hits a limit on one rolls straight to the next. To sign in with a different email, sign out of Cline in that browser first (`/freeflow cline signout` prints the link), or use a private window so your current session stays put.
 
+Each account can only be saved once: an extra login for an account you already have shares the same free quota, so it is refused rather than saved. If a pool already holds two logins for one account (saved before this check), `/freeflow cline accounts` marks the later one `— same account as [default]`, and `/freeflow cline logout <slot>` drops it.
+
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `cline-free/deepseek-v4.1-flash` | DeepSeek | **1M** (1.000.000) | **384K** (384.000) | `low/high/max` | ✅ |

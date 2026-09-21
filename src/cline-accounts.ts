@@ -239,10 +239,47 @@ function markActiveSlotOnDisk(slot: string): void {
 }
 
 /**
+ * Identity of a Cline login. Two slots holding the same account share one free
+ * quota, so rotating between them buys nothing — callers use this to detect
+ * that instead of saving a duplicate.
+ *
+ * accountId (WorkOS user id) is authoritative; email is the readable fallback.
+ * When neither side carries an identity — a legacy `clp_` key slot has none —
+ * only an identical bearer proves the same account.
+ */
+function sameClineAccount(account: ClineAccount, identity: { token?: string; accountId?: string; email?: string }): boolean {
+ const idA = account.accountId?.trim();
+ const idB = identity.accountId?.trim();
+ if (idA && idB) return idA === idB;
+ const mailA = account.email?.trim().toLowerCase();
+ const mailB = identity.email?.trim().toLowerCase();
+ if (mailA && mailB) return mailA === mailB;
+ const token = identity.token;
+ return typeof token === "string" && token.length > 0 && account.token === token;
+}
+
+/**
+ * The other slot already holding this account, or null when it is new.
+ * `exceptSlot` skips the slot being written, so re-logging into an existing
+ * slot is never treated as a duplicate.
+ */
+export function findClineAccountSlot(
+ pool: ClinePoolState,
+ identity: { token?: string; accountId?: string; email?: string },
+ exceptSlot?: string,
+): string | null {
+ const hit = pool.accounts.find(
+  (a) => a.slot !== exceptSlot && sameClineAccount(a, identity),
+ );
+ return hit ? hit.slot : null;
+}
+
+/**
  * Save (or replace) one login slot. The token must carry the `workos:` prefix.
  * Throws on bad input — the message never echoes the token.
  * Extras carry the device-login grant (refresh token, expiry, identity);
  * legacy key slots keep calling with two args and load untouched.
+ * Refuses an account that another slot already holds.
  */
 export function addAccount(
  slot: string,
@@ -255,6 +292,11 @@ export function addAccount(
  if (!token.startsWith("workos:") && !isWorkosJwt(token) && !token.startsWith("clp_")) throw new Error("Cline token must be a workos: login grant or a clp_ API key");
  const pool = loadPool();
  const existing = pool.accounts.find((a) => a.slot === cleanSlot);
+ const duplicate = findClineAccountSlot(pool, { token, accountId: extras?.accountId, email: extras?.email }, cleanSlot);
+ if (duplicate) {
+  const who = extras?.email?.trim() || existing?.email?.trim() || "this account";
+  throw new Error(`That Cline account (${who}) is already saved as [${duplicate}] — log in with a different account, or use /freeflow cline logout ${duplicate} first`);
+ }
  if (existing) {
   existing.token = token;
   if (extras?.refreshToken) existing.refreshToken = extras.refreshToken;
