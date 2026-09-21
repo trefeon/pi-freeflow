@@ -88,15 +88,17 @@ export const CLINE_CLIENT_VERSION = "3.5.54";
  * Client headers the Cline API expects. Measured live (2026-09-21): the
  * `cline-free/*` models answer 403 "only available via Cline product surfaces"
  * with a bare bearer, and 200 with this set; every non-prefixed catalog model
- * (e.g. z-ai/glm-5.3-flash) answers 200 either way. Header names and shape
- * mirror reference/cline providers/request-headers.ts
- * (DEFAULT_CLINE_REQUEST_HEADERS) — no credential is derived from them.
+ * (e.g. z-ai/glm-5.3-flash) answers 200 either way. The client type mirrors
+ * the desktop app (`cline-desktop`), whose free list also serves
+ * `cline-free/kimi-k3`. Header names and shape mirror reference/cline
+ * providers/request-headers.ts (DEFAULT_CLINE_REQUEST_HEADERS) — no
+ * credential is derived from them.
  */
 export const CLINE_CLIENT_HEADERS: Record<string, string> = {
  "HTTP-Referer": "https://cline.bot",
  "X-Title": "Cline",
  "X-IS-MULTIROOT": "false",
- "X-CLIENT-TYPE": "cline-sdk",
+ "X-CLIENT-TYPE": "cline-desktop",
  "X-CLIENT-VERSION": CLINE_CLIENT_VERSION,
  "User-Agent": `Cline/${CLINE_CLIENT_VERSION}`,
 };

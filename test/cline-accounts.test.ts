@@ -151,6 +151,23 @@ test("rollChat: rolls past a rate-limited slot to the next one", async () => {
  });
 });
 
+test("rollChat: chat attempts identify as the desktop client", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("a", SLOT_A);
+  let clientType: string | null = null;
+  const res = await rollChat({
+   body: "{}",
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   fetchImpl: (async (_url: unknown, init: unknown) => {
+    clientType = new Headers((init as RequestInit).headers).get("X-CLIENT-TYPE");
+    return jsonResponse(200, '{"ok":true}');
+   }) as typeof fetch,
+  });
+  assert.equal(res.res.status, 200);
+  assert.equal(clientType, "cline-desktop");
+ });
+});
+
 test("rollChat: all slots failing returns the last real failure", async () => {
  await withIsolatedPool(async () => {
   addAccount("a", SLOT_A);

@@ -55,6 +55,7 @@ test("1M context window models are properly configured", () => {
   "muse-spark-1.3-contributor-free",
   "cline-free/muse-spark-1.3-contributor",
   "cline-free/deepseek-v4.1-flash",
+  "cline-free/kimi-k3",
   "z-ai/glm-5.3-flash",
   "mimo-v2.5-free",
   "nemotron-3.5-lightning-free",
@@ -181,6 +182,7 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "cline-free/deepseek-v4.1-flash": { ctx: 1_000_000, max: 384_000, reasoning: true },
   "cline-free/muse-spark-1.3-contributor": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "z-ai/glm-5.3-flash": { ctx: 1_000_000, max: 131_072, reasoning: true },
+  "cline-free/kimi-k3": { ctx: 1_000_000, max: 131_072, reasoning: true },
   "cline-free/solar-pro4": { ctx: 524_288, max: 131_072, reasoning: true },
  };
  for (const [id, { ctx, max, reasoning }] of Object.entries(locked)) {

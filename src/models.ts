@@ -1,9 +1,10 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 27 verified free models:
+ * Defines the 32 verified free models:
  * - 8 OpenCode Zen models (2 Responses API + 5 Chat Completions + 1 Anthropic Messages)
  * - 19 KiloCode Keyless Gateway models (18 OpenRouter format + 1 Standard format)
+ * - 5 Cline free models (per-user login pool)
  */
 
 import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
@@ -444,6 +445,15 @@ export const CLINE_MODELS: ModelDef[] = [
   thinkingLevelMap: CLINE_FLASH_REASONING_MAP,
  },
  {
+  id: "cline-free/kimi-k3",
+  name: "Kimi K3 [Cline]",
+  reasoning: true,
+  contextWindow: 1_000_000,
+  maxTokens: 131_072,
+  input: ["text", "image"],
+  thinkingLevelMap: CLINE_REASONING_MAP,
+ },
+ {
   id: "cline-free/solar-pro4",
   name: "Solar Pro4 [Cline]",
   reasoning: true,
@@ -512,7 +522,7 @@ export const CLINE_MODEL_IDS = new Set<string>([
 ]);
 
 /**
- * Combined list of all 31 static free models (canonical)
+ * Combined list of all 32 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS];
 
