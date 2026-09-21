@@ -41,6 +41,7 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "minimax/minimax-m2.7:free",
  "minimax/minimax-m3:free",
  "thinkingmachines/inkling:free",
+ "union-alpha",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.
@@ -389,13 +390,14 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
   }
  }
 
- // Stale cache still better than empty — return it without network (filtered)
+ // Stale cache still better than empty — overlay it on the static base rather
+ // than returning it as the catalog. A cache written before an id existed in
+ // the static list can hold as many entries as the static set while missing
+ // ids we ship today, so no "the cache is big enough" guard can be trusted;
+ // the overlay keeps the static ids and adds whatever the cache knows.
  if (disk && Array.isArray(disk.models) && disk.models.length > 0) {
-  const filtered = sanitizeCatalogModels(disk.models);
-  if (filtered.length >= ALL_MODELS.length) {
-   aliveCatalog = filtered;
-   return aliveCatalog;
-  }
+  aliveCatalog = mergeCatalog(staticBase, sanitizeCatalogModels(disk.models));
+  return aliveCatalog;
  }
  // No valid fresh cache — try stale disk cache directly (readCatalogCache returns null when expired)
  try {
@@ -403,16 +405,13 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
    const raw = fs.readFileSync(CATALOG_CACHE_FILE, "utf8");
    const stale = JSON.parse(raw) as CatalogCacheData;
    if (Array.isArray(stale.models) && stale.models.length > 0) {
-    const filtered = sanitizeCatalogModels(stale.models);
-    if (filtered.length >= ALL_MODELS.length) {
-     aliveCatalog = filtered;
-     return aliveCatalog;
-    }
+    aliveCatalog = mergeCatalog(staticBase, sanitizeCatalogModels(stale.models));
+    return aliveCatalog;
    }
   }
  } catch (err) {
   logDebug("Failed reading stale catalog cache", { error: String(err) });
  }
- // No valid cache — return in-memory static 27 (host will refresh if needed)
+ // No usable cache — return the in-memory static-backed catalog (host will refresh if needed)
  return aliveCatalog;
 }

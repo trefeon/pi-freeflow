@@ -16,7 +16,7 @@ hero:
 
 features:
   - title: "31 Curated Free Models"
-    details: 8 OpenCode Zen + 19 KiloCode Gateway + 4 Cline — up to 1M context, 512K output, vision support, no API keys.
+    details: 7 OpenCode Zen + 19 KiloCode Gateway + 5 Cline — up to 1M context, 512K output, vision support, no API keys.
   - title: "BYO Relay Pool"
     details: Round-robin across your Cloudflare Workers, Vercel Edge, and Deno Deploy for zero upstream rate limits.
   - title: "Adaptive Failover"

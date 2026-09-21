@@ -253,14 +253,14 @@ test("mock upstream: relays and direct all fail — last status surfaces to clie
 
 // ── 6. Kilo model routing ───────────────────────────────────────────────────
 
-test("mock upstream: kilo model routes to api.kilo.ai with kilo-free auth", async () => {
+test("mock upstream: kilo model routes to api.kilo.ai keyless", async () => {
 	await withIsolatedRelayFiles(async () => {
 		await withProxyScenario(
 			{ state: makeState([]) },
 			async (url, init) => {
 				assert.ok(url.startsWith("https://api.kilo.ai"), `kilo upstream URL: ${url}`);
 				const h = new Headers(init?.headers);
-				assert.equal(h.get("authorization"), "Bearer kilo-free");
+				assert.equal(h.get("authorization"), null, "kilo is keyless — a placeholder bearer is rejected upstream");
 				return stubResponse(200, JSON.stringify({ id: "kilo-ok", choices: [] }));
 			},
 			async (port) => {
