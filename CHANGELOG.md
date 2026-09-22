@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.24.0
+
+### Minor Changes
+
+- Cline requests now identify as the Cline desktop app. That client identity is what makes Cline advertise its sixth free model, Kimi K3, so it joins the model list next to the four Cline models you already had.
+
+  Kimi K3 (`cline-free/kimi-k3`) has a 1M-token context window, reads images, and takes the same `low` / `high` / `max` thinking depths as the other flash-class Cline models. It uses the login you already saved with `/freeflow cline login` and the same daily free quota, so a request that hits the limit on one saved login rolls to the next exactly like every other Cline model. Nothing about the other providers changes.
+
+### Patch Changes
+
+- Cline logins are used more sensibly, and the message you get when they are all out matches what actually happened.
+
+  A saved login that has used up its daily free allowance for a model is now skipped instead of being retried on every request, so a turn goes straight to a login that still has allowance for that model. A login that starts working again is picked back up on its own.
+
+  When every saved login is out for that model, the answer now says so: it names how many logins were tried, when the nearest reset is, and that switching models or adding another login (`/freeflow cline login`) is what helps — instead of implying that a single login was at fault.
+
+- Kilo models work again. Kilo's gateway now rejects the placeholder credential the proxy used to send and accepts the same request without one, which broke every Kilo-model turn with a 401 "invalid token" error. The proxy no longer sends a credential for Kilo, so its models answer again instead of failing with a 401.
+- Model selection can no longer lose models the extension ships with. When the saved copy of the live catalog was newer than the built-in list and the live refresh could not run, the provider used to be re-registered from that saved copy alone, so a model added in a later update could drop out of model selection until the app was restarted. The saved copy is now always overlaid on the built-in list, so no update can lose models that way.
+- Removed Union Alpha from the model list. It stopped being served upstream: every request is rejected as an unsupported model, on both the chat and the Anthropic Messages paths, so picking it only produced an error. It is gone from model selection and cannot come back through a stale catalog cache. The Anthropic Messages request path itself stays supported for future models.
+
 ## 1.23.3
 
 ### Patch Changes
