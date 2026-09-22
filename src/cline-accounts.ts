@@ -672,14 +672,17 @@ export interface ClineRollResult {
  exhausted: boolean;
  kind: ClineErrorKind;
  /**
-  * Slots that received an upstream answer on this roll. Slots skipped without
-  * one (dead login grant, network fault) are not counted, so this tells the
-  * difference between "every login answered" and "some login never got through".
+  * Saved logins this roll had to work with (the candidate count). On an
+  * exhausted result every one of them was tried, so a caller may name this
+  * number when telling the user how many logins are capped. It is never an
+  * upstream-attempt count: one login that refreshes and retries is still one.
   */
- attempts: number;
+ logins: number;
  /**
-  * True when every saved login was asked and every one answered a free-limit
-  * 429 for the requested model — nothing else was tried and nothing succeeded.
+  * True when the roll tried at least one login and every login it tried
+  * answered the free-limit 429 for the requested model — nothing else was
+  * tried and nothing succeeded. A login skipped for a dead grant keeps this
+  * false, as does any other failure mixed into the roll.
   */
  limitOnly: boolean;
  /** Earliest reset among the free-limit 429s seen (epoch ms); null when none was stated. */
@@ -732,13 +735,14 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
  if (candidates.length === 0) {
   const reason = "No Cline logins saved — add one with /freeflow cline login";
   logWarn("cline pool empty", { slots: pool.accounts.length });
-  return { res: exhaustedResponse(reason, 401), slot: null, exhausted: true, kind: "exhausted", attempts: 0, limitOnly: false, earliestResetAt: null };
+  return { res: exhaustedResponse(reason, 401), slot: null, exhausted: true, kind: "exhausted", logins: 0, limitOnly: false, earliestResetAt: null };
  }
  let lastRes: Response | null = null;
  let lastSlot: string | null = null;
  let lastKind: ClineErrorKind = "exhausted";
- let attempts = 0;
- let limitAttempts = 0;
+ // Distinct logins that answered the cap, so one login refreshing and retrying
+ // through the 401 path still counts once.
+ const cappedSlots = new Set<string>();
  let earliestResetAt: number | null = null;
  let limitModelId: string | undefined;
  for (const account of candidates) {
@@ -786,7 +790,7 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
     slot: account.slot,
     exhausted: false,
     kind,
-    attempts,
+    logins: candidates.length,
     limitOnly: false,
     earliestResetAt,
     ...(limitModelId ? { limitModelId } : {}),
@@ -802,7 +806,6 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
   };
   let res = await attempt(account.token);
   if (!res) continue;
-  attempts += 1;
   let kind = mapClineError(res.status);
   if (kind === "ok" || kind === "client") return await succeed(res, kind);
   // Auth failure on a refreshable slot that has not refreshed yet: one
@@ -834,7 +837,7 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
   if (res.status === 429) {
    const limit = await freeLimitFrom(res, now);
    if (limit) {
-    limitAttempts += 1;
+    cappedSlots.add(account.slot);
     if (limit.modelId) limitModelId = limit.modelId;
     if (typeof limit.resetAt === "number") {
      if (earliestResetAt === null || limit.resetAt < earliestResetAt) earliestResetAt = limit.resetAt;
@@ -853,10 +856,10 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
  if (lastRes) {
   // Only every saved login answering the cap counts as a limit-only roll: a
   // login that never got through is a login problem, not a capped one.
-  const limitOnly = attempts > 0 && limitAttempts === attempts && attempts === candidates.length;
+  const limitOnly = cappedSlots.size > 0 && candidates.every((a) => cappedSlots.has(a.slot));
   logWarn("cline pool exhausted after roll — returning last upstream failure", {
    slots: candidates.length,
-   attempts,
+   cappedSlots: cappedSlots.size,
    limitOnly,
    ...(limitModelId ? { limitModel: limitModelId } : {}),
   });
@@ -865,7 +868,7 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
    slot: lastSlot,
    exhausted: true,
    kind: lastKind,
-   attempts,
+   logins: candidates.length,
    limitOnly,
    earliestResetAt,
    ...(limitModelId ? { limitModelId } : {}),
@@ -880,7 +883,7 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
   slot: null,
   exhausted: true,
   kind: "exhausted",
-  attempts,
+  logins: candidates.length,
   limitOnly: false,
   earliestResetAt,
   ...(limitModelId ? { limitModelId } : {}),

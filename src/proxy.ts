@@ -246,8 +246,8 @@ async function handleClineRequest(opts: {
   }
   // Every saved login answered the daily free cap: name that instead of
   // blaming "this login", which hides that another login or another model works.
-  if (result.limitOnly && result.attempts > 1) {
-   limitHint = { logins: result.attempts, resetAt: result.earliestResetAt };
+  if (result.limitOnly && result.logins > 1) {
+   limitHint = { logins: result.logins, resetAt: result.earliestResetAt };
   }
  } catch (e) {
   log("error", "cline pool error", { error: String(e), model }, reqId);
@@ -445,8 +445,9 @@ export function sanitizeHeaders(
  targetHost: string,
 ): Record<string, string> {
  // authorization is deliberately NOT forwarded: the host provider registers
- // with a dummy key (placeholder), and zen free models are keyless — sending
- // that fake key upstream gets 401 Invalid API key. Kilo injects its own key.
+ // with a dummy key (placeholder), and every free upstream here is keyless —
+ // sending that fake key upstream gets 401 Invalid API key. Kilo's own branch
+ // sends no Authorization either (its gateway rejects a placeholder bearer).
  const allowed: Record<string, true> = {
   "content-type": true,
   accept: true,
