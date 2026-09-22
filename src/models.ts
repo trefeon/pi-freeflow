@@ -1,9 +1,9 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 31 verified free models:
- * - 7 OpenCode Zen models (2 Responses API + 5 Chat Completions)
- * - 19 KiloCode Keyless Gateway models (18 OpenRouter format + 1 Standard format)
+ * Defines the 34 verified free models:
+ * - 8 OpenCode Zen models (2 Responses API + 6 Chat Completions)
+ * - 21 KiloCode Keyless Gateway models (20 OpenRouter format + 1 Standard format)
  * - 5 Cline direct-only models (per-user pool)
  */
 
@@ -53,6 +53,23 @@ export const OPENCODE_MODELS: ModelDef[] = [
  {
   id: "mimo-v2.5-free",
   name: "MiMo V2.5 (1M) [OpenCode]",
+  reasoning: true,
+  contextWindow: 1_048_576,
+  maxTokens: 131_072,
+  input: ["text", "image"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: "low",
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "high",
+   max: null,
+  },
+ },
+ {
+  id: "mimo-v2.6-flash-free",
+  name: "MiMo V2.6 Flash (1M) [OpenCode]",
   reasoning: true,
   contextWindow: 1_048_576,
   maxTokens: 131_072,
@@ -346,6 +363,26 @@ export const KILO_MODELS: ModelDef[] = [
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
  },
+ {
+  id: "qwen/qwen3.8-27b:free",
+  name: "Qwen 3.8 27B [Kilo]",
+  reasoning: true,
+  contextWindow: 262_144,
+  maxTokens: 235_929,
+  input: ["text", "image"],
+  thinkingFormat: "openrouter",
+  thinkingLevelMap: KILO_REASONING_MAP,
+ },
+ {
+  id: "z-ai/glm-5.2:free",
+  name: "GLM 5.2 [Kilo]",
+  reasoning: true,
+  contextWindow: 32_768,
+  maxTokens: 29_491,
+  input: ["text"],
+  thinkingFormat: "openrouter",
+  thinkingLevelMap: KILO_REASONING_MAP,
+ },
 ];
 
 /**
@@ -469,6 +506,9 @@ export const MODEL_ALIASES: Record<string, string> = {
  "nex-n2.5-pro": "nex-agi/nex-n2.5-pro:free",
  "nex-n2.5-mini": "nex-agi/nex-n2.5-mini:free",
  "inkling-small": "thinkingmachines/inkling-small:free",
+ "mimo-v2.6-flash": "mimo-v2.6-flash-free",
+ "qwen3.8-27b": "qwen/qwen3.8-27b:free",
+ "glm-5.2": "z-ai/glm-5.2:free",
  // provider-prefixed short aliases (slash-normalized)
  "laguna-s-2.1:free": "poolside/laguna-s-2.1:free",
  "laguna-xs-2.1:free": "poolside/laguna-xs-2.1:free",
@@ -504,7 +544,7 @@ export const CLINE_MODEL_IDS = new Set<string>([
 ]);
 
 /**
- * Combined list of all 31 static free models (canonical)
+ * Combined list of all 34 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS];
 

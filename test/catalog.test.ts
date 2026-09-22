@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEAD_MODEL_IDS, isFreeCatalogId, mergeCatalog, refreshCatalog } from "../src/catalog.ts";
+import { DEAD_MODEL_IDS, enrichModelDef, isFreeCatalogId, mergeCatalog, refreshCatalog } from "../src/catalog.ts";
 import { CATALOG_CACHE_FILE, CATALOG_CACHE_TTL_MS } from "../src/config.ts";
 import { ALL_MODELS, getModelUpstream } from "../src/models.ts";
 import type { RegisteredModel } from "../src/types.ts";
@@ -216,4 +216,31 @@ test("union-alpha is a dead model id (pruned, never re-enters)", () => {
 	assert.equal(DEAD_MODEL_IDS.has("union-alpha"), true);
 	assert.equal(isFreeCatalogId("union-alpha"), false);
 	assert.equal(ALL_MODELS.some((m) => m.id === "union-alpha"), false);
+});
+
+test("jev-1.13-free cannot return through the Zen runtime refresh", () => {
+	// Static exclusion: never registered.
+	assert.equal(DEAD_MODEL_IDS.has("jev-1.13-free"), true);
+	assert.equal(ALL_MODELS.some((m) => m.id === "jev-1.13-free"), false);
+	// Dynamic exclusion stage 1 (mirrors refreshCatalog): a live upstream-style
+	// Zen object for this id is filtered before enrichment.
+	const rawUpstream = [{ id: "jev-1.13-free", context_length: 262144, max_tokens: 32768 }];
+	const freeRawList = rawUpstream.filter((r) => r && typeof r.id === "string" && isFreeCatalogId(r.id));
+	assert.equal(freeRawList.length, 0, "jev-1.13-free must not pass the free-id filter");
+	// Dynamic exclusion stage 2: even an enriched entry cannot survive the merge.
+	const enriched = enrichModelDef({ id: "jev-1.13-free" }, "opencode");
+	const base: RegisteredModel[] = ALL_MODELS.map((m) => ({ ...m, source: getModelUpstream(m.id) }));
+	const merged = mergeCatalog(base, [{ ...enriched, source: "opencode" as const }]);
+	assert.equal(merged.some((m) => m.id === "jev-1.13-free"), false, "jev-1.13-free must not survive mergeCatalog");
+	assert.equal(merged.length, base.length, "dropping jev must not shrink the static catalog");
+});
+
+test("deepseek-v4-flash-free stays excluded while served models are untouched", () => {
+	assert.equal(DEAD_MODEL_IDS.has("deepseek-v4-flash-free"), true);
+	assert.equal(isFreeCatalogId("deepseek-v4-flash-free"), false);
+	assert.equal(ALL_MODELS.some((m) => m.id === "deepseek-v4-flash-free"), false);
+	const base: RegisteredModel[] = ALL_MODELS.map((m) => ({ ...m, source: getModelUpstream(m.id) }));
+	const merged = mergeCatalog(base, [model("deepseek-v4-flash-free", 100, "opencode")]);
+	assert.equal(merged.some((m) => m.id === "deepseek-v4-flash-free"), false);
+	assert.equal(merged.length, base.length);
 });

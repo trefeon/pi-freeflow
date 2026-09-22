@@ -30,8 +30,11 @@ import type {
 
 /**
  * Pruned model IDs that must never re-enter the catalog via disk cache or upstream merge.
+ * - jev-1.13-free: non-chat decision model, chat-incompatible — never registered.
+ * - deepseek-v4-flash-free: listed but currently unserved upstream — stays out until it answers.
  */
 export const DEAD_MODEL_IDS = new Set<string>([
+ "jev-1.13-free",
  "deepseek-v4-flash-free",
  "x-preview-f-free",
  "hy3-free",
@@ -81,7 +84,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 31 verified models for 0ms instant availability.
+ * Initialized with all 34 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
  ...m,

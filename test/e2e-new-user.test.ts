@@ -2,7 +2,7 @@
  * Comprehensive End-to-End (E2E) Test Suite: New User Lifecycle & System Contracts
  *
  * Covers:
- * 1. Fresh bootstrap & provider registration (31 models on default port 28180)
+ * 1. Fresh bootstrap & provider registration (34 models on default port 28180)
  * 2. CLI exit safety (server.unref() allows installer/CLI commands to exit cleanly)
  * 3. Multi-session daemon reuse (zero-duplicate single-port architecture)
  * 4. Legacy migration & dual-probe backward compatibility (18080 fallback)
@@ -58,7 +58,7 @@ import type {
 
 // ── 1. Fresh Bootstrap & Static Catalog Registration ─────────────────────────
 
-test("E2E [1/10] fresh new user bootstrap registers 31 models with zero-latency catalog", async () => {
+test("E2E [1/10] fresh new user bootstrap registers 34 models with zero-latency catalog", async () => {
 	let registeredProviderName = "";
 	let registeredProviderConfig: ProviderConfig | undefined;
 	const registeredCommands: Record<string, Omit<RegisteredCommand, "name">> = {};
@@ -92,6 +92,8 @@ test("E2E [1/10] fresh new user bootstrap registers 31 models with zero-latency 
 	const hasXPreview = registeredProviderConfig.models.some((m) => m.id === "x-preview-f-free");
 	const hasHy3 = registeredProviderConfig.models.some((m) => m.id === "hy3-free" || m.id === "tencent/hy3:free");
 	const hasLongcat = registeredProviderConfig.models.some((m) => m.id === "meituan/longcat-2.0-free");
+	const hasJev = registeredProviderConfig.models.some((m) => m.id === "jev-1.13-free");
+	assert.equal(hasJev, false);
 	assert.equal(hasV4Flash, false);
 	assert.equal(hasXPreview, false);
 	assert.equal(hasHy3, false);
