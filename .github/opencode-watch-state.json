@@ -1,9 +1,9 @@
 {
-  "lastRelease": "v1.18.31",
+  "lastRelease": "v1.18.32",
   "fileShas": {
     "identifier.ts": "aab182e24eb8e133300c5105e67e21d438550ab326e31fffac7763873c5ae5cd",
     "session-id.ts": "da161dc7602f91a0528fce9f259d1ff83d84e8376d5b2cbd714ceeeb001c7b9b",
-    "zen.mdx": "a699182f6c5fb8d18af56342bbe49437ce2316a8d33d6ca3e06ab6dac5d6a330"
+    "zen.mdx": "4b4c194d180811b559fdb29013595e233a058b47ad63178471e5013e5fc49f34"
   },
   "freeModels": [
     "big-pickle",
@@ -11,10 +11,11 @@
     "jev-1.13-free",
     "ling-3.0-flash-fin-free",
     "mimo-v2.5-free",
+    "mimo-v2.6-flash-free",
     "muse-spark-1.2-contributor-free",
     "muse-spark-1.3-contributor-free",
     "nemotron-3-ultra-free",
     "nemotron-3.5-lightning-free"
   ],
-  "lastChecked": "2026-09-20T09:11:15.896Z"
+  "lastChecked": "2026-09-22T09:11:49.662Z"
 }
