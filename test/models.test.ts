@@ -58,6 +58,7 @@ test("1M context window models are properly configured", () => {
  "cline-free/kimi-k3",
   "z-ai/glm-5.3-flash",
   "mimo-v2.5-free",
+  "mimo-v2.6-flash-free",
   "nemotron-3.5-lightning-free",
   "nemotron-3-ultra-free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
@@ -87,6 +88,40 @@ test("KiloCode upstream router distinguishes Kilo vs OpenCode", () => {
 
  assert.equal(isKiloModel("mimo-v2.5-free"), false);
  assert.equal(getModelUpstream("mimo-v2.5-free"), "opencode");
+});
+
+test("2026-09-22 additions route to the correct upstream with verified metadata", () => {
+ // MiMo V2.6 Flash serves through OpenCode Zen chat with the shared MiMo effort mapping
+ const mimo = getModelDef("mimo-v2.6-flash-free");
+ assert.ok(mimo);
+ assert.equal(mimo.contextWindow, 1_048_576);
+ assert.equal(mimo.maxTokens, 131_072);
+ assert.equal(mimo.reasoning, true);
+ assert.deepEqual(mimo.input, ["text", "image"]);
+ assert.equal(mimo.thinkingLevelMap?.minimal, "low");
+ assert.equal(mimo.thinkingLevelMap?.xhigh, "high");
+ assert.equal(getModelUpstream("mimo-v2.6-flash-free"), "opencode");
+ assert.equal(getModelUpstream("mimo-v2.6-flash"), "opencode");
+ // Qwen 3.8 27B is a vision-language Kilo reasoning model
+ const qwen = getModelDef("qwen/qwen3.8-27b:free");
+ assert.ok(qwen);
+ assert.equal(qwen.contextWindow, 262_144);
+ assert.equal(qwen.maxTokens, 235_929);
+ assert.equal(qwen.reasoning, true);
+ assert.deepEqual(qwen.input, ["text", "image"]);
+ assert.equal(qwen.thinkingFormat, "openrouter");
+ assert.equal(getModelUpstream("qwen/qwen3.8-27b:free"), "kilo");
+ assert.equal(getModelUpstream("qwen3.8-27b"), "kilo");
+ // GLM 5.2 is a text-only Kilo reasoning model
+ const glm = getModelDef("z-ai/glm-5.2:free");
+ assert.ok(glm);
+ assert.equal(glm.contextWindow, 32_768);
+ assert.equal(glm.maxTokens, 29_491);
+ assert.equal(glm.reasoning, true);
+ assert.deepEqual(glm.input, ["text"]);
+ assert.equal(glm.thinkingFormat, "openrouter");
+ assert.equal(getModelUpstream("z-ai/glm-5.2:free"), "kilo");
+ assert.equal(getModelUpstream("glm-5.2"), "kilo");
 });
 
 test("model aliases resolve correctly to canonical IDs", () => {
@@ -148,6 +183,8 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "muse-spark-1.2-contributor-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "muse-spark-1.3-contributor-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "mimo-v2.5-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
+  // Added 2026-09-22 (live: Zen /v1/models + keyless chat 200 on mimo-v2.6-flash-free)
+  "mimo-v2.6-flash-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "nemotron-3-ultra-free": { ctx: 1_000_000, max: 128_000, reasoning: true },
   "nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 262_144, reasoning: true },
   "big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
@@ -174,6 +211,9 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "nex-agi/nex-n2.5-pro:free": { ctx: 262_144, max: 235_929, reasoning: true },
   "nex-agi/nex-n2.5-mini:free": { ctx: 262_144, max: 235_929, reasoning: true },
   "inclusionai/ling-3.0-flash-vl:free": { ctx: 262_144, max: 32_768, reasoning: true },
+  // Added 2026-09-22 (live: Kilo /api/gateway/models context_length/max_completion_tokens)
+  "qwen/qwen3.8-27b:free": { ctx: 262_144, max: 235_929, reasoning: true },
+  "z-ai/glm-5.2:free": { ctx: 32_768, max: 29_491, reasoning: true },
   // Cline direct-only (per-user pool — https://api.cline.bot)
   "cline-free/deepseek-v4.1-flash": { ctx: 1_000_000, max: 384_000, reasoning: true },
   "cline-free/muse-spark-1.3-contributor": { ctx: 1_048_576, max: 131_072, reasoning: true },
@@ -199,6 +239,9 @@ test("new alias map resolves to canonical kilo ids", () => {
  assert.equal(resolveCanonicalModelId("ling-3.0-flash-vl"), "inclusionai/ling-3.0-flash-vl:free");
  assert.equal(resolveCanonicalModelId("nex-n2.5-pro"), "nex-agi/nex-n2.5-pro:free");
  assert.equal(resolveCanonicalModelId("nex-n2.5-mini"), "nex-agi/nex-n2.5-mini:free");
+ assert.equal(resolveCanonicalModelId("mimo-v2.6-flash"), "mimo-v2.6-flash-free");
+ assert.equal(resolveCanonicalModelId("qwen3.8-27b"), "qwen/qwen3.8-27b:free");
+ assert.equal(resolveCanonicalModelId("glm-5.2"), "z-ai/glm-5.2:free");
 });
 
 test("union-alpha is pruned from the static catalog", () => {
