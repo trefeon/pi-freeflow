@@ -344,7 +344,7 @@ test("rollChat: a capped login is still tried when nothing else serves", async (
   // A recorded cap only reorders the roll: a lifted cap must be discoverable.
   assert.equal(asked.length, 2, "every saved login must still be attempted");
   assert.equal(res.exhausted, true);
-  assert.equal(res.attempts, 2);
+  assert.equal(res.logins, 2);
   assert.equal(res.limitOnly, true);
   assert.ok(res.earliestResetAt !== null && res.earliestResetAt >= before + CAP_DELAY_MS - 1_000);
   // Reading the 429 body to classify it must not consume the caller's copy.
@@ -369,10 +369,39 @@ test("rollChat: an ordinary 429 is not reported as a cap", async () => {
    chatUrl: "https://api.cline.bot/api/v1/chat/completions",
    fetchImpl: (async () => jsonResponse(429)) as typeof fetch,
   });
-  assert.equal(res.attempts, 2);
+  assert.equal(res.logins, 2);
   assert.equal(res.limitOnly, false);
   assert.equal(res.earliestResetAt, null);
   assert.equal(loadPool().limits, undefined);
+ });
+});
+
+test("rollChat: a login that refreshes before answering the cap still counts once", async () => {
+ await withIsolatedPool(async () => {
+  // No expiry, so the bearer is used as saved: the 401 arrives first and the
+  // refresh happens mid-attempt, which is the path that could double count.
+  addAccount("a", SLOT_A, { refreshToken: "refresh-a" });
+  addAccount("b", SLOT_B);
+  let refreshes = 0;
+  const res = await rollChat({
+   body: JSON.stringify({ model: MODEL, stream: true }),
+   chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+   fetchImpl: (async (url: unknown, init: unknown) => {
+    const auth = new Headers((init as RequestInit).headers).get("authorization") ?? "";
+    // Slot a's saved bearer is rejected once; its refreshed bearer then answers
+    // the cap, exactly like the second login does.
+    return auth.endsWith(SLOT_A.slice(-6)) ? jsonResponse(401) : jsonResponse(429, LIVE_LIMIT_BODY);
+   }) as typeof fetch,
+   refreshImpl: async () => {
+    refreshes += 1;
+    return { token: `${SLOT_A}-refreshed` };
+   },
+  });
+  assert.equal(refreshes, 1, "the 401 path must have refreshed once");
+  assert.equal(res.exhausted, true);
+  assert.equal(res.logins, 2, "the hint may never name more logins than exist");
+  assert.equal(res.limitOnly, true, "both saved logins answered the cap");
+  assert.ok(res.earliestResetAt !== null);
  });
 });
 
