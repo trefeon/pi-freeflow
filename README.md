@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 34 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 33 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **34 free models** | 8 from OpenCode Zen, 21 from KiloCode Gateway, 5 from Cline, context windows up to 1M. Full list below. | **$0** |
+| **33 free models** | 9 from OpenCode Zen, 19 from KiloCode Gateway, 5 from Cline, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own Cloudflare Workers and Vercel Edge relays. Requests rotate across the pool. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Every model has a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`. | **$0** |
@@ -54,7 +54,7 @@ omp
 **OMP, one shot:**
 ```bash
 omp -p --model freeflow/muse-spark-1.2-contributor-free "build me a SaaS"
-omp -p --model freeflow/step-3.7-flash:high "solve this bug"   # alias + thinking level
+omp -p --model freeflow/space-bunny:high "solve this bug"   # alias + thinking level
 ```
 
 **Pi, interactive:**
@@ -65,7 +65,7 @@ pi
 
 **Pi, one shot:**
 ```bash
-pi -p --model freeflow/step-3.7-flash:high "solve this bug"
+pi -p --model freeflow/space-bunny:high "solve this bug"
 ```
 
 Model IDs accept a full canonical ID, a short alias (see the tables below),
@@ -184,13 +184,13 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 34 models, one command
+### 33 models, one command
 
 ```bash
 /model → freeflow → pick
 ```
 
-#### OpenCode Zen (8 models), Responses and Chat API
+#### OpenCode Zen (9 models), Responses and Chat API
 
 Good defaults for long coding sessions and agentic work.
 
@@ -204,15 +204,15 @@ Good defaults for long coding sessions and agentic work.
 | `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `minimal … xhigh` | ❌ |
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 | `ling-3.0-flash-fin-free` | Inclusion AI | **262K** (262.144) | **131K** (131.072) | `minimal … xhigh` | ❌ |
+| `space-bunny-free` | Stealth preview (lab undisclosed) | **1M** (1.048.576) | **512K** (524.288) | `low … max` | ✅ |
 
-#### KiloCode Gateway (21 models), OpenRouter compatible
+#### KiloCode Gateway (19 models), OpenRouter compatible
 
 Keyless access. Short aliases work for every row (the full ID is in parentheses).
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `dots-3-note-preview` (`dots-studio/...:free`) | Dots Studio | **512K** (512.000) | **512K** (512.000) | `minimal…xhigh`\* | ✅ |
-| `step-3.7-flash` (`stepfun/...:free`) | StepFun | **262K** (262.144) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
 | `nemotron-3-nano-omni` (`nvidia/...:free`) | NVIDIA | **256K** (256.000) | **131K** (131.072) | `minimal…xhigh`\* | ✅ |
 | `nemotron-3-ultra-550b` (`nvidia/...:free`) | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `minimal…xhigh`\* | ❌ |
 | `nvidia/nemotron-3.5-lightning:free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `minimal…xhigh`\* | ❌ |
@@ -228,7 +228,6 @@ Keyless access. Short aliases work for every row (the full ID is in parentheses)
 | `ling-3.0-flash-sante` (`inclusionai/ling-3.0-flash-sante:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
 | `nex-n2.5-pro` (`nex-agi/nex-n2.5-pro:free`) | Nex AGI | **262K** (262.144) | **235K** (235.929) | `minimal…xhigh`\* | ✅ |
 | `nex-n2.5-mini` (`nex-agi/nex-n2.5-mini:free`) | Nex AGI | **262K** (262.144) | **235K** (235.929) | `minimal…xhigh`\* | ✅ |
-| `ling-3.0-flash-vl` (`inclusionai/ling-3.0-flash-vl:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ✅ |
 | `inkling-small` (`thinkingmachines/inkling-small:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
 | `qwen3.8-27b` (`qwen/...:free`) | Alibaba Qwen | **262K** (262.144) | **235K** (235.929) | `minimal…xhigh`\* | ✅ |
 | `glm-5.2` (`z-ai/...:free`) | Zhipu AI | **32K** (32.768) | **29K** (29.491) | `minimal…xhigh`\* | ❌ |
@@ -344,7 +343,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
 src/
 ├── index.ts          # extension entry, lifecycle hooks
-├── models.ts         # 34-model catalog definitions
+├── models.ts         # 33-model catalog definitions
 ├── catalog.ts        # model catalog cache (24h disk)
 ├── proxy.ts          # local proxy server (127.0.0.1:28180)
 ├── relay.ts          # relay selection and round-robin

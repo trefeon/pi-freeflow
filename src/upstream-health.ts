@@ -27,7 +27,7 @@ export interface UpstreamHealthSnapshot {
 }
 
 export const GATE_ENTER_AFTER = 2;
-export const FALLBACK_KILO_MODEL = "stepfun/step-3.7-flash:free";
+export const FALLBACK_KILO_MODEL = "dots-studio/dots-3-note-preview:free";
 
 export type ZenRoute = "passthrough" | "failover" | "canary";
 

@@ -1,9 +1,9 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 34 verified free models:
- * - 8 OpenCode Zen models (2 Responses API + 6 Chat Completions)
- * - 21 KiloCode Keyless Gateway models (20 OpenRouter format + 1 Standard format)
+ * Defines the 33 verified free models:
+ * - 9 OpenCode Zen models (2 Responses API + 7 Chat Completions)
+ * - 19 KiloCode Keyless Gateway models (18 OpenRouter format + 1 Standard format)
  * - 5 Cline direct-only models (per-user pool)
  */
 
@@ -152,6 +152,23 @@ export const OPENCODE_MODELS: ModelDef[] = [
    max: null,
   },
  },
+ {
+  id: "space-bunny-free",
+  name: "Space Bunny Free (1M) [OpenCode]",
+  reasoning: true,
+  contextWindow: 1_048_576,
+  maxTokens: 524_288,
+  input: ["text", "image"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: null,
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: "max",
+  },
+ },
 ];
 
 /**
@@ -181,16 +198,6 @@ export const KILO_MODELS: ModelDef[] = [
   reasoning: true,
   contextWindow: 512_000,
   maxTokens: 512_000,
-  input: ["text", "image"],
-  thinkingFormat: "openrouter",
-  thinkingLevelMap: KILO_REASONING_MAP,
- },
- {
-  id: "stepfun/step-3.7-flash:free",
-  name: "Step 3.7 Flash [Kilo]",
-  reasoning: true,
-  contextWindow: 262_144,
-  maxTokens: 262_144,
   input: ["text", "image"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
@@ -354,16 +361,6 @@ export const KILO_MODELS: ModelDef[] = [
   thinkingLevelMap: KILO_REASONING_MAP,
  },
  {
-  id: "inclusionai/ling-3.0-flash-vl:free",
-  name: "Ling 3.0 Flash VL [Kilo]",
-  reasoning: true,
-  contextWindow: 262_144,
-  maxTokens: 32_768,
-  input: ["text", "image"],
-  thinkingFormat: "openrouter",
-  thinkingLevelMap: KILO_REASONING_MAP,
- },
- {
   id: "qwen/qwen3.8-27b:free",
   name: "Qwen 3.8 27B [Kilo]",
   reasoning: true,
@@ -492,7 +489,6 @@ export const CLINE_MODELS: ModelDef[] = [
  */
 export const MODEL_ALIASES: Record<string, string> = {
  "dots-3-note-preview": "dots-studio/dots-3-note-preview:free",
- "step-3.7-flash": "stepfun/step-3.7-flash:free",
  "nemotron-3-nano-omni": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
  "nemotron-3-ultra-550b": "nvidia/nemotron-3-ultra-550b-a55b:free",
  "nemotron-3.5-lightning": "nvidia/nemotron-3.5-lightning:free",
@@ -502,11 +498,11 @@ export const MODEL_ALIASES: Record<string, string> = {
  "content-safety": "nvidia/nemotron-3.5-content-safety:free",
  "ling-3.0-flash-fin": "inclusionai/ling-3.0-flash-fin:free",
  "ling-3.0-flash-sante": "inclusionai/ling-3.0-flash-sante:free",
- "ling-3.0-flash-vl": "inclusionai/ling-3.0-flash-vl:free",
  "nex-n2.5-pro": "nex-agi/nex-n2.5-pro:free",
  "nex-n2.5-mini": "nex-agi/nex-n2.5-mini:free",
  "inkling-small": "thinkingmachines/inkling-small:free",
  "mimo-v2.6-flash": "mimo-v2.6-flash-free",
+ "space-bunny": "space-bunny-free",
  "qwen3.8-27b": "qwen/qwen3.8-27b:free",
  "glm-5.2": "z-ai/glm-5.2:free",
  // provider-prefixed short aliases (slash-normalized)
@@ -544,7 +540,7 @@ export const CLINE_MODEL_IDS = new Set<string>([
 ]);
 
 /**
- * Combined list of all 34 static free models (canonical)
+ * Combined list of all 33 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS];
 

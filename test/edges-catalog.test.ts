@@ -59,10 +59,10 @@ test("enrichModelDef with missing context_length falls back to sane defaults", (
 
 test("enrichModelDef kilocode source keeps :free suffix id and tags thinkingFormat", () => {
  const known = enrichModelDef(
-  { id: "stepfun/step-3.7-flash:free" },
+  { id: "dots-studio/dots-3-note-preview:free" },
   "kilo",
  );
- assert.equal(known.id, "stepfun/step-3.7-flash:free");
+ assert.equal(known.id, "dots-studio/dots-3-note-preview:free");
  assert.equal(known.source, "kilo");
  assert.equal(known.thinkingFormat, "openrouter");
  // Unknown kilo model with :free suffix — display name must not leak the suffix

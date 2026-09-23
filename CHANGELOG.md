@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.25.0
+
+### Minor Changes
+
+- New free model available: Space Bunny Free on OpenCode Zen (1M context, large output window, answers with vision) — pick it with the short name `space-bunny`. Two models left the picker because they are gone from the KiloCode Gateway free list: Step 3.7 Flash (only the paid version remains) and Ling 3.0 Flash VL (only the paid version remains).
+
 ## 1.24.0
 
 ### Minor Changes

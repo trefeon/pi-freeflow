@@ -55,10 +55,11 @@ test("1M context window models are properly configured", () => {
   "muse-spark-1.3-contributor-free",
   "cline-free/muse-spark-1.3-contributor",
   "cline-free/deepseek-v4.1-flash",
- "cline-free/kimi-k3",
+  "cline-free/kimi-k3",
   "z-ai/glm-5.3-flash",
   "mimo-v2.5-free",
   "mimo-v2.6-flash-free",
+  "space-bunny-free",
   "nemotron-3.5-lightning-free",
   "nemotron-3-ultra-free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
@@ -83,8 +84,8 @@ test("1M context window models are properly configured", () => {
 });
 
 test("KiloCode upstream router distinguishes Kilo vs OpenCode", () => {
- assert.equal(isKiloModel("stepfun/step-3.7-flash:free"), true);
- assert.equal(getModelUpstream("stepfun/step-3.7-flash:free"), "kilo");
+ assert.equal(isKiloModel("dots-studio/dots-3-note-preview:free"), true);
+ assert.equal(getModelUpstream("dots-studio/dots-3-note-preview:free"), "kilo");
 
  assert.equal(isKiloModel("mimo-v2.5-free"), false);
  assert.equal(getModelUpstream("mimo-v2.5-free"), "opencode");
@@ -126,23 +127,21 @@ test("2026-09-22 additions route to the correct upstream with verified metadata"
 
 test("model aliases resolve correctly to canonical IDs", () => {
  // clean slash-free aliases (single form, no :free duplicates)
- assert.equal(resolveCanonicalModelId("step-3.7-flash"), "stepfun/step-3.7-flash:free");
  assert.equal(resolveCanonicalModelId("dots-3-note-preview"), "dots-studio/dots-3-note-preview:free");
  assert.equal(resolveCanonicalModelId("north-mini-code"), "cohere/north-mini-code:free");
  assert.equal(resolveCanonicalModelId("nemotron-3.5-lightning"), "nvidia/nemotron-3.5-lightning:free");
  assert.equal(resolveCanonicalModelId("nemotron-3.5-lightning:free"), "nemotron-3.5-lightning:free");
+ assert.equal(resolveCanonicalModelId("space-bunny"), "space-bunny-free");
  // removed wrong cross-lab aliases must no longer resolve
  assert.equal(resolveCanonicalModelId("claude-sonnet-4.5-contributor-free"), "claude-sonnet-4.5-contributor-free");
  assert.equal(resolveCanonicalModelId("minimax-m2.1-free"), "minimax-m2.1-free");
  assert.equal(resolveCanonicalModelId("qwen3-coder-480b-free"), "qwen3-coder-480b-free");
  // removed :free duplicate aliases must not be needed (canonical passthrough)
- assert.equal(resolveCanonicalModelId("dots-3-note-preview:free"), "dots-3-note-preview:free");
- assert.equal(resolveCanonicalModelId("step-3.7-flash:free"), "step-3.7-flash:free");
 
- const stepAlias = getModelDef("step-3.7-flash");
- assert.ok(stepAlias);
- assert.equal(isKiloModel("step-3.7-flash"), true);
- assert.equal(getModelUpstream("step-3.7-flash"), "kilo");
+ const dotsAlias = getModelDef("dots-3-note-preview");
+ assert.ok(dotsAlias);
+ assert.equal(isKiloModel("dots-3-note-preview"), true);
+ assert.equal(getModelUpstream("dots-3-note-preview"), "kilo");
 
  const allRegistered = getAllRegisteredModels();
  assert.equal(allRegistered.length, ALL_MODELS.length);
@@ -185,13 +184,14 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "mimo-v2.5-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // Added 2026-09-22 (live: Zen /v1/models + keyless chat 200 on mimo-v2.6-flash-free)
   "mimo-v2.6-flash-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
+  // Added 2026-09-23 (live: Zen listing + keyless chat 200; models.dev 1M ctx / 512K out)
+  "space-bunny-free": { ctx: 1_048_576, max: 524_288, reasoning: true },
   "nemotron-3-ultra-free": { ctx: 1_000_000, max: 128_000, reasoning: true },
   "nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 262_144, reasoning: true },
   "big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
   "ling-3.0-flash-fin-free": { ctx: 262_144, max: 131_072, reasoning: true },
   // KiloCode Gateway
   "dots-studio/dots-3-note-preview:free": { ctx: 512_000, max: 512_000, reasoning: true },
-  "stepfun/step-3.7-flash:free": { ctx: 262_144, max: 262_144, reasoning: true },
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": { ctx: 256_000, max: 131_072, reasoning: true },
   "nvidia/nemotron-3-ultra-550b-a55b:free": { ctx: 1_000_000, max: 128_000, reasoning: true },
   "nvidia/nemotron-3.5-lightning:free": { ctx: 1_000_000, max: 262_144, reasoning: true },
@@ -210,7 +210,6 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   // Added 2026-09-12 (live-verified: gateway /api/gateway/models + 1-token probe 200)
   "nex-agi/nex-n2.5-pro:free": { ctx: 262_144, max: 235_929, reasoning: true },
   "nex-agi/nex-n2.5-mini:free": { ctx: 262_144, max: 235_929, reasoning: true },
-  "inclusionai/ling-3.0-flash-vl:free": { ctx: 262_144, max: 32_768, reasoning: true },
   // Added 2026-09-22 (live: Kilo /api/gateway/models context_length/max_completion_tokens)
   "qwen/qwen3.8-27b:free": { ctx: 262_144, max: 235_929, reasoning: true },
   "z-ai/glm-5.2:free": { ctx: 32_768, max: 29_491, reasoning: true },
@@ -218,8 +217,8 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "cline-free/deepseek-v4.1-flash": { ctx: 1_000_000, max: 384_000, reasoning: true },
   "cline-free/muse-spark-1.3-contributor": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "z-ai/glm-5.3-flash": { ctx: 1_000_000, max: 131_072, reasoning: true },
- // Added 2026-09-22 (live: desktop-identity free list + chat probe)
- "cline-free/kimi-k3": { ctx: 1_048_576, max: 131_072, reasoning: true },
+  // Added 2026-09-22 (live: desktop-identity free list + chat probe)
+  "cline-free/kimi-k3": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "cline-free/solar-pro4": { ctx: 524_288, max: 131_072, reasoning: true },
  };
  for (const [id, { ctx, max, reasoning }] of Object.entries(locked)) {
@@ -236,7 +235,6 @@ test("new alias map resolves to canonical kilo ids", () => {
  assert.equal(resolveCanonicalModelId("ling-3.0-flash-fin"), "inclusionai/ling-3.0-flash-fin:free");
  assert.equal(resolveCanonicalModelId("inkling-small"), "thinkingmachines/inkling-small:free");
  assert.equal(resolveCanonicalModelId("ling-3.0-flash-sante"), "inclusionai/ling-3.0-flash-sante:free");
- assert.equal(resolveCanonicalModelId("ling-3.0-flash-vl"), "inclusionai/ling-3.0-flash-vl:free");
  assert.equal(resolveCanonicalModelId("nex-n2.5-pro"), "nex-agi/nex-n2.5-pro:free");
  assert.equal(resolveCanonicalModelId("nex-n2.5-mini"), "nex-agi/nex-n2.5-mini:free");
  assert.equal(resolveCanonicalModelId("mimo-v2.6-flash"), "mimo-v2.6-flash-free");

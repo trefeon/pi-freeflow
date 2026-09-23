@@ -38,12 +38,29 @@ the free-model picker.
 - Verdict: out of scope. OpenRouter-key models are not part of this
   keyless picker.
 
+## Graduated to the picker
+
+- Space Bunny (`space-bunny-free`, OpenCode Zen free list, 2026-09-23):
+  stealth preview with the lab undisclosed, but live on the free list and
+  answering keyless probes (1M context, vision + tool calls). In the
+  picker as `space-bunny`.
+
 ## Decision
 
 Add nothing now. A stealth ID enters the picker only when it is live on
 the OpenCode Zen or KiloCode Gateway free list and answers a live inference
 probe. Re-check any new `stealth/*` or `omen` ID against both free lists
 before treating a client-side listing as an endpoint.
+
+## Expiry watch
+
+Free slots with a printed expiry leave the picker when the window closes:
+
+- `dots-3-note-preview` (KiloCode Gateway free list) — expiry extended to
+  2026-12-31. Still in the picker; re-check as the date approaches.
+- `nex-n2.5-pro` and `nex-n2.5-mini` (KiloCode Gateway free list) — expire
+  2026-09-25. If either drops off the free list it leaves the picker with
+  it; the paid versions under the same names don't count.
 
 ## Sources
 

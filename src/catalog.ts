@@ -32,6 +32,8 @@ import type {
  * Pruned model IDs that must never re-enter the catalog via disk cache or upstream merge.
  * - jev-1.13-free: non-chat decision model, chat-incompatible — never registered.
  * - deepseek-v4-flash-free: listed but currently unserved upstream — stays out until it answers.
+ * - stepfun/step-3.7-flash:free: gone from the live Kilo free list — only the paid counterpart remains.
+ * - inclusionai/ling-3.0-flash-vl:free: gone from the live Kilo free list — only the paid counterpart remains.
  */
 export const DEAD_MODEL_IDS = new Set<string>([
  "jev-1.13-free",
@@ -45,6 +47,8 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "minimax/minimax-m3:free",
  "thinkingmachines/inkling:free",
  "union-alpha",
+ "stepfun/step-3.7-flash:free",
+ "inclusionai/ling-3.0-flash-vl:free",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.
@@ -84,7 +88,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 34 verified models for 0ms instant availability.
+ * Initialized with all 33 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
  ...m,
