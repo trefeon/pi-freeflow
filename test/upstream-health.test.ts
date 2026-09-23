@@ -338,3 +338,16 @@ test("keyless chat replays fingerprint by content; non-gates never prime", () =>
   );
  });
 });
+
+test("403 gate hint is visible inside error.message", () => {
+ withIsolatedHealthFiles(() => {
+  const hinted = JSON.parse(withFreeTierHint(403, GATE_BODY)) as {
+   hint: string;
+   error: { code: string; message: string };
+  };
+  assert.equal(hinted.error.code, "FreeTierError");
+  assert.ok(hinted.error.message.includes("only be used from within OpenCode"), "upstream text survives");
+  assert.ok(hinted.error.message.includes("fallback model"), "guidance is host-visible");
+  assert.ok(hinted.hint.length > 0, "hint sibling kept for compat");
+ });
+});

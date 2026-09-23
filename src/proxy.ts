@@ -77,6 +77,7 @@ import {
  sessionKeyOf,
  wasGateRejected,
  withFreeTierHint,
+ attachHintForDisplay,
 } from "./upstream-health.ts";
 
 
@@ -114,7 +115,7 @@ function withRateLimitHint(status: number, data: string): string {
  try {
   const parsed: unknown = JSON.parse(data);
   if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && shouldShow429Hint()) {
-   return JSON.stringify({ ...(parsed as Record<string, unknown>), hint: RATE_LIMIT_HINT });
+   return JSON.stringify(attachHintForDisplay(parsed as Record<string, unknown>, RATE_LIMIT_HINT));
   }
  } catch { }
  return data;
@@ -180,7 +181,9 @@ export function mapClineError(status: number, data: string, limit?: ClineLimitHi
  try {
   const parsed: unknown = JSON.parse(data);
   if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-   return JSON.stringify({ ...(parsed as Record<string, unknown>), hint });
+   // Hosts render error.message and ignore the sibling hint field, so the
+   // guidance must live in the visible message too (hint kept for compat).
+   return JSON.stringify(attachHintForDisplay(parsed as Record<string, unknown>, hint));
   }
  } catch { }
  return data;
@@ -241,7 +244,9 @@ async function handleClineRequest(opts: {
  try {
   const result = await rollChat({ body: JSON.stringify(chatBody), chatUrl: CLINE_CHAT_URL, refreshImpl: clineRefreshImpl, fetchImpl: fetchWithSystemCA });
   upstreamRes = result.res;
-  if (typeof result.slot === "string" && result.slot.length > 0) {
+  // The roll returns the last upstream failure when the pool is exhausted,
+  // so "served by" must only log on an actual success.
+  if (upstreamRes.ok && typeof result.slot === "string" && result.slot.length > 0) {
    log("debug", `cline served by slot ${result.slot}`, { model }, reqId);
   }
   // Every saved login answered the daily free cap: name that instead of

@@ -43,3 +43,20 @@ test("mapClineError: other statuses keep their own hint", () => {
 test("mapClineError: a non-JSON body passes through untouched", () => {
 	assert.equal(mapClineError(429, "not json", { logins: 3, resetAt: null }), "not json");
 });
+
+test("mapClineError: guidance is visible in error.message, not only the hint sibling", () => {
+	const resetAt = Date.now() + (20 * 60 + 4) * 60_000;
+	const out = JSON.parse(mapClineError(429, LIVE_LIMIT_BODY, { logins: 3, resetAt })) as {
+		hint: string;
+		error: { code: string; message: string };
+	};
+	assert.ok(out.error.message.includes("Daily free limit reached"), "upstream text survives");
+	assert.ok(out.error.message.includes("used up on all 3 saved logins"), "guidance is host-visible");
+	assert.ok(out.error.message.includes("Switch models"), "next step is host-visible");
+
+	const single = JSON.parse(mapClineError(429, LIVE_LIMIT_BODY)) as {
+		hint: string;
+		error: { message: string };
+	};
+	assert.ok(single.error.message.includes("for this login"), single.error.message);
+});

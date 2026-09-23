@@ -49,13 +49,31 @@ const GATE_CLEAR_MESSAGE =
 /** Established session keys live a day; the table is capped and pruned on save. */
 const SESSION_TTL_MS = 24 * 60 * 60 * 1_000;
 const MAX_SESSION_KEYS = 1_000;
+/**
+ * Attach a hint so hosts that render only `error.message` still show it.
+ * String-shaped errors keep their contract untouched (hint sibling only);
+ * object errors gain the guidance inside `message` (hint kept for compat).
+ */
+export function attachHintForDisplay(body: Record<string, unknown>, hint: string): Record<string, unknown> {
+ const err = body.error;
+ if (err && typeof err === "object" && !Array.isArray(err)) {
+  const msg = (err as Record<string, unknown>).message;
+  if (typeof msg === "string" && !msg.includes(hint)) {
+   // Upstream text often ends without punctuation ("...in 9h 20m"), so join
+   // with a sentence break instead of gluing two sentences together.
+   const text = msg.trimEnd();
+   const sep = /[.!?]$/.test(text) ? " " : ". ";
+   return { ...body, error: { ...(err as Record<string, unknown>), message: `${text}${sep}${hint}` }, hint };
+  }
+ }
+ return { ...body, hint };
+}
 /** Non-transition saves are throttled; gate flips and canaries always persist. */
 const SAVE_THROTTLE_MS = 1_000;
 /** While gated, at most one unproven canary per window probes for recovery. */
 const CANARY_INTERVAL_MS = 5 * 60 * 1_000;
 /** Gate flip notifications are throttled per direction. */
 const GATE_NOTIFY_THROTTLE_MS = 60_000;
-/** Fast-fail hint notifications have their own slower throttle. */
 const HINT_NOTIFY_THROTTLE_MS = 10 * 60 * 1_000;
 
 interface GateState {
@@ -445,10 +463,7 @@ export function withFreeTierHint(status: number, data: string): string {
  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
   return data;
  }
- const json = JSON.stringify({
-  ...(parsed as Record<string, unknown>),
-  hint: FREE_TIER_HINT,
- });
+ const json = JSON.stringify(attachHintForDisplay(parsed as Record<string, unknown>, FREE_TIER_HINT));
  try {
   const ui = getStatusUi();
   const now = Date.now();

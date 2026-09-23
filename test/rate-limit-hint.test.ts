@@ -207,3 +207,41 @@ test("Rate-Limit Hint hint text appears exactly once in proxy source", () => {
 	const occurrences = PROXY_SRC.split(HINT_TEXT).length - 1;
 	assert.equal(occurrences, 1, "hint must be emitted from exactly one code path");
 });
+
+test("429 hint: object-shaped error gains guidance inside message", async (t) => {
+	await withIsolatedRelayFiles(async () => {
+		const priorState = getActiveRelayState();
+		setActiveRelayState({ enabled: true, url: "", relays: [] }, false);
+		resetAllRelayHealth();
+		_reset429HintForTest();
+
+		const { server, port } = await startProxy(TEST_PORT);
+		const effectivePort = port ?? TEST_PORT;
+		const localPrefix = `http://127.0.0.1:${effectivePort}`;
+		const realFetch = globalThis.fetch.bind(globalThis);
+
+		try {
+			t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+				const u = String(url);
+				if (u.startsWith(localPrefix)) return realFetch(u, init);
+				return stubResponse(429, JSON.stringify({ error: { code: "Overloaded", message: "Upstream busy" } }));
+			});
+
+			const res = await fetch(`${localPrefix}/v1/chat/completions`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ model: MODEL, stream: false }),
+			});
+			assert.equal(res.status, 429);
+			const body = (await res.json()) as { hint: string; error: { code: string; message: string } };
+			assert.equal(body.error.code, "Overloaded");
+			assert.ok(body.error.message.includes("Upstream busy"), "upstream text survives");
+			assert.ok(body.error.message.includes("free-tier IP quota"), "guidance is host-visible");
+		} finally {
+			_reset429HintForTest();
+			resetAllRelayHealth();
+			setActiveRelayState(priorState, false);
+			if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
+	});
+});
