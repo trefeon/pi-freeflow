@@ -1,10 +1,15 @@
 # Changelog
 
-## 1.25.0
+## 1.26.0
 
 ### Minor Changes
 
+- Three newly available free models: MiMo V2.6 Flash on OpenCode Zen (1M context, answers with vision), plus Qwen 3.8 27B (vision) and GLM 5.2 on the KiloCode Gateway — pick them with the short names `mimo-v2.6-flash`, `qwen3.8-27b`, and `glm-5.2`.
 - New free model available: Space Bunny Free on OpenCode Zen (1M context, large output window, answers with vision) — pick it with the short name `space-bunny`. Two models left the picker because they are gone from the KiloCode Gateway free list: Step 3.7 Flash (only the paid version remains) and Ling 3.0 Flash VL (only the paid version remains).
+
+### Patch Changes
+
+- When Cline's daily free limit is used up on every saved login, the error message now says so directly — how many saved logins ran out, when the nearest one resets, and that switching models or adding another login helps. Previously that guidance sat in a field most clients never display, so you only saw Cline's own terse wording.
 
 ## 1.24.0
 
