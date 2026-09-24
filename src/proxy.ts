@@ -58,11 +58,17 @@ import {
  issuerRelayFor,
  prepareResponsesFailoverBody,
  rejectedReasoningCount,
+ rejectedReasoningIdsCount,
  rememberIssuerRelay,
  rememberRejectedReasoning,
+ rememberRejectedReasoningIds,
  responsesConversationKey,
+ stripPreviousResponseId,
  stripRejectedReasoning,
+ stripRejectedReasoningIds,
  stripReasoningEncryption,
+ stripUnresolvableReasoning,
+ isExpiredReasoningReference,
  isReasoningCallerMismatch,
 } from "./responses.ts";
 import { pipeUpstreamStream } from "./stream-pipe.ts";
@@ -730,7 +736,7 @@ function upstreamTimeoutError(): Error & { code: string } {
 }
 
 /**
- * Recover from upstream rejecting a replayed reasoning blob as foreign.
+ * Recover from upstream rejecting a replayed reasoning history.
  *
  * Upstream binds each reasoning `encrypted_content` blob to the service
  * instance that issued it. When the conversation is later served by a different
@@ -740,13 +746,16 @@ function upstreamTimeoutError(): Error & { code: string } {
  * second apart, the direct path returned the same 400, and a 45s burst hit ten
  * conversations.
  *
- * The rejected blob cannot be identified from the response, so this drops every
- * blob, retries once, and then remembers the hashes of the blobs that were in
- * the failing body: later turns drop only those and keep whatever the current
- * instance issued, so the conversation keeps its recent reasoning.
+ * Reasoning references also age out server-side (observed around 9.5h): the
+ * retry after a blob strip can come back as `referenced reasoning item
+ * 'rs_...' was not found or has expired`. That poisoned history cannot be
+ * resolved by any backend, so the chained second step drops every reasoning
+ * item plus `previous_response_id` and retries the same relay again — one
+ * turn of reasoning context is lost instead of the whole session.
  *
- * The 400 body is inspected through a clone: a successful streaming response
- * (the normal path) is never consumed here.
+ * Both 400s are request-scoped: the relay served correctly and is never
+ * marked failed for them. The 400 body is inspected through a clone: a
+ * successful streaming response (the normal path) is never consumed here.
  */
 async function retryWithoutReasoningEncryption(
  response: Response,
@@ -765,36 +774,81 @@ async function retryWithoutReasoningEncryption(
  } catch {
   return response;
  }
- if (!isReasoningCallerMismatch(errorText)) return response;
+ const callerMismatch = isReasoningCallerMismatch(errorText);
+ const expiredDirect = isExpiredReasoningReference(errorText);
+ if (!callerMismatch && !expiredDirect) return response;
 
- const portable = stripReasoningEncryption(sentBody);
- if (!portable) {
-  log(
-   "warn",
-   "upstream rejected caller-bound reasoning but the request carries no encrypted_content to strip",
-   { status: 400 },
-   reqId,
-  );
-  return response;
+ let current = response;
+ let currentBody = sentBody;
+ let currentErrorText = errorText;
+
+ if (callerMismatch) {
+  const portable = stripReasoningEncryption(sentBody);
+  if (!portable) {
+   log(
+    "warn",
+    "upstream rejected caller-bound reasoning but the request carries no encrypted_content to strip",
+    { status: 400 },
+    reqId,
+   );
+   if (!expiredDirect) return response;
+  } else {
+   log(
+    "warn",
+    "upstream rejected caller-bound reasoning (blobs issued by another instance); retrying with encrypted_content stripped",
+    { status: 400, tracked: conversationKey !== null },
+    reqId,
+   );
+   const retried = await resend(portable);
+   if (conversationKey) {
+    const remembered = rememberRejectedReasoning(sentBody, conversationKey);
+    log(
+     "info",
+     `conversation will drop ${remembered} rejected reasoning blob(s) on later turns`,
+     undefined,
+     reqId,
+    );
+   }
+   if (retried.status !== 400) return retried;
+   if ((retried.headers.get("content-type") ?? "").includes("text/event-stream")) return retried;
+   let retryText: string;
+   try {
+    retryText = await retried.clone().text();
+   } catch {
+    return retried;
+   }
+   if (!isExpiredReasoningReference(retryText)) return retried;
+   current = retried;
+   currentBody = portable;
+   currentErrorText = retryText;
+  }
  }
 
+ if (!isExpiredReasoningReference(currentErrorText)) return current;
+ const unresolvable = stripUnresolvableReasoning(currentBody);
+ if (!unresolvable) {
+  if (conversationKey) {
+   const remembered = rememberRejectedReasoningIds(currentErrorText, conversationKey);
+   log(
+    "warn",
+    `upstream rejected expired reasoning reference (${remembered} id(s)); nothing strippable left in the request`,
+    { status: 400, tracked: true },
+    reqId,
+   );
+  }
+  return current;
+ }
+ let rememberedIds = 0;
+ if (conversationKey) {
+  rememberedIds = rememberRejectedReasoningIds(currentErrorText, conversationKey);
+ }
  log(
   "warn",
-  "upstream rejected caller-bound reasoning (blobs issued by another instance); retrying with encrypted_content stripped",
+  `upstream rejected expired reasoning reference (${rememberedIds} id(s)); retrying without reasoning history`,
   { status: 400, tracked: conversationKey !== null },
   reqId,
  );
- const retried = await resend(portable);
- if (retried.ok && conversationKey) {
-  const remembered = rememberRejectedReasoning(sentBody, conversationKey);
-  log(
-   "info",
-   `conversation will drop ${remembered} rejected reasoning blob(s) on later turns`,
-   undefined,
-   reqId,
-  );
- }
- return retried;
+ return await resend(unresolvable);
 }
 
 /**
@@ -1116,16 +1170,23 @@ export function startProxy(
         // cannot read this history, so send it portable instead of
         // letting upstream reject the whole request.
         const issuerChanged = issuer !== undefined && issuer !== servingRelay;
-        // Drop only the blobs upstream already rejected, so everything
-        // the current backend issued still flows verbatim.
-        const stripRejected = responsesRequest &&
-         conversationKey !== null &&
-         rejectedReasoningCount(conversationKey) > 0;
-        const bodyForUpstream = issuerChanged
-         ? (stripReasoningEncryption(requestBody) ?? requestBody)
-         : stripRejected
-          ? (stripRejectedReasoning(requestBody, conversationKey) ?? requestBody)
-          : requestBody;
+        // Portable history on hops, selective memory on every turn: dead-id
+        // stripping applies regardless of the hop guard, because a
+        // relay-to-relay or relay-to-direct hop also changes the backend
+        // that must resolve the ids.
+        let bodyForUpstream: Buffer = requestBody;
+        if (responsesRequest && conversationKey !== null) {
+         if (issuerChanged) {
+          bodyForUpstream = stripReasoningEncryption(bodyForUpstream) ?? bodyForUpstream;
+          bodyForUpstream = stripPreviousResponseId(bodyForUpstream) ?? bodyForUpstream;
+         }
+         if (rejectedReasoningCount(conversationKey) > 0) {
+          bodyForUpstream = stripRejectedReasoning(bodyForUpstream, conversationKey) ?? bodyForUpstream;
+         }
+         if (rejectedReasoningIdsCount(conversationKey) > 0) {
+          bodyForUpstream = stripRejectedReasoningIds(bodyForUpstream, conversationKey) ?? bodyForUpstream;
+         }
+        }
         if (issuerChanged && conversationKey !== null) {
          // These blobs belong to a backend this conversation is
          // leaving, so never replay them again.
@@ -1280,14 +1341,19 @@ export function startProxy(
       ? issuerRelayFor(directConversationKey)
       : undefined;
      const directIssuerChanged = directIssuer !== undefined && directIssuer !== null;
-     const directStripRejected = directResponsesRequest &&
-      directConversationKey !== null &&
-      rejectedReasoningCount(directConversationKey) > 0;
-     const directBodyForUpstream = directIssuerChanged
-      ? (stripReasoningEncryption(directBody) ?? directBody)
-      : directStripRejected
-       ? (stripRejectedReasoning(directBody, directConversationKey) ?? directBody)
-       : directBody;
+     let directBodyForUpstream: Buffer = directBody;
+     if (directResponsesRequest && directConversationKey !== null) {
+      if (directIssuerChanged) {
+       directBodyForUpstream = stripReasoningEncryption(directBodyForUpstream) ?? directBodyForUpstream;
+       directBodyForUpstream = stripPreviousResponseId(directBodyForUpstream) ?? directBodyForUpstream;
+      }
+      if (rejectedReasoningCount(directConversationKey) > 0) {
+       directBodyForUpstream = stripRejectedReasoning(directBodyForUpstream, directConversationKey) ?? directBodyForUpstream;
+      }
+      if (rejectedReasoningIdsCount(directConversationKey) > 0) {
+       directBodyForUpstream = stripRejectedReasoningIds(directBodyForUpstream, directConversationKey) ?? directBodyForUpstream;
+      }
+     }
      if (directIssuerChanged && directConversationKey !== null) {
       rememberRejectedReasoning(directBody, directConversationKey);
       log(

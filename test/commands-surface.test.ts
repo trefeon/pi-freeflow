@@ -7,9 +7,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { createCommandSpec } from "../src/commands.ts";
+import { createCommandSpec, validateDeployProjectName } from "../src/commands.ts";
 import { LOG_FILE, RELAY_STATE_FILE } from "../src/config.ts";
 import {
+ loadRelayState,
  markRelayFailure,
  markRelaySuccess,
  resetAllRelayHealth,
@@ -47,7 +48,6 @@ async function withSavedDiskState(fn: () => Promise<void> | void): Promise<void>
   restore(`${RELAY_STATE_FILE}.bak`, bakBefore);
  }
 }
-
 function createMockContext(opts: {
  inputValues?: Array<string | undefined>;
  selectValue?: string | null;
@@ -56,9 +56,11 @@ function createMockContext(opts: {
  ctx: ExtensionContext;
  notifications: Array<{ message: string; type?: string }>;
  statuses: Array<{ key: string; status?: string }>;
+ confirms: Array<{ title: string; message?: string }>;
 } {
  const notifications: Array<{ message: string; type?: string }> = [];
  const statuses: Array<{ key: string; status?: string }> = [];
+ const confirms: Array<{ title: string; message?: string }> = [];
  const inputValues = opts.inputValues ?? [];
  let inputIdx = 0;
 
@@ -79,6 +81,7 @@ function createMockContext(opts: {
    return Promise.resolve(v === null ? undefined : v);
   },
   confirm(_title: string, _message?: string) {
+   confirms.push({ title: _title, message: _message });
    return Promise.resolve(opts.confirmValue ?? true);
   },
  };
@@ -87,6 +90,7 @@ function createMockContext(opts: {
   ctx: { ui },
   notifications,
   statuses,
+  confirms,
  };
 }
 
@@ -503,5 +507,225 @@ test("command spec: /freeflow deploy confirm declined notifies Deploy cancelled"
    notifications.some((n) => n.message.includes("Deploy cancelled")),
    `expected Deploy cancelled notify, got: ${JSON.stringify(notifications)}`,
   );
+ });
+});
+
+// ── /freeflow deploy hardening: validation, dedupe, hygiene, atomicity ──
+
+test("deploy validator rejects unusable names and over-long platform names (pure)", () => {
+ assert.equal(validateDeployProjectName("!!!", "vercel").ok, false);
+ assert.equal(validateDeployProjectName("---", "deno").ok, false);
+ const good = validateDeployProjectName("My Cool Relay!", "vercel");
+ assert.equal(good.ok, true);
+ if (good.ok) assert.equal(good.name, "my-cool-relay");
+ assert.equal(validateDeployProjectName("a".repeat(40), "deno").ok, false);
+ assert.equal(validateDeployProjectName("a".repeat(32), "deno").ok, true);
+ assert.equal(validateDeployProjectName("a".repeat(60), "cloudflare").ok, false);
+ assert.equal(validateDeployProjectName("a".repeat(58), "cloudflare").ok, true);
+ assert.equal(validateDeployProjectName("relay-mfx123abc", "vercel").ok, true);
+});
+
+test("command spec: /freeflow deploy rejects a garbage project name before any network call", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  let fetchCalls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+   fetchCalls++;
+   return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  });
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({
+   selectValue: VERCEL_OPTION,
+   inputValues: ["fake-token-12345", "!!!"],
+   confirmValue: true,
+  });
+  await spec.handler("deploy", ctx);
+  assert.equal(fetchCalls, 0, "no network call may precede project-name validation");
+  assert.ok(notifications.some((n) => n.message.includes("Deploy cancelled")));
+  assert.ok(!notifications.some((n) => n.message.includes("Deployed & active")));
+ });
+});
+
+test("command spec: /freeflow deploy deno rejects an over-long name before any network call", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  let fetchCalls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+   fetchCalls++;
+   return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  });
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({
+   inputValues: ["fake-token-12345", "a".repeat(40)],
+   confirmValue: true,
+  });
+  await spec.handler("deploy deno", ctx);
+  assert.equal(fetchCalls, 0, "no network call may precede project-name validation");
+  assert.ok(notifications.some((n) => n.message.includes("Deploy cancelled")));
+ });
+});
+
+test("command spec: /freeflow deploy dedupes a re-deployed URL, keeps a custom label, refreshes the secret", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  const seedUrl = "https://relay-dedupe-case.vercel.app";
+  const seed: RelayState = { mode: "auto", enabled: true, url: seedUrl, relays: [{ url: seedUrl, label: "prod", auth: "old-secret" }] };
+  setActiveRelayState(seed, false);
+  fs.writeFileSync(RELAY_STATE_FILE, JSON.stringify(seed), "utf8");
+  t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
+   if (url.endsWith("/v1/models")) return { status: 200, body: {} };
+   if (url.includes("/v13/deployments/")) return { body: { readyState: "READY", url: "relay-dedupe-case.vercel.app/" } };
+   if (url.includes("/v13/deployments") && init?.method === "POST") return { body: { id: "dep1", projectId: "proj1" } };
+   if (url.includes("/v9/projects/")) return { body: {} };
+   return { status: 500, body: {} };
+  }));
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({
+   selectValue: VERCEL_OPTION,
+   inputValues: ["fake-token-12345", "second-run"],
+   confirmValue: true,
+  });
+  await spec.handler("deploy", ctx);
+  const onDisk = loadRelayState();
+  assert.equal(onDisk.relays.length, 1, "trailing-slash re-deploy must not duplicate the pool entry");
+  assert.equal(onDisk.relays[0].url, seedUrl);
+  assert.equal(onDisk.relays[0].label, "prod", "a user-chosen short name survives re-deploy");
+  const refreshedAuth = onDisk.relays[0].auth;
+  assert.ok(typeof refreshedAuth === "string" && refreshedAuth.length > 0 && refreshedAuth !== "old-secret", "re-deploy refreshes the relay secret");
+  assert.equal(onDisk.url, seedUrl);
+  assert.ok(notifications.some((n) => n.message.includes("Deployed & active")));
+ });
+});
+
+test("command spec: /freeflow deploy confirm shows only the last 4 of the API token and never persists it", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
+   if (url.endsWith("/v1/models")) return { status: 200, body: {} };
+   if (url.includes("/v13/deployments/")) return { body: { readyState: "READY", url: "relay-hygiene-case.vercel.app" } };
+   if (url.includes("/v13/deployments") && init?.method === "POST") return { body: { id: "dep1", projectId: "proj1" } };
+   if (url.includes("/v9/projects/")) return { body: {} };
+   return { status: 500, body: {} };
+  }));
+  const secret = "fake-token-SECRET-99";
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications, confirms } = createMockContext({
+   selectValue: VERCEL_OPTION,
+   inputValues: [secret, "my-relay"],
+   confirmValue: true,
+  });
+  await spec.handler("deploy", ctx);
+  assert.equal(confirms.length, 1);
+  assert.ok(!confirms[0].message?.includes(secret), "confirm must not echo the full token");
+  assert.ok(confirms[0].message?.includes(secret.slice(-4)), "confirm shows the last 4 for identification");
+  assert.ok(notifications.every((n) => !n.message.includes(secret)), "no notify may carry the token");
+  const diskRaw = fs.readFileSync(RELAY_STATE_FILE, "utf8");
+  assert.ok(!diskRaw.includes(secret), "the platform token must never reach the state file");
+ });
+});
+
+test("command spec: /freeflow deploy failure redacts the API token from the error", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  const secret = "fake-token-SECRET-99";
+  t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
+   if (url.includes("/v13/deployments") && init?.method === "POST") {
+    return { status: 400, body: { error: { message: `rejected key ${secret}: bad credentials` } } };
+   }
+   return { status: 500, body: {} };
+  }));
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({
+   selectValue: VERCEL_OPTION,
+   inputValues: [secret, "my-relay"],
+   confirmValue: true,
+  });
+  await spec.handler("deploy", ctx);
+  const failure = notifications.find((n) => n.message.startsWith("Deploy failed"));
+  assert.ok(failure, "deploy must report the failure");
+  assert.ok(!failure.message.includes(secret), "the token must be redacted from the error");
+  assert.ok(failure.message.includes("[redacted]"));
+ });
+});
+
+test("command spec: /freeflow deploy surfaces the live URL plus a manual add when the pool write fails", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  const liveUrl = "https://relay-pool-fail-case.vercel.app";
+  t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
+   if (url.endsWith("/v1/models")) return { status: 200, body: {} };
+   if (url.includes("/v13/deployments/")) return { body: { readyState: "READY", url: "relay-pool-fail-case.vercel.app" } };
+   if (url.includes("/v13/deployments") && init?.method === "POST") return { body: { id: "dep1", projectId: "proj1" } };
+   if (url.includes("/v9/projects/")) return { body: {} };
+   return { status: 500, body: {} };
+  }));
+  const origWrite = fs.writeFileSync;
+  let blockStateWrites = true;
+  t.mock.method(fs, "writeFileSync", (function(...args: unknown[]) {
+   const p = args[0];
+   if (blockStateWrites && typeof p === "string" && p.startsWith(RELAY_STATE_FILE)) throw new Error("mock EACCES");
+   return (origWrite as (...a: never[]) => unknown)(...(args as never[]));
+  }) as unknown as typeof fs.writeFileSync);
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({
+   selectValue: VERCEL_OPTION,
+   inputValues: ["fake-token-12345", "pool-fail"],
+   confirmValue: true,
+  });
+  await spec.handler("deploy", ctx);
+  blockStateWrites = false;
+  const surfaced = notifications.find((n) => n.type === "error" && n.message.includes(liveUrl));
+  assert.ok(surfaced, `pool-write failure must surface the live URL, got: ${JSON.stringify(notifications)}`);
+  assert.ok(surfaced.message.includes(`/freeflow add ${liveUrl}`), "must give the manual-add recovery command");
+  assert.ok(!notifications.some((n) => n.message.includes("Deployed & active")), "must not claim success when the pool write failed");
+ });
+});
+
+test("command spec: /freeflow deploy warns with exact retry/remove commands when the new relay is unreachable", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  const liveUrl = "https://relay-unreachable-case.vercel.app";
+  t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
+   if (url.endsWith("/v1/models")) return { status: 502, body: {} };
+   if (url.includes("/v13/deployments/")) return { body: { readyState: "READY", url: "relay-unreachable-case.vercel.app" } };
+   if (url.includes("/v13/deployments") && init?.method === "POST") return { body: { id: "dep1", projectId: "proj1" } };
+   if (url.includes("/v9/projects/")) return { body: {} };
+   return { status: 500, body: {} };
+  }));
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({
+   selectValue: VERCEL_OPTION,
+   inputValues: ["fake-token-12345", "unreachable-run"],
+   confirmValue: true,
+  });
+  await spec.handler("deploy", ctx);
+  const done = notifications.find((n) => n.message.includes("Deployed & active"));
+  assert.ok(done, `deploy must still activate, got: ${JSON.stringify(notifications)}`);
+  assert.ok(done.message.includes(`/freeflow test ${liveUrl}`), "must give the exact retry probe command");
+  assert.ok(done.message.includes(`/freeflow remove ${liveUrl}`), "must give the exact remove command");
+  assert.equal(loadRelayState().url, liveUrl, "unreachable deploy stays active-primary by explicit warn, never silent");
+ });
+});
+
+test("command spec: /freeflow remove refuses the active relay so the sticky primary is never stranded", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  const activeUrl = "https://relay-sticky-guard.vercel.app";
+  const seed: RelayState = { mode: "auto", enabled: true, url: activeUrl, relays: [{ url: activeUrl, label: "keep" }, { url: "https://relay-other-guard.vercel.app", label: "other" }] };
+  setActiveRelayState(seed, false);
+  fs.writeFileSync(RELAY_STATE_FILE, JSON.stringify(seed), "utf8");
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({});
+  await spec.handler(`remove ${activeUrl}`, ctx);
+  assert.ok(notifications.some((n) => n.message.toLowerCase().includes("cannot remove") || n.message.toLowerCase().includes("active")));
+  const onDisk = loadRelayState();
+  assert.equal(onDisk.relays.length, 2, "blocked remove must not mutate the pool");
+  assert.equal(onDisk.url, activeUrl, "the sticky primary must survive a remove attempt");
  });
 });

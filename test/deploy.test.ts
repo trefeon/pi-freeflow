@@ -123,7 +123,7 @@ test("deployCloudflareWorker uploads module worker and returns workers.dev URL",
 	const deployed = await deployCloudflareWorker(TOKEN, "My Relay", (m) => progress.push(m));
 
 	assert.equal(deployed.url, "https://my-relay.mysub.workers.dev");
-	assert.equal(deployed.auth, "", "relay is public by default for easy migration");
+	assert.match(deployed.auth, /^[0-9a-f]{64}$/, "relay mints a private 256-bit secret by default");
 
 	// Multipart upload carries metadata + main module part
 	const upload = calls.find((c) => c.init?.method === "PUT");
@@ -214,7 +214,7 @@ test("deployDenoRelay creates app, pushes script, polls revision, resolves route
 	const deployed = await deployDenoRelay(TOKEN, "My App", (m) => progress.push(m));
 
 	assert.equal(deployed.url, "https://my-app.my-org.deno.net");
-	assert.equal(deployed.auth, "", "deno relay auth is public by default");
+	assert.match(deployed.auth, /^[0-9a-f]{64}$/, "deno relay mints a private 256-bit secret by default");
 
 	// App creation requests a dynamic runtime with main.ts entrypoint
 	const createCall = calls.find((c) => c.url.endsWith("/v2/apps") && c.init?.method === "POST");
@@ -249,7 +249,7 @@ test("deployDenoRelay falls back to managed *.deno.net domain when timelines are
 
 	const deployed = await deployDenoRelay("ddo-tok", "my-app");
 	assert.equal(deployed.url, "https://my-app.my-org.deno.net");
-	assert.equal(deployed.auth, "", "deno relay auth is public by default");
+	assert.match(deployed.auth, /^[0-9a-f]{64}$/, "deno relay mints a private 256-bit secret by default");
 });
 
 test("deployDenoRelay throws actionable auth error on 401 before creating anything", async (t) => {
@@ -382,4 +382,178 @@ test("deployVercelRelay survives a transient status-poll network failure", async
 	const deployed = await deployVercelRelay("vercel-tok", "relay-name");
 	assert.equal(deployed.url, "https://relay-test.vercel.app");
 	assert.ok(calls.length >= 4); // create + sso patch + failed poll + successful poll
+});
+test("deploys mint a unique private secret by default and honor an explicit one", async (t) => {
+	instantTimers(t);
+
+	const calls = stubFetch(t, (url, init) => {
+
+		if (url.includes("/v13/deployments/")) return { body: { readyState: "READY", url: "relay-test.vercel.app" } };
+
+		if (url.includes("/v13/deployments") && init?.method === "POST") return { body: { id: "dep1", projectId: "proj1" } };
+
+		if (url.includes("/v9/projects/")) return { body: {} };
+
+		return { status: 500, body: {} };
+
+	});
+
+	const first = await deployVercelRelay("vercel-tok", "relay-a");
+
+	const second = await deployVercelRelay("vercel-tok", "relay-b");
+
+	for (const d of [first, second]) assert.match(d.auth, /^[0-9a-f]{64}$/, "default secret is 256-bit hex");
+
+	assert.notEqual(first.auth, second.auth, "each deployment mints its own secret");
+
+	const explicit = await deployVercelRelay("vercel-tok", "relay-c", undefined, "caller-chosen-secret");
+
+	assert.equal(explicit.auth, "caller-chosen-secret", "explicit authSecret passes through");
+
+	const uploads = calls.filter((c) => c.init?.method === "POST" && c.url.includes("/v13/deployments"));
+
+	const bodies = await Promise.all(uploads.map(async (c) => String(c.init!.body)));
+
+	assert.ok(bodies.some((b) => b.includes(`const RELAY_AUTH = \\\"${first.auth}\\\";`)), "first upload embeds the first secret");
+
+	assert.ok(bodies.some((b) => b.includes('const RELAY_AUTH = \\"caller-chosen-secret\\";')), "explicit upload embeds the caller secret");
+
+});
+
+test("numeric-IP target spellings are rejected as private/loopback, not merely off-allowlist", async () => {
+	const loadHandler = (src: string) => {
+
+		const end = ["\nexport const config", "\nexport default", "\nDeno.serve"].map((m) => src.indexOf(m)).find((i) => i !== -1)!;
+
+		return new Function(`${src.slice(0, end)}; return relayHandler;`)() as (req: { method: string; headers: Headers; body: null }) => Promise<Response>;
+
+	};
+
+	const builders = [buildVercelRelayWorker(""), buildCloudflareRelayWorker(""), buildDenoRelayScript("")];
+
+	const realFetch = globalThis.fetch;
+
+	globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+
+	try {
+
+		for (const src of builders) {
+
+			const relayHandler = loadHandler(src);
+
+			for (const target of ["https://2130706433/", "https://0x7f.0.0.1/", "https://0177.0.0.1/", "https://127.1/", "https://0/"]) {
+
+				const res = await relayHandler({ method: "GET", headers: new Headers({ "x-relay-target": target, "x-relay-path": "/" }), body: null });
+
+				assert.equal(res.status, 403, `	${target} must not pass`);
+
+				assert.match(await res.text(), /private\/loopback host/, `	${target} must hit the SSRF guard`);
+
+			}
+
+			const offList = await relayHandler({ method: "GET", headers: new Headers({ "x-relay-target": "https://8.8.8.8/", "x-relay-path": "/" }), body: null });
+
+			assert.equal(offList.status, 403);
+
+			assert.match(await offList.text(), /Forbidden target/, "public off-allowlist IP still hits the allowlist");
+
+		}
+
+	} finally {
+
+		globalThis.fetch = realFetch;
+
+	}
+
+});
+
+test("deployVercelRelay removes its deployment when the build errors or vanishes", async (t) => {
+	instantTimers(t);
+
+	const mkCalls = (pollBody: unknown, pollStatus = 200) => stubFetch(t, (url, init) => {
+
+		if (url.includes("/v13/deployments/") && (!init?.method || init.method === "GET")) return { status: pollStatus, body: pollBody };
+
+		if (url.includes("/v13/deployments") && init?.method === "POST") return { body: { id: "dep1", projectId: "proj1" } };
+
+		if (url.includes("/v9/projects/")) return { body: {} };
+
+		return { status: 200, body: {} };
+
+	});
+
+	const callsErr = mkCalls({ readyState: "ERROR" });
+
+	await assert.rejects(deployVercelRelay("vercel-tok", "relay-err"), /failed with state: ERROR/);
+
+	assert.ok(callsErr.some((c) => c.init?.method === "DELETE" && c.url.includes("/v13/deployments/dep1")), "ERROR state must DELETE the orphan deployment");
+
+	const callsGone = mkCalls({}, 404);
+
+	await assert.rejects(deployVercelRelay("vercel-tok", "relay-gone"), /disappeared while waiting/);
+
+	const callsAuth = mkCalls({ error: { message: "Token expired" } }, 401);
+
+	await assert.rejects(deployVercelRelay("vercel-tok", "relay-auth"), (e: unknown) => /authentication failed/i.test((e as Error).message) && (e as Error).message.includes("Token expired"));
+
+});
+
+test("deployCloudflareWorker removes the uploaded script when routing lookup fails", async (t) => {
+	const calls = stubFetch(t, (url, init) => {
+
+		if (url.endsWith("/client/v4/accounts")) return { body: { result: [{ id: "acct123" }] } };
+
+		if (url.includes("/workers/scripts/my-relay") && init?.method === "DELETE") return { body: {} };
+
+		if (url.includes("/workers/scripts/my-relay")) return { body: { success: true } };
+
+		if (url.includes("/workers/subdomain")) return { status: 500, body: { errors: [{ message: "subdomain boom" }] } };
+
+		return { status: 200, body: {} };
+
+	});
+
+	await assert.rejects(deployCloudflareWorker("cf-tok", "my-relay"), /subdomain boom/);
+
+	assert.ok(calls.some((c) => c.init?.method === "DELETE" && c.url.includes("/workers/scripts/my-relay")), "failed routing must DELETE the orphan script");
+
+});
+
+test("deployDenoRelay removes the app when upload throws or the URL is unresolvable", async (t) => {
+	instantTimers(t);
+
+	const callsThrow = stubFetch(t, (url, init) => {
+
+		if (url.endsWith("/v2/apps/app-9/deploy")) return { reject: "socket hang up" };
+
+		if (url.endsWith("/v2/apps") && init?.method === "POST") return { body: { id: "app-9" } };
+
+		return { status: 500, body: { error: { message: "unexpected" } } };
+
+	});
+
+	await assert.rejects(deployDenoRelay("ddo-tok", "doomed-app"), /socket hang up/);
+
+	assert.ok(callsThrow.some((c) => c.url.endsWith("/v2/apps/app-9") && c.init?.method === "DELETE"), "upload throw must DELETE the orphan app");
+
+	const callsNoUrl = stubFetch(t, (url, init) => {
+
+		if (url.endsWith("/v2/revisions/rev-1")) return { body: { id: "rev-1", status: "succeeded", timelines: [] } };
+
+		if (url.endsWith("/apps/app-1/deploy")) return { body: { id: "rev-1", status: "queued" } };
+
+		if (url.endsWith("/v2/apps") && init?.method === "POST") return { body: { id: "app-1" } };
+
+		if (url.endsWith("/v2/domains")) return { body: [] };
+
+		if (url.endsWith("/v2/apps/app-1") && init?.method === "DELETE") return { body: {} };
+
+		return { status: 400, body: { error: { message: "unexpected" } } };
+
+	});
+
+	await assert.rejects(deployDenoRelay("ddo-tok", "url-less"), /could not determine the public URL/);
+
+	assert.ok(callsNoUrl.some((c) => c.url.endsWith("/v2/apps/app-1") && c.init?.method === "DELETE"), "unresolvable URL must DELETE the orphan app");
+
 });

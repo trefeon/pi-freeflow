@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.26.1
+
+### Patch Changes
+
+- Fix `/freeflow deploy vercel` failing at the Vercel build step with `Unterminated string literal`. The generated relay file now passes syntax checks on all three deploy targets, and newly deployed relays come with a built-in password by default instead of being openly usable by anyone with the URL.
+- Recover from expired conversation reasoning references instead of failing every turn. When the provider reports a reasoning item as expired, the request is retried without the unresolvable history on the same relay, so the session continues with one turn of lost reasoning context rather than dying.
+
 ## 1.26.0
 
 ### Minor Changes

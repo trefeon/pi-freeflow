@@ -419,7 +419,9 @@ test("user flow [4/6] /freeflow deploy vercel adds a relay, activates it, and pr
    const st = loadRelayState();
    const deployed = st.relays.find((r) => r.url === "https://relay-test.vercel.app");
    assert.ok(deployed, "deployed relay must be added to state");
-   assert.equal(deployed.auth, undefined, "relay is public by default for seamless migration");
+   const mintedAuth = deployed.auth;
+   assert.equal(typeof mintedAuth, "string", "relay is private by default: deploy mints a shared secret");
+   assert.ok(typeof mintedAuth === "string" && mintedAuth.length > 0, "minted relay secret must be non-empty");
    assert.equal(st.url, "https://relay-test.vercel.app", "deployed relay must be active");
    assert.equal(st.enabled, true, "relay pool must be enabled");
 

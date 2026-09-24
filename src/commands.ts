@@ -383,6 +383,39 @@ function clineErrorMessage(e: unknown): string {
  if (typeof e === "string" && e) return e;
  return "unknown error";
 }
+
+/**
+ * Validate a user-supplied deploy project name before any network call.
+ * Mirrors the cleanup the deploy builders apply (lowercase, runs of
+ * non-[a-z0-9-] become one dash, edge dashes trimmed): a name with no usable
+ * characters would silently fall back to a generic worker name and likely
+ * collide, and an over-long Cloudflare/Deno name would silently truncate to
+ * something the user did not ask for. Pure: never touches disk or network.
+ */
+export function validateDeployProjectName(
+ raw: string,
+ platform: DeployPlatform,
+): { ok: true; name: string } | { ok: false; reason: string } {
+ const clean = (raw || "")
+  .toLowerCase()
+  .replace(/[^a-z0-9-]+/g, "-")
+  .replace(/-{2,}/g, "-")
+  .replace(/^-+|-+$/g, "");
+ if (!clean) {
+  return {
+   ok: false,
+   reason: `Project name '${(raw || "").trim()}' has no usable letters or numbers — use characters a-z, 0-9, '-'`,
+  };
+ }
+ const max = platform === "cloudflare" ? 58 : platform === "deno" ? 32 : 0;
+ if (max > 0 && clean.length > max) {
+  return {
+   ok: false,
+   reason: `Project name '${clean}' is ${clean.length} chars — ${platform === "cloudflare" ? "Cloudflare" : "Deno Deploy"} allows max ${max}. Shorten it and retry`,
+  };
+ }
+ return { ok: true, name: clean };
+}
 export function createCommandSpec(
  _pi: ExtensionAPI,
  onCatalogRefreshed?: (models: RegisteredModel[]) => void,
@@ -576,18 +609,29 @@ export function createCommandSpec(
      ctx.ui.notify("Deploy cancelled: no token", "warning");
      return;
     }
-    const name =
+    const entered =
      (
       await ctx.ui.input(
        "Project name (empty = auto):",
        defaultName,
       )
      )?.trim() || defaultName;
+    const nameCheck = validateDeployProjectName(entered, platform);
+    if (!nameCheck.ok) {
+     ctx.ui.notify(`Deploy cancelled: ${nameCheck.reason}`, "warning");
+     return;
+    }
+    const name = entered;
+    const cleanName = nameCheck.name;
+    // Never display a short token in full: its "last 4" would be the secret.
+    const tokenTail = token.length > 8 ? token.slice(-4) : "***";
 
     if (typeof ctx.ui.confirm === "function") {
      const ok = await ctx.ui.confirm(
       "Deploy relay",
-      `Deploy ${label} relay '${name}' using token ending ${token.slice(-4)}?`,
+      cleanName === name
+       ? `Deploy ${label} relay '${name}' using token ending ${tokenTail}?`
+       : `Deploy ${label} relay '${name}' (as '${cleanName}') using token ending ${tokenTail}?`,
      );
      if (!ok) {
       ctx.ui.notify("Deploy cancelled", "warning");
@@ -606,29 +650,53 @@ export function createCommandSpec(
      const { url, auth } = await deployer(token, name, (m) =>
       ctx.ui.notify(m, "info"),
      );
+     const finalUrl = url.trim().replace(/\/+$/, "");
      relayState = withRelayState((s) => {
-      const r = ensureRelay(s, url, `deployed ${name}`);
+      const prevLabel = s.relays.find((r) => r.url === finalUrl)?.label;
+      const r = ensureRelay(s, finalUrl, `deployed ${cleanName}`);
       if (auth) r.auth = auth;
       else delete r.auth;
+      // A re-deploy at an existing address refreshes the secret but keeps a
+      // user-chosen short name; only stock `deployed …` labels roll forward.
+      if (prevLabel && !prevLabel.startsWith("deployed ")) r.label = prevLabel;
       s.enabled = true;
-      s.url = url;
+      s.url = finalUrl;
       return s;
      });
      persist();
+     // saveRelayState swallows disk errors, so confirm the pool entry landed:
+     // otherwise a live deployment would silently vanish on the next restart.
+     let poolSaved = false;
+     try {
+      poolSaved = loadRelayState().relays.some((r) => r.url === finalUrl);
+     } catch {
+      poolSaved = false;
+     }
      let probeNote = "";
      try {
-      const probe = await probeRelay(url, auth);
+      const probe = await probeRelay(finalUrl, auth);
       probeNote = probe.ok
        ? ` ✓ reachable (HTTP ${probe.status}, ${probe.latencyMs}ms)`
-       : ` ⚠ deployed but unreachable (${probe.error || `HTTP ${probe.status}`}) — verify with /freeflow test`;
+       : ` ⚠ deployed but unreachable (${probe.error || `HTTP ${probe.status}`}) — run /freeflow test ${finalUrl} to retry, or /freeflow remove ${finalUrl} to drop it`;
      } catch {
       // probeRelay never throws, but keep the notify safe regardless
      }
-     ctx.ui.notify(`✓ Deployed & active: ${url}${probeNote}`, "info");
+     if (!poolSaved) {
+      const secretNote = auth
+       ? " Note: this relay uses a shared secret, so prefer redeploying if the re-added copy fails its probe."
+       : "";
+      ctx.ui.notify(`⚠ Relay is live at ${finalUrl} but NOT saved to the pool (disk write failed)${probeNote} — restore it with: /freeflow add ${finalUrl}.${secretNote}`, "error");
+      return;
+     }
+     ctx.ui.notify(`✓ Deployed & active: ${finalUrl}${probeNote}`, "info");
     } catch (e) {
      updateStatusBar(ctx.ui);
+     // Deploy errors echo upstream detail; never let the platform API token
+     // leak through a message that repeats what the server (or network) said.
+     const rawMsg = (e as Error).message;
+     const safeMsg = token.length >= 8 ? rawMsg.split(token).join("[redacted]") : rawMsg;
      ctx.ui.notify(
-      `Deploy failed: ${(e as Error).message}`,
+      `Deploy failed: ${safeMsg}`,
       "error",
      );
     }
