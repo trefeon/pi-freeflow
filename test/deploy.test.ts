@@ -47,6 +47,15 @@ function stubFetch(
 	return calls;
 }
 
+/** The generated module URL exists only at runtime, so a static import cannot work. */
+async function callGeneratedCloudflareRelay(request: Request): Promise<Response> {
+	const source = buildCloudflareRelayWorker("");
+	const worker = await import(
+		`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`
+	);
+	return worker.default.fetch(request);
+}
+
 /**
  * Make polling sleeps resolve immediately so revision-poll loops finish fast.
  * Only ever used alongside terminal-status stubs, so loops cannot spin unbounded.
@@ -93,6 +102,70 @@ test("relay worker sources keep the whitelist contract on every platform", () =>
 	assert.ok(VERCEL_RELAY_WORKER.includes('const RELAY_AUTH = "";'), "static constant must ship no secret");
 	assert.ok(CLOUDFLARE_RELAY_WORKER.includes('const RELAY_AUTH = "";'), "static constant must ship no secret");
 	assert.ok(DENO_RELAY_SCRIPT.includes('const RELAY_AUTH = "";'), "static constant must ship no secret");
+});
+
+test("generated relay accepts an allowlisted target with a trailing slash", async (t) => {
+	const calls = stubFetch(t, () => ({ body: { ok: true } }));
+	const response = await callGeneratedCloudflareRelay(
+		new Request("https://relay.invalid", {
+			headers: {
+				"x-relay-target": "https://opencode.ai/",
+				"x-relay-path": "/v1/models",
+			},
+		}),
+	);
+
+	assert.equal(response.status, 200);
+	assert.deepEqual(
+		calls.map(({ url }) => url),
+		["https://opencode.ai/v1/models"],
+	);
+});
+
+test("generated relay rejects private IPv4 before forwarding", async (t) => {
+	const calls = stubFetch(t, () => ({ body: { ok: true } }));
+	const response = await callGeneratedCloudflareRelay(
+		new Request("https://relay.invalid", {
+			headers: { "x-relay-target": "https://10.0.0.1/" },
+		}),
+	);
+
+	assert.equal(response.status, 403);
+	assert.deepEqual(await response.json(), {
+		error: "forbidden x-relay-target (private/loopback host)",
+	});
+	assert.equal(calls.length, 0);
+});
+
+test("generated relay rejects bracketed private IPv6 before forwarding", async (t) => {
+	const calls = stubFetch(t, () => ({ body: { ok: true } }));
+	const response = await callGeneratedCloudflareRelay(
+		new Request("https://relay.invalid", {
+			headers: { "x-relay-target": "https://[fd00::1]/" },
+		}),
+	);
+
+	assert.equal(response.status, 403);
+	assert.deepEqual(await response.json(), {
+		error: "forbidden x-relay-target (private/loopback host)",
+	});
+	assert.equal(calls.length, 0);
+});
+
+test("generated relay rejects backslash paths before forwarding", async (t) => {
+	const calls = stubFetch(t, () => ({ body: { ok: true } }));
+	const response = await callGeneratedCloudflareRelay(
+		new Request("https://relay.invalid", {
+			headers: {
+				"x-relay-target": "https://opencode.ai",
+				"x-relay-path": "\\evil.example",
+			},
+		}),
+	);
+
+	assert.equal(response.status, 403);
+	assert.deepEqual(await response.json(), { error: "forbidden x-relay-path" });
+	assert.equal(calls.length, 0);
 });
 
 test("DeployPlatform union exposes all three platforms", () => {
