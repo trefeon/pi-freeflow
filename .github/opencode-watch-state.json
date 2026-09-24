@@ -3,7 +3,7 @@
   "fileShas": {
     "identifier.ts": "aab182e24eb8e133300c5105e67e21d438550ab326e31fffac7763873c5ae5cd",
     "session-id.ts": "da161dc7602f91a0528fce9f259d1ff83d84e8376d5b2cbd714ceeeb001c7b9b",
-    "zen.mdx": "d231878e3d30521ff6a1a24ea56968f030ac78c6c21675884cbc9bb09ba3d5c2"
+    "zen.mdx": "d0e862aad2b4ccea63ceb7bc94d66ab9b5bbc0ba09bfb6dd731fc27931b37444"
   },
   "freeModels": [
     "big-pickle",
@@ -15,7 +15,8 @@
     "muse-spark-1.2-contributor-free",
     "muse-spark-1.3-contributor-free",
     "nemotron-3-ultra-free",
-    "nemotron-3.5-lightning-free"
+    "nemotron-3.5-lightning-free",
+    "space-bunny-free"
   ],
-  "lastChecked": "2026-09-23T09:12:24.592Z"
+  "lastChecked": "2026-09-24T09:10:27.132Z"
 }
