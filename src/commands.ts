@@ -363,8 +363,89 @@ function nextClineSlot(pool: ClinePoolState): string {
  return `slot-${n}`;
 }
 
-/** One notify-ready line per saved login, in pool order. */
+/**
+ * Per-slot usage row as persisted under pool.usage. Read defensively: pools
+ * saved before usage tracking existed carry no such field, so every property
+ * is narrowed at use. Never carries identity — callers map slot to identity.
+ */
+interface ClineUsageRow {
+ served: number;
+ lastAt: number;
+ lastModel: string;
+}
+
+/** Usage map off the pool without depending on the tracking lane's types. */
+function clineUsageRows(pool: ClinePoolState): Record<string, ClineUsageRow> {
+ const raw = (pool as unknown as { usage?: unknown }).usage;
+ if (!raw || typeof raw !== "object") return {};
+ const out: Record<string, ClineUsageRow> = {};
+ for (const [slot, entry] of Object.entries(raw as Record<string, unknown>)) {
+  if (!entry || typeof entry !== "object") continue;
+  const rec = entry as Record<string, unknown>;
+  if (typeof rec.served !== "number" || !(rec.served >= 0)) continue;
+  out[slot] = {
+   served: rec.served,
+   lastAt: typeof rec.lastAt === "number" ? rec.lastAt : 0,
+   lastModel: typeof rec.lastModel === "string" ? rec.lastModel : "",
+  };
+ }
+ return out;
+}
+
+/** Masked identity for NEW display text — the raw email never appears there. */
+function maskClineEmail(email: string): string {
+ const at = email.indexOf("@");
+ if (at <= 0) return "***";
+ const domain = email.slice(at + 1);
+ if (!domain) return "***";
+ return `${email[0]}***@${domain}`;
+}
+
+/** Relative age for a usage timestamp, ISO fallback for old/future values. */
+function clineUsageAge(lastAt: number, now = Date.now()): string {
+ if (!(lastAt > 0)) return "";
+ const diff = now - lastAt;
+ if (diff < 0) return new Date(lastAt).toISOString();
+ if (diff < 60_000) return "just now";
+ if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+ if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+ if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+ return new Date(lastAt).toISOString();
+}
+
+/** Usage suffix for one account line; zero-state reads `served 0 · never used`. */
+function formatClineUsageSuffix(slot: string, usage: Record<string, ClineUsageRow>, now = Date.now()): string {
+ const row = usage[slot];
+ if (!row || row.served <= 0) return " · served 0 · never used";
+ const age = clineUsageAge(row.lastAt, now);
+ const last = row.lastModel ? ` · last ${row.lastModel}${age ? ` ${age}` : ""}` : "";
+ return ` · served ${row.served}${last}`;
+}
+
+/**
+ * Compact Cline block for the status banner. Masked identity only — the raw
+ * email never appears here even though account lines still show it.
+ */
+function formatClineStatusSnippet(pool: ClinePoolState, now = Date.now()): string {
+ const n = pool.accounts.length;
+ if (!n) return "Cline: no logins";
+ const usage = clineUsageRows(pool);
+ let best: { slot: string; row: ClineUsageRow } | null = null;
+ for (const a of pool.accounts) {
+  const row = usage[a.slot];
+  if (!row || row.served <= 0) continue;
+  if (!best || row.lastAt > best.row.lastAt) best = { slot: a.slot, row };
+ }
+ if (!best) return `Cline: ${n} login(s) · never used`;
+ const account = pool.accounts.find((a) => a.slot === best.slot);
+ const who = account?.email ? maskClineEmail(account.email) : (account?.accountId || best.slot);
+ const model = best.row.lastModel ? ` (${best.row.lastModel})` : "";
+ return `Cline: ${n} login(s) · last used: [${best.slot}] ${who}${model}`;
+}
+
+/** One notify-ready line per saved login, in pool order, with usage. */
 function formatClineAccountLines(pool: ClinePoolState): string[] {
+ const usage = clineUsageRows(pool);
  return pool.accounts.map((a, idx) => {
   const star = a.slot === pool.activeSlot ? "*" : " ";
   const who = a.email || a.accountId;
@@ -374,7 +455,7 @@ function formatClineAccountLines(pool: ClinePoolState): string[] {
   const earlier = { accounts: pool.accounts.slice(0, idx) };
   const dup = findClineAccountSlot(earlier, a);
   const dupPart = dup ? ` — same account as [${dup}]` : "";
-  return `${star} [${idx + 1}] [${a.slot}]${whoPart} key ending ${redactedToken(a.token)}${dupPart}`;
+  return `${star} [${idx + 1}] [${a.slot}]${whoPart} key ending ${redactedToken(a.token)}${dupPart}${formatClineUsageSuffix(a.slot, usage)}`;
  });
 }
 /** User-safe one-line message for caught values (never echoes secrets). */
@@ -1040,7 +1121,8 @@ export function createCommandSpec(
        : `${u} open`;
      })
      .join(" | ");
-    ctx.ui.notify(`${modeLine} | ${poolLine}\n${stateFileLine}\nUpstream: ${upstreamLine}`, "info");
+    const clineLine = formatClineStatusSnippet(loadPool());
+    ctx.ui.notify(`${modeLine} | ${poolLine}\n${stateFileLine}\nUpstream: ${upstreamLine}\n${clineLine}`, "info");
    } else if (sub === "kill" || sub === "stop" || sub === "shutdown") {
     const port = getClientPort() || PORT;
     try {

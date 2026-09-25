@@ -6,7 +6,7 @@ All commands are available inside the OMP or Pi TUI via `/freeflow`:
 
 | Command | Action |
 | :--- | :--- |
-| `/freeflow status` | View active relay URL, pool status (ON/OFF), and candidates |
+| `/freeflow status` | View active relay URL, pool status (ON/OFF), candidates, and a Cline login summary (logins saved, most recently used login and model) |
 | `/freeflow list` | List all relays with health badges (✓ / ⚠️ cooling) |
 | `/freeflow use <url&vert;index&vert;label>` | Switch active relay |
 | `/freeflow url <url>` | Set the active relay URL directly |
@@ -22,7 +22,7 @@ All commands are available inside the OMP or Pi TUI via `/freeflow`:
 | `/freeflow update` | Check for and install a package update |
 | `/freeflow debug on &vert; off` | Toggle full HTTP lifecycle debug logging |
 | `/freeflow cline login` | Sign in through the browser, save to the per-user pool |
-| `/freeflow cline accounts` | List saved Cline logins |
+| `/freeflow cline accounts` | List saved Cline logins with per-login usage (requests served, last model used) |
 | `/freeflow cline logout` | Remove a saved Cline login |
 | `/freeflow cline signout` | Show the link to sign out of Cline in your browser, so the next login can use a different account |
 

@@ -17,6 +17,12 @@ import {
  setActiveRelayState,
 } from "../src/relay-state.ts";
 import {
+ _resetClinePoolCacheForTest,
+ CLINE_POOL_BACKUP_FILE,
+ CLINE_POOL_FILE,
+ addAccount,
+} from "../src/cline-accounts.ts";
+import {
  _resetUpstreamHealthForTest,
  recordUpstreamFailure,
 } from "../src/upstream-health.ts";
@@ -727,5 +733,136 @@ test("command spec: /freeflow remove refuses the active relay so the sticky prim
   const onDisk = loadRelayState();
   assert.equal(onDisk.relays.length, 2, "blocked remove must not mutate the pool");
   assert.equal(onDisk.url, activeUrl, "the sticky primary must survive a remove attempt");
+ });
+});
+
+// ── Cline usage widget ───────────────────────────────────────────────
+
+const CLINE_SLOT_A = "workos:test-key-aaa111";
+const CLINE_SLOT_B = "workos:test-key-bbb222";
+const CLINE_EMAIL_A = "alice@example.com";
+const CLINE_EMAIL_B = "bob@example.org";
+const CLINE_MODEL = "cline-free/deepseek-v4.1-flash";
+
+async function withIsolatedClinePool(fn: () => Promise<void> | void): Promise<void> {
+ // The pool and its recovery copy: savePool snapshots the main file to .bak,
+ // so a helper that restores only the main file leaks fixtures into neighbors.
+ const read = (p: string): string | null => (fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null);
+ const before = read(CLINE_POOL_FILE);
+ const beforeBak = read(CLINE_POOL_BACKUP_FILE);
+ const restore = (p: string, content: string | null): void => {
+  if (content !== null) fs.writeFileSync(p, content, "utf8");
+  else {
+   try { fs.rmSync(p, { force: true }); } catch { }
+  }
+ };
+ try {
+  fs.rmSync(CLINE_POOL_FILE, { force: true });
+  fs.rmSync(CLINE_POOL_BACKUP_FILE, { force: true });
+ } catch { }
+ _resetClinePoolCacheForTest();
+ try {
+  await fn();
+ } finally {
+  _resetClinePoolCacheForTest();
+  restore(CLINE_POOL_FILE, before);
+  restore(CLINE_POOL_BACKUP_FILE, beforeBak);
+ }
+}
+
+/** Two logins plus a usage row shaped like the on-disk tracker output. */
+function seedClinePoolWithUsage(): void {
+ addAccount("default", CLINE_SLOT_A, { email: CLINE_EMAIL_A });
+ addAccount("slot-2", CLINE_SLOT_B, { email: CLINE_EMAIL_B });
+ _resetClinePoolCacheForTest();
+ const doc = JSON.parse(fs.readFileSync(CLINE_POOL_FILE, "utf8"));
+ doc.usage = {
+  default: { served: 3, lastAt: Date.now() - 2 * 3_600_000, lastModel: CLINE_MODEL },
+ };
+ fs.writeFileSync(CLINE_POOL_FILE, JSON.stringify(doc), "utf8");
+ _resetClinePoolCacheForTest();
+}
+
+test("command spec: /freeflow cline accounts shows per-login usage with no raw identity in new text", async () => {
+ await withSavedDiskState(async () => {
+  await withIsolatedClinePool(async () => {
+   seedClinePoolWithUsage();
+   const spec = createCommandSpec(mockApi);
+   const { ctx, notifications } = createMockContext({});
+   await spec.handler("cline accounts", ctx);
+   const shown = notifications.map((n) => n.message).join("\n");
+   assert.ok(shown.includes("Cline logins (2)"), `must list both logins, got: ${shown}`);
+   assert.ok(shown.includes("served 3"), `used slot must show its count, got: ${shown}`);
+   assert.ok(shown.includes(`last ${CLINE_MODEL}`), `used slot must show its last model, got: ${shown}`);
+   assert.ok(shown.includes("served 0"), `unused slot must show the zero state, got: ${shown}`);
+   assert.ok(shown.includes("never used"), `unused slot must read never used, got: ${shown}`);
+   // The masked identity lives on the NEW status Cline block (asserted
+   // below): account lines keep their legacy login prefix untouched, so the
+   // NEW usage text here is only checked to carry no raw identity — just the
+   // appended suffix of each account line (from "served" on).
+   for (const line of shown.split("\n")) {
+    if (!line.includes("served")) continue;
+    const suffix = line.slice(line.indexOf("served"));
+    assert.ok(!suffix.includes(CLINE_EMAIL_A), `usage suffix must not carry the raw email, got: ${line}`);
+    assert.ok(!suffix.includes(CLINE_EMAIL_B), `usage suffix must not carry the raw email, got: ${line}`);
+   }
+   assert.ok(!shown.includes(CLINE_SLOT_A), "the full token must never surface");
+  });
+ });
+});
+
+test("command spec: /freeflow cline accounts shows never-used zero state without usage rows", async () => {
+ await withSavedDiskState(async () => {
+  await withIsolatedClinePool(async () => {
+   addAccount("default", CLINE_SLOT_A, { email: CLINE_EMAIL_A });
+   _resetClinePoolCacheForTest();
+   const spec = createCommandSpec(mockApi);
+   const { ctx, notifications } = createMockContext({});
+   await spec.handler("cline accounts", ctx);
+   const shown = notifications.map((n) => n.message).join("\n");
+   assert.ok(shown.includes("served 0"), `fresh login must show the zero state, got: ${shown}`);
+   assert.ok(shown.includes("never used"), `fresh login must read never used, got: ${shown}`);
+  });
+ });
+});
+
+test("command spec: /freeflow status appends a masked Cline usage block", async () => {
+ await withSavedDiskState(async () => {
+  await withIsolatedClinePool(async () => {
+   seedClinePoolWithUsage();
+   resetAllRelayHealth();
+   _resetUpstreamHealthForTest();
+   setActiveRelayState(singleRelayState(), false);
+   const spec = createCommandSpec(mockApi);
+   const { ctx, notifications } = createMockContext({});
+   await spec.handler("status", ctx);
+   const banner = notifications.map((n) => n.message).join("\n");
+   assert.ok(banner.includes("Cline: 2 login(s)"), `status must count the Cline logins, got: ${banner}`);
+   assert.ok(banner.includes("last used: [default]"), `status must name the most used slot, got: ${banner}`);
+   assert.ok(banner.includes("a***@example.com"), "status Cline block must show the masked identity");
+   assert.ok(banner.includes(CLINE_MODEL), `status Cline block must name the last model, got: ${banner}`);
+   const clineLine = banner.split("\n").find((l) => l.startsWith("Cline:")) ?? "";
+   assert.ok(!clineLine.includes(CLINE_EMAIL_A), `status Cline line must never carry the raw email, got: ${clineLine}`);
+   assert.ok(!clineLine.includes(CLINE_EMAIL_B), `status Cline line must never carry the raw email, got: ${clineLine}`);
+  });
+ });
+});
+
+test("command spec: /freeflow status and cline accounts handle a fresh empty pool", async () => {
+ await withSavedDiskState(async () => {
+  await withIsolatedClinePool(async () => {
+   resetAllRelayHealth();
+   _resetUpstreamHealthForTest();
+   setActiveRelayState(singleRelayState(), false);
+   const spec = createCommandSpec(mockApi);
+   const { ctx: statusCtx, notifications: statusNotes } = createMockContext({});
+   await spec.handler("status", statusCtx);
+   const banner = statusNotes.map((n) => n.message).join("\n");
+   assert.ok(banner.includes("Cline: no logins"), `empty pool must read no logins, got: ${banner}`);
+   const { ctx: accountsCtx, notifications: accountsNotes } = createMockContext({});
+   await spec.handler("cline accounts", accountsCtx);
+   const shown = accountsNotes.map((n) => n.message).join("\n");
+   assert.ok(shown.includes("No Cline logins saved"), `empty pool keeps the existing hint, got: ${shown}`);
+  });
  });
 });
