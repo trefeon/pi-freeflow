@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.27.0
+
+### Minor Changes
+
+- 2b20cbf: Cline accounts now show which login served requests: the accounts list shows per-login request totals with the last used model and time, and status shows a summary of the most recently used login.
+
+### Patch Changes
+
+- 0931e12: Fix deployed relay target matching and private-host protection.
+
 ## 1.26.1
 
 ### Patch Changes
