@@ -62,6 +62,22 @@ export interface ClinePoolState {
   * read. Optional: pools written before this existed load unchanged.
   */
  limits?: Record<string, Record<string, number>>;
+ /**
+  * Per-slot serve counters: `usage[slot] = { served, lastAt, lastModel }`.
+  * Bumped every time the slot serves a turn (`served` counts up, `lastAt`
+  * is epoch ms, `lastModel` the requested model id). Counters only — no
+  * token, email, or other identity ever lives here; callers map
+  * slot→identity at display time. Optional: pools written before this
+  * existed load unchanged.
+  */
+ usage?: Record<string, ClineSlotUsage>;
+}
+
+/** One slot's serve counters. See `ClinePoolState.usage`. */
+export interface ClineSlotUsage {
+ served: number;
+ lastAt: number;
+ lastModel: string;
 }
 
 /**
@@ -212,6 +228,29 @@ function parseLimits(raw: unknown, now: number): Record<string, Record<string, n
 }
 
 /**
+ * Read the optional `usage` map out of a pool document, dropping anything
+ * malformed. Returns undefined when nothing usable is left, so a pool that
+ * never served a turn keeps its old shape on disk.
+ */
+function parseUsage(raw: unknown): Record<string, ClineSlotUsage> | undefined {
+ if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+ const usage: Record<string, ClineSlotUsage> = {};
+ for (const [slot, entryRaw] of Object.entries(raw as Record<string, unknown>)) {
+  if (!slot.trim()) continue;
+  if (typeof entryRaw !== "object" || entryRaw === null || Array.isArray(entryRaw)) continue;
+  const entry: Record<string, unknown> = entryRaw as Record<string, unknown>;
+  const served = entry.served;
+  const lastAt = entry.lastAt;
+  const lastModel = entry.lastModel;
+  if (typeof served !== "number" || !Number.isFinite(served) || served < 0) continue;
+  if (typeof lastAt !== "number" || !Number.isFinite(lastAt) || lastAt <= 0) continue;
+  if (typeof lastModel !== "string") continue;
+  usage[slot.trim()] = { served: Math.floor(served), lastAt, lastModel };
+ }
+ return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
+/**
  * Parse a pool document. Returns null when the blob is unusable (bad JSON,
  * wrong shape) so callers can fall back to the backup copy. A valid document
  * with zero accounts is NOT null: that is a real empty pool.
@@ -267,9 +306,11 @@ function parsePoolDoc(raw: string): ClinePoolState | null {
   ? activeRaw.trim()
   : undefined;
  const limits = parseLimits(doc.limits, Date.now());
+ const usage = parseUsage(doc.usage);
  const state: ClinePoolState = { accounts };
  if (activeSlot) state.activeSlot = activeSlot;
  if (limits) state.limits = limits;
+ if (usage) state.usage = usage;
  return state;
 }
 
@@ -418,6 +459,30 @@ function markActiveSlotOnDisk(slot: string): void {
  const live = readPoolFile();
  if (!live.accounts.some((a) => a.slot === slot)) return;
  live.activeSlot = slot;
+ savePool(live);
+}
+
+/**
+ * Bump one slot's serve counters against the file as it is on disk right
+ * now: a request holds its pool snapshot across round trips, and the host
+ * process writes the same file for login/logout, so writing the snapshot
+ * back would revert a login added or removed while the request was in
+ * flight. A slot that no longer exists is left alone rather than
+ * resurrected. The row carries counters only — never token or identity.
+ */
+export function recordClineUsageOnDisk(slot: string, modelId: string): void {
+ const cleanSlot = (slot || "").trim();
+ if (!cleanSlot) return;
+ const live = readPoolFile();
+ if (!live.accounts.some((a) => a.slot === cleanSlot)) return;
+ const prev = live.usage?.[cleanSlot];
+ const served = typeof prev?.served === "number" && Number.isFinite(prev.served) && prev.served >= 0
+  ? Math.floor(prev.served) + 1
+  : 1;
+ live.usage = {
+  ...(live.usage ?? {}),
+  [cleanSlot]: { served, lastAt: Date.now(), lastModel: (modelId || "").trim() },
+ };
  savePool(live);
 }
 
@@ -780,6 +845,8 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
     // This slot just served the model, so whatever cap it was on has lifted.
     // Reads the file as it is on disk and writes only when an entry exists.
     clearLimitOnDisk(account.slot, requestedModel);
+    // Counters only — no token or identity ever lands in the usage row.
+    recordClineUsageOnDisk(account.slot, requestedModel);
    }
    if (lastRes && lastRes !== res) {
     try { await lastRes.body?.cancel(); } catch { }
