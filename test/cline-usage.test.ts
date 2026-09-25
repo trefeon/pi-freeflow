@@ -13,6 +13,7 @@ import {
  addAccount,
  loadPool,
  recordClineUsageOnDisk,
+ removeAccount,
  rollChat,
 } from "../src/cline-accounts.ts";
 
@@ -109,5 +110,31 @@ test("cline usage: failed turns write no usage row", async () => {
   assert.equal(res.exhausted, true);
   _resetClinePoolCacheForTest();
   assert.equal(loadPool().usage, undefined);
+ });
+});
+
+test("cline usage: removing a slot prunes its usage row", async () => {
+ await withIsolatedPool(async () => {
+  addAccount("main", SLOT_A);
+  recordClineUsageOnDisk("main", MODEL);
+  _resetClinePoolCacheForTest();
+  assert.equal(loadPool().usage?.["main"]?.served, 1);
+  assert.equal(removeAccount("main"), true);
+  _resetClinePoolCacheForTest();
+  const pool = loadPool();
+  assert.equal(pool.usage?.["main"], undefined);
+  assert.equal(pool.usage, undefined);
+  const doc: unknown = JSON.parse(fs.readFileSync(CLINE_POOL_FILE, "utf8"));
+  let keptRow = false;
+  if (doc && typeof doc === "object" && "usage" in doc) {
+   const usage = doc.usage;
+   if (usage && typeof usage === "object" && "main" in usage) keptRow = true;
+  }
+  assert.equal(keptRow, false, "expected no usage row for the removed slot on disk");
+  // Re-adding the same slot name starts fresh: no inherited counters, so the
+  // widget falls back to its zero state (`served 0 · never used`).
+  addAccount("main", SLOT_A);
+  _resetClinePoolCacheForTest();
+  assert.equal(loadPool().usage?.["main"], undefined);
  });
 });

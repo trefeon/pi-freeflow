@@ -682,6 +682,10 @@ export function removeAccount(slot: string): boolean {
  const idx = pool.accounts.findIndex((a) => a.slot === cleanSlot);
  if (idx < 0) return false;
  pool.accounts.splice(idx, 1);
+ if (pool.usage?.[cleanSlot] !== undefined) {
+  delete pool.usage[cleanSlot];
+  if (Object.keys(pool.usage).length === 0) delete pool.usage;
+ }
  if (pool.activeSlot === cleanSlot) pool.activeSlot = pool.accounts[0]?.slot;
  savePool(pool);
  return true;
