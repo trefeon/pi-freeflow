@@ -1,7 +1,8 @@
 /**
  * Regression tests for relay-template backslash escaping (issue #25).
- * The worker core is generated inside an outer template literal, so every
- * backslash meant for the deployed output must be doubled in src/deploy.ts.
+ * The worker core is generated inside a String.raw outer literal, so
+ * backslashes in src/deploy.ts are written singly and reach the deployed
+ * output verbatim (doubling them would corrupt the guards again).
  * These tests execute the generated code: syntax via `node --check` and
  * guard behavior by running the generated functions.
  */
@@ -66,6 +67,8 @@ test("generated core keeps backslash guards intact", () => {
 test("generated core strips brackets and matches IPv4 private ranges", () => {
  const core = loadCore(buildVercelRelayWorker(""));
  assert.equal(core.isPrivateHostname("[::1]"), true, "bracket-strip");
+ assert.equal(core.isPrivateHostname("[fd00::1]"), true, "bracketed IPv6 unique-local");
+ assert.equal(core.isPrivateHostname("fe80::1"), true, "IPv6 link-local");
  assert.equal(core.isPrivateHostname("127.0.0.1"), true, "IPv4 loopback");
  assert.equal(core.isPrivateHostname("10.1.2.3"), true, "IPv4 10/8");
  assert.equal(core.isPrivateHostname("192.168.0.5"), true, "IPv4 192.168/16");

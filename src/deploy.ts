@@ -16,17 +16,20 @@ import { randomBytes } from "node:crypto";
  * whitelist, SSRF guard, path resolver, header denylist, auth gate and
  * streaming forward live exactly once.
  *
+ * The core ships inside String.raw, so backslashes below reach the deployed
+ * file verbatim — write them singly, never double them for the outer literal.
+ *
  * @param relayAuth Per-deployment shared secret. Empty string disables the
  *   auth gate (legacy/manual deploys); built-in deploys always embed one.
  */
 function buildRelayWorkerCore(relayAuth: string): string {
- return `// Only the 2 upstreams pi-freeflow talks to. Anything else = open proxy abuse.
+ return String.raw`// Only the 2 upstreams pi-freeflow talks to. Anything else = open proxy abuse.
 const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
 const RELAY_AUTH = ${JSON.stringify(relayAuth)};
 const resolveRelayTarget = function(target, relayPath) {
   let targetUrl;
   try { targetUrl = new URL(target); } catch { return { ok: false, status: 400, reason: "invalid x-relay-target" }; }
-  if (typeof relayPath !== "string" || relayPath.indexOf("@") !== -1 || relayPath.indexOf("\\\\") !== -1 || relayPath.charAt(0) !== "/") {
+  if (typeof relayPath !== "string" || relayPath.indexOf("@") !== -1 || relayPath.indexOf("\\") !== -1 || relayPath.charAt(0) !== "/") {
     return { ok: false, status: 403, reason: "forbidden x-relay-path" };
   }
   let finalUrl;
@@ -38,7 +41,7 @@ const resolveRelayTarget = function(target, relayPath) {
 };
 const isPrivateHostname = function(h) {
   if (!h) return true
-  let host = String(h).trim().toLowerCase().replace(/^\\[|\\]$/g, "")
+  let host = String(h).trim().toLowerCase().replace(/^\[|\]$/g, "")
   if (host.length > 1 && host.endsWith(".")) host = host.slice(0, -1)
   if (!host) return true
   // Numeric IP literals outside dotted-decimal (decimal 2130706433, short 127.1,
@@ -65,7 +68,7 @@ const isPrivateHostname = function(h) {
   }
   if (host === "localhost" || host === "0.0.0.0" || host === "127.0.0.1" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true
   if (host.startsWith("::")) return true
-  const v4 = host.match(/^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$/)
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
   if (v4) {
     const a = Number(v4[1])
     const b = Number(v4[2])
@@ -109,7 +112,7 @@ async function relayHandler(req) {
   if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") return new Response(JSON.stringify({ error: "forbidden x-relay-target protocol" }), { status: 403, headers: { "content-type": "application/json" } });
   if (targetUrl.username || targetUrl.password) return new Response(JSON.stringify({ error: "forbidden x-relay-target (embedded credentials)" }), { status: 403, headers: { "content-type": "application/json" } });
   if (isPrivateHostname(targetUrl.hostname)) return new Response(JSON.stringify({ error: "forbidden x-relay-target (private/loopback host)" }), { status: 403, headers: { "content-type": "application/json" } });
-  const cleanTarget = target.replace(/\\/$/, "");
+  const cleanTarget = target.replace(/\/$/, "");
   if (!ALLOWED_TARGETS.includes(cleanTarget)) return new Response(JSON.stringify({ error: "Forbidden target" }), { status: 403, headers: { "content-type": "application/json" } });
   const relayPath = req.headers.get("x-relay-path") || "/";
   const resolved = resolveRelayTarget(target, relayPath);
