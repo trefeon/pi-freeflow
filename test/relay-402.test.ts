@@ -197,3 +197,119 @@ test("relay 402: x-vercel-id alone never rolls a quota 402", async (t) => {
 test("relay 402: isRetriableStatus(402) stays false (gated branch, never blanket-retriable)", () => {
  assert.equal(isRetriableStatus(402), false, "402 rolls only through the gated deployment-disabled branch");
 });
+
+test("relay 402: lowercase plain-text Vercel body rolls to next relay", async (t) => {
+ await withIsolatedRelayFiles(async () => {
+  setActiveRelayState(poolState(), false);
+  resetAllRelayHealth();
+  _resetRollNotifyForTest();
+
+  const cancelled: number[] = [];
+  const seenUrls: string[] = [];
+  const fetchMock = t.mock.method(globalThis, "fetch", async (input: unknown) => {
+   seenUrls.push(String(input));
+   if (seenUrls.length === 1) {
+    // Vercel plain-text shape with a lowercase marker and an sfo1:: edge ID.
+    return stubResponse(402, cancelled, "402: Payment Required\ndeployment_disabled\nsfo1::abc12-def34-56789");
+   }
+   return stubResponse(200, cancelled, "{}");
+  });
+
+  const out = await relayFetch(UPSTREAM_URL, { method: "POST" }, "t402e");
+
+  assert.equal(out.status, 200);
+  assert.equal(fetchMock.mock.callCount(), 2, "plain-text disabled body must roll to the next candidate");
+  assert.deepEqual(seenUrls, [RELAY_A, RELAY_B], "both candidates must be attempted in order");
+  assert.equal(isRelayHealthy(RELAY_A), false, "disabled relay must cool down after the roll");
+ });
+});
+
+test("relay 402: all-disabled pool returns 503 relay_disabled, never the raw 402", async (t) => {
+ await withIsolatedRelayFiles(async () => {
+  setActiveRelayState(poolState(), false);
+  resetAllRelayHealth();
+  _resetRollNotifyForTest();
+
+  const cancelled: number[] = [];
+  const seenUrls: string[] = [];
+  const fetchMock = t.mock.method(globalThis, "fetch", async (input: unknown) => {
+   seenUrls.push(String(input));
+   if (String(input) === UPSTREAM_URL) throw new Error("direct down");
+   return stubResponse(
+    402,
+    cancelled,
+    '{"error":{"code":"DEPLOYMENT_DISABLED","message":"deployment disabled"}}',
+   );
+  });
+
+  const out = await relayFetch(UPSTREAM_URL, { method: "POST" }, "t402f");
+
+  assert.equal(out.status, 503, "exhausted disabled pool must fail fast with 503, not the raw 402");
+  assert.equal(out.headers.get("content-type"), "application/json");
+  const body = (await out.json()) as { error: { code: string; message: string } };
+  assert.equal(body.error.code, "relay_disabled");
+  assert.ok(body.error.message.includes(RELAY_A) && body.error.message.includes(RELAY_B), "message must list every disabled relay URL");
+  const relayFetches = seenUrls.filter((u) => u !== UPSTREAM_URL);
+  assert.deepEqual(relayFetches, [RELAY_A, RELAY_B], "both disabled candidates must be attempted once each");
+  assert.equal(fetchMock.mock.callCount(), 3, "2 relay fetches plus the failed direct fallback");
+ });
+});
+
+test("relay 402: disabled relay health parks for hours, not seconds", async (t) => {
+ await withIsolatedRelayFiles(async () => {
+  setActiveRelayState(poolState(), false);
+  resetAllRelayHealth();
+  _resetRollNotifyForTest();
+
+  const cancelled: number[] = [];
+  const seenUrls: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: unknown) => {
+   seenUrls.push(String(input));
+   if (seenUrls.length === 1) {
+    return stubResponse(
+     402,
+     cancelled,
+     '{"error":{"code":"DEPLOYMENT_DISABLED","message":"deployment disabled"}}',
+    );
+   }
+   return stubResponse(200, cancelled, "{}");
+  });
+
+  const out = await relayFetch(UPSTREAM_URL, { method: "POST" }, "t402g");
+  assert.equal(out.status, 200);
+
+  const health = getRelayHealth(RELAY_A);
+  assert.ok(health, "disabled relay must have a health record");
+  const remaining = (health?.cooldownUntil ?? 0) - Date.now();
+  assert.ok(remaining > 3_600_000, `disabled cooldown must exceed 1h (got ${Math.round(remaining / 1000)}s)`);
+  assert.equal(isRelayHealthy(RELAY_A), false, "disabled relay must report unhealthy during the long cooldown");
+ });
+});
+
+test("relay 402: single disabled relay plus failed direct returns 503 relay_disabled", async (t) => {
+ await withIsolatedRelayFiles(async () => {
+  setActiveRelayState({ enabled: true, url: RELAY_A, relays: [{ url: RELAY_A }] }, false);
+  resetAllRelayHealth();
+  _resetRollNotifyForTest();
+
+  const cancelled: number[] = [];
+  const seenUrls: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: unknown) => {
+   seenUrls.push(String(input));
+   if (String(input) === UPSTREAM_URL) throw new Error("direct down");
+   return stubResponse(
+    402,
+    cancelled,
+    '{"error":{"code":"DEPLOYMENT_DISABLED","message":"deployment disabled"}}',
+   );
+  });
+
+  const out = await relayFetch(UPSTREAM_URL, { method: "POST" }, "t402h");
+
+  assert.equal(out.status, 503, "single disabled relay with no direct fallback must return 503, not 402");
+  const body = (await out.json()) as { error: { code: string; message: string } };
+  assert.equal(body.error.code, "relay_disabled");
+  assert.ok(body.error.message.includes(RELAY_A), "message must name the disabled relay");
+  assert.deepEqual(seenUrls.filter((u) => u !== UPSTREAM_URL), [RELAY_A], "exactly 1 relay fetch before the 503");
+ });
+});

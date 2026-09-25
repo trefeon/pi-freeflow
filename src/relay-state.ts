@@ -448,6 +448,13 @@ export function markRelayFailure(url: string, status?: number, error?: string): 
 		}
 	} else if (status === 504) {
 		cooldownMs = 60_000;
+	} else if (status === 402) {
+		// Disabled Vercel deployment (DEPLOYMENT_DISABLED): a redeploy-sized
+		// outage, not a transient blip — park the relay for ~6h (the 4x
+		// escalation cap below still applies) instead of retrying every 30s.
+		// Only reached via the gated 402-disabled roll branch in relayFetch;
+		// generic quota/payment 402s never mark a failure.
+		cooldownMs = 6 * 60 * 60 * 1_000;
 	} else if (status && status >= 500) {
 		cooldownMs = 45_000;
 	}
