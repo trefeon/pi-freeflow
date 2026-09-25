@@ -51,7 +51,7 @@ export function isRetriableStatus(status: number): boolean {
 function isRelayDeploymentDisabled(res: Response, bodyText: string | null): boolean {
 	if (res.status !== 402) return false;
 	if (Boolean(res.headers.get("x-vercel-error"))) return true;
-	return bodyText !== null && bodyText.includes("DEPLOYMENT_DISABLED");
+	return bodyText !== null && bodyText.toLowerCase().includes("deployment_disabled");
 }
 /**
  * Per-conversation reasoning affinity. Callers sending caller-bound reasoning
@@ -103,6 +103,8 @@ export async function relayFetch(
 	let lastError: unknown = null;
 	/** Relay that produced `lastResponse`, for accurate issuer reporting. */
 	let lastResponseRelay: string | null = null;
+	/** Relay URLs that returned a gated 402 DEPLOYMENT_DISABLED this request. */
+	const disabledRelays: string[] = [];
 	const u = new URL(url);
 	const relayTarget = `${u.protocol}//${u.host}`;
 	const relayPath = `${u.pathname}${u.search}`;
@@ -262,6 +264,7 @@ export async function relayFetch(
 				}
 				if (isRelayDeploymentDisabled(res, disabledBody)) {
 					markRelayFailure(targetUrl, 402, "Deployment disabled (DEPLOYMENT_DISABLED) on relay host");
+					disabledRelays.push(targetUrl);
 					lastResponse?.body?.cancel().catch(() => {});
 					lastResponse = res;
 					lastResponseRelay = targetUrl;
@@ -388,6 +391,26 @@ export async function relayFetch(
 			upstream: url,
 			error: String(directErr),
 		}, rid);
+		if (disabledRelays.length > 0) {
+			// Disabled deployment(s) seen and the direct fallback failed: never
+			// surface the raw Vercel 402 to the host (its retry layer would
+			// misfire on a 30min provider-wait). Fail fast with 503
+			// relay_disabled instead so the host retries/fails over immediately.
+			lastResponse?.body?.cancel().catch(() => {});
+			const count = disabledRelays.length;
+			const list = disabledRelays.join(", ");
+			const hint = disabledRelays.map((u) => `/freeflow remove ${u}`).join("; ");
+			affinity.onServed?.(null);
+			return new Response(
+				JSON.stringify({
+					error: {
+						code: "relay_disabled",
+						message: `relay ${list} deployment disabled (DEPLOYMENT_DISABLED) \u2014 redeploy or ${hint}; rolled ${count} relay(s)`,
+					},
+				}),
+				{ status: 503, headers: { "content-type": "application/json" } },
+			);
+		}
 		if (lastResponse) {
 			// Salvaged relay response: report the relay that produced it so the
 			// caller keeps accurate affinity.

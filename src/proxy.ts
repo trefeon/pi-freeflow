@@ -126,6 +126,27 @@ function withRateLimitHint(status: number, data: string): string {
  } catch { }
  return data;
 }
+/**
+ * Exhausted-disabled relay verdict from the relay layer (HTTP 503 JSON with
+ * `error.code === "relay_disabled"`): every candidate rolled as disabled and
+ * the direct fallback is unavailable, so the host must retry/fail fast
+ * instead of parking on a provider wait. Passes through to the host
+ * unchanged — hint rewrites must never touch its code or guidance.
+ */
+export function isRelayDisabledError(status: number, data: string): boolean {
+ if (status !== 503) return false;
+ try {
+  const parsed: unknown = JSON.parse(data);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return false;
+  if (!("error" in parsed)) return false;
+  const err: unknown = parsed.error;
+  if (typeof err !== "object" || err === null || Array.isArray(err)) return false;
+  if (!("code" in err)) return false;
+  return err.code === "relay_disabled";
+ } catch {
+  return false;
+ }
+}
 /** Cline marker errors: each status carries account-actionable guidance. */
 const CLINE_RATE_LIMIT_HINT =
  "Cline free-use limit reached for this login. Wait for the reset or switch models.";
@@ -1300,7 +1321,7 @@ export function startProxy(
          );
         } else {
          if (!response.ok) {
-          log("warn", `upstream ${response.status} for model ${String((parsedBody as Record<string, unknown> | null)?.model ?? "?")} via relay`, { status: response.status, model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url }, reqId);
+          log("warn", `upstream ${response.status} for model ${String((parsedBody as Record<string, unknown> | null)?.model ?? "?")} via relay ${relayState.url || "pool"}`, { status: response.status, model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url, relay: relayState.url }, reqId);
          }
          let rawText = await response.text();
          let ct =
@@ -1310,7 +1331,9 @@ export function startProxy(
           rawText = convertSseToJson(rawText, target.pathname, callerHadTools, callerCaseRestore, callerFindGlob, callerInjected);
           ct = "application/json";
          }
-         const data = withFreeTierHint(response.status, withRateLimitHint(response.status, rawText));
+         const data = isRelayDisabledError(response.status, rawText)
+          ? rawText
+          : withFreeTierHint(response.status, withRateLimitHint(response.status, rawText));
          res.writeHead(response.status, { "content-type": ct });
          res.end(data);
         }
