@@ -153,7 +153,19 @@ test("zero-price and is_free entries count as free regardless of suffix", () => 
 	assert.equal(classifyModelEntry({ id: "qwen-2.5-coder", pricing: { prompt: 0, completion: 0 } }), "free");
 	assert.equal(classifyModelEntry({ id: "mystery-model", is_free: true }), "free");
 	assert.equal(classifyModelEntry({ id: "big-pickle" }), "free");
+	assert.equal(classifyModelEntry({ id: "union-alpha" }), "free");
+	assert.equal(classifyModelEntry({ id: "custom-alpha-preview" }), "free");
 	assert.equal(classifyModelEntry({ id: "nemotron-3-ultra-free" }), "free");
+});
+
+test("commercial paid models and positive pricing are paid, not candidates", () => {
+	assert.equal(classifyModelEntry({ id: "claude-3-5-sonnet", pricing: { prompt: 3, completion: 15 } }), "paid");
+	assert.equal(classifyModelEntry({ id: "claude-sonnet-4-5" }), "paid");
+	assert.equal(classifyModelEntry({ id: "gpt-5" }), "paid");
+	assert.equal(classifyModelEntry({ id: "deepseek-v4-pro" }), "paid");
+	assert.equal(classifyModelEntry({ id: "gemini-3.5-flash" }), "paid");
+	assert.equal(classifyModelEntry({ id: "minimax-m3" }), "paid");
+	assert.equal(classifyModelEntry({ id: "qwen3.8-max" }), "paid");
 });
 
 test("suffix-less IDs without a free signal surface as candidates, never a silent miss", () => {
@@ -166,8 +178,9 @@ test("suffix-less IDs without a free signal surface as candidates, never a silen
 			{ id: "nemotron-3-ultra-free" },
 		],
 	};
-	assert.deepEqual(extractFreeModelCandidates(rawPayload), ["claude-3-5-sonnet", "mystery-model"]);
+	assert.deepEqual(extractFreeModelCandidates(rawPayload), ["mystery-model"]);
 	assert.ok(!extractFreeModels(rawPayload).includes("mystery-model"));
+	assert.ok(!extractFreeModelCandidates(rawPayload).includes("claude-3-5-sonnet"));
 });
 
 test("fetchLiveFreeModels returns models, candidates, and rawSha", async () => {

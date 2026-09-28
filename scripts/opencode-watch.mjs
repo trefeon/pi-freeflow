@@ -194,10 +194,26 @@ export async function fetchFileSha(urls, options = {}) {
  throw new Error(`Failed to fetch file from candidates [${candidateUrls.join(", ")}]: ${lastError?.message || "Unknown error"}`);
 }
 
+export const KNOWN_PAID_PREFIXES = [
+ "claude-",
+ "gpt-",
+ "gemini-",
+ "grok-",
+ "deepseek-",
+ "qwen",
+ "minimax-",
+ "kimi-",
+ "glm-",
+ "muse-spark-",
+ "jev-",
+];
+
 /**
  * Classify a single models-entry as free, candidate, or paid.
  * Zero-price / is_free entries count as free regardless of ID suffix.
- * Suffix-less IDs with no free signal surface as candidates (never a silent miss).
+ * Known alpha and stealth models count as free.
+ * Commercial paid prefixes and positive pricing are paid, never candidates.
+ * Novel unrecognized IDs surface as candidates (never a silent miss).
  * @param {any} item
  * @returns {"free" | "candidate" | "paid"}
  */
@@ -205,14 +221,29 @@ export function classifyModelEntry(item) {
  if (!item || typeof item.id !== "string") return "paid";
  const id = item.id.trim();
  if (id.length === 0) return "paid";
- if (id === "big-pickle") return "free";
+
  const pricing = item.pricing || {};
  const prompt = pricing.prompt !== undefined ? Number(pricing.prompt) : NaN;
  const completion = pricing.completion !== undefined ? Number(pricing.completion) : NaN;
- if ((item.is_free === true || item.free === true) || (prompt === 0 && completion === 0)) return "free";
- if (id.endsWith("-free") || id.includes("-free")) return "free";
- if (!id.includes("/")) return "candidate";
- return "paid";
+
+ // 1. Positive pricing is unambiguously paid — never a candidate or free model
+ if (prompt > 0 || completion > 0) return "paid";
+
+ // 2. Explicit free signals
+ if (item.is_free === true || item.free === true || (prompt === 0 && completion === 0)) return "free";
+ if (id.endsWith("-free") || id.includes("-free") || id.includes(":free") || id.includes("/free")) return "free";
+
+ // 3. Known stealth and alpha free models (e.g. big-pickle, union-alpha)
+ if (id === "big-pickle" || id === "union-alpha" || id.toLowerCase().includes("alpha")) return "free";
+
+ // 4. Known commercial paid model families without a free signal are paid, never candidates
+ if (KNOWN_PAID_PREFIXES.some((p) => id.toLowerCase().startsWith(p))) return "paid";
+
+ // 5. Slashed third-party IDs (e.g. vendor/model) without a free tag are paid
+ if (id.includes("/")) return "paid";
+
+ // 6. Unrecognized novel IDs with no paid prefix or pricing signal surface as candidates for review
+ return "candidate";
 }
 
 /**
