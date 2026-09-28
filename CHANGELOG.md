@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.28.1
+
+### Patch Changes
+
+- Retry relay reachability checks after deployment so edge routing propagation delays do not show a fresh relay as unreachable — the check retries with progress notices and only warns if the relay stays dark.
+
+  Fix upstream drift alerts to stop flagging commercial paid model families as free candidates, while known alpha and stealth free models keep their free status.
+
 ## 1.28.0
 
 ### Minor Changes
