@@ -44,6 +44,12 @@ the free-model picker.
   stealth preview with the lab undisclosed, but live on the free list and
   answering keyless probes (1M context, vision + tool calls). In the
   picker as `space-bunny`.
+- Space Bunny Alpha (`stealth/space-bunny-alpha`, KiloCode Gateway free
+  list, 2026-09-28): same stealth family under a Kilo-native ID, live on
+  the free list (`isFree:true`, 1M context, text+image in) and answering
+  keyless probes. In the picker as `space-bunny-alpha`. Passes the free
+  gate through the static entry (no `:free` suffix by design, same as
+  `big-pickle`).
 
 ## Decision
 
@@ -58,9 +64,9 @@ Free slots with a printed expiry leave the picker when the window closes:
 
 - `dots-3-note-preview` (KiloCode Gateway free list) — expiry extended to
   2026-12-31. Still in the picker; re-check as the date approaches.
-- `nex-n2.5-pro` and `nex-n2.5-mini` (KiloCode Gateway free list) — expire
-  2026-09-25. If either drops off the free list it leaves the picker with
-  it; the paid versions under the same names don't count.
+- `nex-n2.5-pro` and `nex-n2.5-mini` left the Kilo free list on 2026-09-28
+  (absent from the listing, keyless 404) and left the picker with it; the
+  paid versions under other names don't count.
 
 ## Sources
 

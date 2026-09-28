@@ -11,7 +11,7 @@ pi-freeflow provides unified access to **33 curated free models** across three u
 
 ### OpenCode Zen — Chat Completions (`/v1/chat/completions`)
 - **Endpoint**: `https://opencode.ai/zen/v1/chat/completions`
-- **Models**: 7 models (Space Bunny, MiMo, Nemotron, Big Pickle, Ling, etc.)
+- **Models**: 8 models (Space Bunny, LongCat, MiMo, Nemotron, Big Pickle, Ling, etc.)
 - **Config**: `api: "openai-completions"`, supports reasoning effort
 
 ### OpenCode Zen — Messages API (`/v1/messages`)
@@ -22,7 +22,7 @@ pi-freeflow provides unified access to **33 curated free models** across three u
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: keyless — no `Authorization` header at all (the gateway rejects a placeholder credential with `401 INVALID_TOKEN`; 200 req/hr per IP)
-- **Models**: 19 models with OpenRouter-style thinking format
+- **Models**: 18 models with OpenRouter-style thinking format
 
 ### Cline (`/api/v1/chat/completions`)
 - **Endpoint**: `https://api.cline.bot/api/v1/chat/completions`
@@ -32,7 +32,7 @@ pi-freeflow provides unified access to **33 curated free models** across three u
 
 ## 33 Model Specifications
 
-### OpenCode Zen (9 models)
+### OpenCode Zen (10 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -45,8 +45,9 @@ pi-freeflow provides unified access to **33 curated free models** across three u
 | `big-pickle` | 200,000 | 32,000 | high, max | ❌ |
 | `ling-3.0-flash-fin-free` | 262,144 | 131,072 | minimal..xhigh | ❌ |
 | `space-bunny-free` | 1,048,576 | 524,288 | low..max | ✅ |
+| `longcat-2.5-preview-free` | 1,000,000 | 131,072 | minimal..max | ✅ |
 
-### KiloCode Gateway (19 models)
+### KiloCode Gateway (18 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -65,10 +66,9 @@ pi-freeflow provides unified access to **33 curated free models** across three u
 | `ling-3.0-flash-fin` | 262,144 | 32,768 | OpenRouter | ❌ |
 | `inkling-small` | 1,048,576 | 262,144 | OpenRouter | ✅ |
 | `ling-3.0-flash-sante` | 262,144 | 32,768 | OpenRouter | ❌ |
-| `nex-n2.5-pro` | 262,144 | 235,929 | OpenRouter | ✅ |
-| `nex-n2.5-mini` | 262,144 | 235,929 | OpenRouter | ✅ |
+| `step-3.7-flash` | 262,144 | 262,144 | OpenRouter | ✅ |
+| `space-bunny-alpha` | 1,000,000 | 524,288 | OpenRouter | ✅ |
 | `qwen3.8-27b` | 262,144 | 235,929 | OpenRouter | ✅ |
-| `glm-5.2` | 32,768 | 29,491 | OpenRouter | ❌ |
 
 ### Cline (5 models)
 
@@ -88,8 +88,8 @@ Cline free models come from a rotating per-account promo and need a browser logi
 
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :--- | :--- | :--- | :--- |
-| **OpenCode Zen** | 9 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat) | Keyless |
-| **KiloCode Gateway** | 19 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
+| **OpenCode Zen** | 10 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat) | Keyless |
+| **KiloCode Gateway** | 18 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
 | **Cline** | 5 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 
 ## Stealth previews

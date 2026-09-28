@@ -30,9 +30,12 @@ import type {
 
 /**
  * Pruned model IDs that must never re-enter the catalog via disk cache or upstream merge.
- * - jev-1.13-free: non-chat decision model, chat-incompatible — never registered.
- * - deepseek-v4-flash-free: listed but currently unserved upstream — stays out until it answers.
- * - stepfun/step-3.7-flash:free: gone from the live Kilo free list — only the paid counterpart remains.
+ * - jev-1.13-free: non-chat decision model, chat-incompatible (live chat 500) — never registered.
+ * - deepseek-v4-flash-free: listed but unserved upstream (live chat 400 "Model is unavailable").
+ * - nex-agi/nex-n2.5-pro:free + nex-agi/nex-n2.5-mini:free: gone 2026-09-28 — zero nex-agi
+ *   IDs on the live Kilo list, keyless chat 404 "does not exist".
+ * - z-ai/glm-5.2:free: gone 2026-09-28 — :free ID absent (keyless 404); only the paid
+ *   z-ai/glm-5.2 remains (isFree:false, keyless 401 PAID_MODEL_AUTH_REQUIRED).
  * - inclusionai/ling-3.0-flash-vl:free: gone from the live Kilo free list — only the paid counterpart remains.
  */
 export const DEAD_MODEL_IDS = new Set<string>([
@@ -47,7 +50,9 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "minimax/minimax-m3:free",
  "thinkingmachines/inkling:free",
  "union-alpha",
- "stepfun/step-3.7-flash:free",
+ "nex-agi/nex-n2.5-pro:free",
+ "nex-agi/nex-n2.5-mini:free",
+ "z-ai/glm-5.2:free",
  "inclusionai/ling-3.0-flash-vl:free",
 ]);
 /**
@@ -55,7 +60,7 @@ export const DEAD_MODEL_IDS = new Set<string>([
  * Upstream lists paid models alongside free ones (e.g. claude-fable-5-1,
  * claude-opus-4-*, gemini-3-*) so a bare upstream merge leaks paid entries that
  * fail with 401 Missing API key. Known static IDs without a free suffix
- * (e.g. big-pickle) stay allowed via MODEL_MAP.
+ * (e.g. big-pickle, stealth/space-bunny-alpha) stay allowed via MODEL_MAP.
  */
 export function isFreeCatalogId(id: string): boolean {
  if (typeof id !== "string" || id.length === 0) return false;

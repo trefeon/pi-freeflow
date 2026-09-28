@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **33 free models** | 9 from OpenCode Zen, 19 from KiloCode Gateway, 5 from Cline, context windows up to 1M. Full list below. | **$0** |
+| **33 free models** | 10 from OpenCode Zen, 18 from KiloCode Gateway, 5 from Cline, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own Cloudflare Workers and Vercel Edge relays. Requests rotate across the pool. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Every model has a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`. | **$0** |
@@ -190,7 +190,7 @@ The same command set works identically in OMP and Pi:
 /model → freeflow → pick
 ```
 
-#### OpenCode Zen (9 models), Responses and Chat API
+#### OpenCode Zen (10 models), Responses and Chat API
 
 Good defaults for long coding sessions and agentic work.
 
@@ -205,8 +205,9 @@ Good defaults for long coding sessions and agentic work.
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 | `ling-3.0-flash-fin-free` | Inclusion AI | **262K** (262.144) | **131K** (131.072) | `minimal … xhigh` | ❌ |
 | `space-bunny-free` | Stealth preview (lab undisclosed) | **1M** (1.048.576) | **512K** (524.288) | `low … max` | ✅ |
+| `longcat-2.5-preview-free` | Meituan LongCat | **1M** (1.000.000) | **131K** (131.072) | `minimal … max` | ✅ |
 
-#### KiloCode Gateway (19 models), OpenRouter compatible
+#### KiloCode Gateway (18 models), OpenRouter compatible
 
 Keyless access. Short aliases work for every row (the full ID is in parentheses).
 
@@ -226,11 +227,10 @@ Keyless access. Short aliases work for every row (the full ID is in parentheses)
 | `content-safety` (`nvidia/...:free`) | NVIDIA | **128K** (128.000) | **8K** (8.192) | ❌ *(non-thinking)* | ✅ |
 | `ling-3.0-flash-fin` (`inclusionai/ling-3.0-flash-fin:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
 | `ling-3.0-flash-sante` (`inclusionai/ling-3.0-flash-sante:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
-| `nex-n2.5-pro` (`nex-agi/nex-n2.5-pro:free`) | Nex AGI | **262K** (262.144) | **235K** (235.929) | `minimal…xhigh`\* | ✅ |
-| `nex-n2.5-mini` (`nex-agi/nex-n2.5-mini:free`) | Nex AGI | **262K** (262.144) | **235K** (235.929) | `minimal…xhigh`\* | ✅ |
+| `step-3.7-flash` (`stepfun/...:free`) | StepFun | **262K** (262.144) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
+| `space-bunny-alpha` (`stealth/...`) | Stealth preview (lab undisclosed) | **1M** (1.000.000) | **512K** (524.288) | `minimal…xhigh`\* | ✅ |
 | `inkling-small` (`thinkingmachines/inkling-small:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
 | `qwen3.8-27b` (`qwen/...:free`) | Alibaba Qwen | **262K** (262.144) | **235K** (235.929) | `minimal…xhigh`\* | ✅ |
-| `glm-5.2` (`z-ai/...:free`) | Zhipu AI | **32K** (32.768) | **29K** (29.491) | `minimal…xhigh`\* | ❌ |
 
 \* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.
 

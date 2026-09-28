@@ -13,7 +13,7 @@ import { ALL_MODELS } from "../src/models.ts";
 
 test("thin-provider lock: 33 models catalog intact", () => {
  const alive = getAliveCatalog();
- assert.equal(alive.length, 33, "catalog must be 33 (9 opencode + 19 kilo + 5 cline)");
+ assert.equal(alive.length, 33, "catalog must be 33 (10 opencode + 18 kilo + 5 cline)");
  assert.equal(new Set(alive.map((m) => m.id)).size, 33);
  assert.equal(ALL_MODELS.length, 33);
 });

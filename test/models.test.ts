@@ -60,11 +60,13 @@ test("1M context window models are properly configured", () => {
   "mimo-v2.5-free",
   "mimo-v2.6-flash-free",
   "space-bunny-free",
+  "longcat-2.5-preview-free",
   "nemotron-3.5-lightning-free",
   "nemotron-3-ultra-free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
   "nvidia/nemotron-3.5-lightning:free",
   "thinkingmachines/inkling-small:free",
+  "stealth/space-bunny-alpha",
  ];
 
  for (const id of oneMillionModels) {
@@ -91,7 +93,7 @@ test("KiloCode upstream router distinguishes Kilo vs OpenCode", () => {
  assert.equal(getModelUpstream("mimo-v2.5-free"), "opencode");
 });
 
-test("2026-09-22 additions route to the correct upstream with verified metadata", () => {
+test("2026-09-22 and 2026-09-28 additions route to the correct upstream with verified metadata", () => {
  // MiMo V2.6 Flash serves through OpenCode Zen chat with the shared MiMo effort mapping
  const mimo = getModelDef("mimo-v2.6-flash-free");
  assert.ok(mimo);
@@ -113,16 +115,39 @@ test("2026-09-22 additions route to the correct upstream with verified metadata"
  assert.equal(qwen.thinkingFormat, "openrouter");
  assert.equal(getModelUpstream("qwen/qwen3.8-27b:free"), "kilo");
  assert.equal(getModelUpstream("qwen3.8-27b"), "kilo");
- // GLM 5.2 is a text-only Kilo reasoning model
- const glm = getModelDef("z-ai/glm-5.2:free");
- assert.ok(glm);
- assert.equal(glm.contextWindow, 32_768);
- assert.equal(glm.maxTokens, 29_491);
- assert.equal(glm.reasoning, true);
- assert.deepEqual(glm.input, ["text"]);
- assert.equal(glm.thinkingFormat, "openrouter");
- assert.equal(getModelUpstream("z-ai/glm-5.2:free"), "kilo");
- assert.equal(getModelUpstream("glm-5.2"), "kilo");
+ // Step 3.7 Flash is back on the Kilo free list (resurrected 2026-09-28)
+ const step = getModelDef("stepfun/step-3.7-flash:free");
+ assert.ok(step);
+ assert.equal(step.contextWindow, 262_144);
+ assert.equal(step.maxTokens, 262_144);
+ assert.equal(step.reasoning, true);
+ assert.deepEqual(step.input, ["text", "image"]);
+ assert.equal(step.thinkingFormat, "openrouter");
+ assert.equal(getModelUpstream("stepfun/step-3.7-flash:free"), "kilo");
+ assert.equal(getModelUpstream("step-3.7-flash"), "kilo");
+ // Space Bunny Alpha is a Kilo-native stealth ID with no :free suffix —
+ // it passes the free gate through the static entry, like big-pickle
+ const bunny = getModelDef("stealth/space-bunny-alpha");
+ assert.ok(bunny);
+ assert.equal(bunny.contextWindow, 1_000_000);
+ assert.equal(bunny.maxTokens, 524_288);
+ assert.equal(bunny.reasoning, true);
+ assert.deepEqual(bunny.input, ["text", "image"]);
+ assert.equal(getModelUpstream("stealth/space-bunny-alpha"), "kilo");
+ assert.equal(getModelUpstream("space-bunny-alpha"), "kilo");
+});
+
+test("2026-09-28 pruned models stay out of the static catalog", () => {
+ // Gone from the live Kilo free list: :free IDs absent, keyless 404.
+ // Only paid counterparts remain (isFree:false), so nothing registers.
+ for (const id of ["nex-agi/nex-n2.5-pro:free", "nex-agi/nex-n2.5-mini:free", "z-ai/glm-5.2:free"]) {
+  assert.equal(getModelDef(id), undefined, `${id} must not resolve`);
+  assert.equal(MODEL_MAP.get(id), undefined, `${id} must not be in MODEL_MAP`);
+ }
+ // Pruned aliases fall through to the verbatim ID (no cross-lab residue)
+ assert.equal(resolveCanonicalModelId("nex-n2.5-pro"), "nex-n2.5-pro");
+ assert.equal(resolveCanonicalModelId("nex-n2.5-mini"), "nex-n2.5-mini");
+ assert.equal(resolveCanonicalModelId("glm-5.2"), "glm-5.2");
 });
 
 test("model aliases resolve correctly to canonical IDs", () => {
@@ -186,6 +211,8 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "mimo-v2.6-flash-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // Added 2026-09-23 (live: Zen listing + keyless chat 200; models.dev 1M ctx / 512K out)
   "space-bunny-free": { ctx: 1_048_576, max: 524_288, reasoning: true },
+  // Added 2026-09-27 (live: Zen listing + keyless chat 200; models.dev 1M ctx / 131K out)
+  "longcat-2.5-preview-free": { ctx: 1_000_000, max: 131_072, reasoning: true },
   "nemotron-3-ultra-free": { ctx: 1_000_000, max: 128_000, reasoning: true },
   "nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 262_144, reasoning: true },
   "big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
@@ -207,12 +234,12 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "inclusionai/ling-3.0-flash-fin:free": { ctx: 262_144, max: 32_768, reasoning: true },
   "inclusionai/ling-3.0-flash-sante:free": { ctx: 262_144, max: 32_768, reasoning: true },
   "thinkingmachines/inkling-small:free": { ctx: 1_048_576, max: 262_144, reasoning: true },
-  // Added 2026-09-12 (live-verified: gateway /api/gateway/models + 1-token probe 200)
-  "nex-agi/nex-n2.5-pro:free": { ctx: 262_144, max: 235_929, reasoning: true },
-  "nex-agi/nex-n2.5-mini:free": { ctx: 262_144, max: 235_929, reasoning: true },
+  // Resurrected 2026-09-28 (live: Kilo free list isFree:true + keyless chat 200)
+  "stepfun/step-3.7-flash:free": { ctx: 262_144, max: 262_144, reasoning: true },
+  // Added 2026-09-28 (live: Kilo free list isFree:true + keyless chat 200; 1M ctx)
+  "stealth/space-bunny-alpha": { ctx: 1_000_000, max: 524_288, reasoning: true },
   // Added 2026-09-22 (live: Kilo /api/gateway/models context_length/max_completion_tokens)
   "qwen/qwen3.8-27b:free": { ctx: 262_144, max: 235_929, reasoning: true },
-  "z-ai/glm-5.2:free": { ctx: 32_768, max: 29_491, reasoning: true },
   // Cline direct-only (per-user pool — https://api.cline.bot)
   "cline-free/deepseek-v4.1-flash": { ctx: 1_000_000, max: 384_000, reasoning: true },
   "cline-free/muse-spark-1.3-contributor": { ctx: 1_048_576, max: 131_072, reasoning: true },
@@ -235,11 +262,10 @@ test("new alias map resolves to canonical kilo ids", () => {
  assert.equal(resolveCanonicalModelId("ling-3.0-flash-fin"), "inclusionai/ling-3.0-flash-fin:free");
  assert.equal(resolveCanonicalModelId("inkling-small"), "thinkingmachines/inkling-small:free");
  assert.equal(resolveCanonicalModelId("ling-3.0-flash-sante"), "inclusionai/ling-3.0-flash-sante:free");
- assert.equal(resolveCanonicalModelId("nex-n2.5-pro"), "nex-agi/nex-n2.5-pro:free");
- assert.equal(resolveCanonicalModelId("nex-n2.5-mini"), "nex-agi/nex-n2.5-mini:free");
+ assert.equal(resolveCanonicalModelId("step-3.7-flash"), "stepfun/step-3.7-flash:free");
+ assert.equal(resolveCanonicalModelId("space-bunny-alpha"), "stealth/space-bunny-alpha");
  assert.equal(resolveCanonicalModelId("mimo-v2.6-flash"), "mimo-v2.6-flash-free");
  assert.equal(resolveCanonicalModelId("qwen3.8-27b"), "qwen/qwen3.8-27b:free");
- assert.equal(resolveCanonicalModelId("glm-5.2"), "z-ai/glm-5.2:free");
 });
 
 test("union-alpha is pruned from the static catalog", () => {
