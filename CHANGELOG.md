@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.28.0
+
+### Minor Changes
+
+- 526d43f: Refresh the free model catalog to the current live rotation (33 models).
+
+  - New: Space Bunny Alpha on the KiloCode Gateway free list (1M context window) — pick it with the short name `space-bunny-alpha`.
+  - Back: Step 3.7 Flash returns to the KiloCode Gateway free list after a live serving re-check.
+  - Retired from the picker: Nex N2.5 Pro, Nex N2.5 Mini, and GLM 5.2 free — all three are gone from the free list (only paid versions remain).
+
+- 526d43f: Add LongCat 2.5 Preview Free (`longcat-2.5-preview-free`) from OpenCode Zen with a 1M context window, reasoning, and vision.
+
+  Fix upstream drift detection to accurately recognize free and alpha models while excluding commercial paid model families from candidate suggestions.
+
+### Patch Changes
+
+- 526d43f: Retry relay reachability verification after deployment so edge DNS and routing propagation delays (such as newly created Cloudflare Workers routes) do not show a false unreachable warning.
+
 ## 1.27.0
 
 ### Minor Changes
