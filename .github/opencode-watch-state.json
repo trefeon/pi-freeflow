@@ -1,5 +1,5 @@
 {
-  "lastRelease": "v1.18.32",
+  "lastRelease": "v1.18.33",
   "fileShas": {
     "identifier.ts": "aab182e24eb8e133300c5105e67e21d438550ab326e31fffac7763873c5ae5cd",
     "session-id.ts": "da161dc7602f91a0528fce9f259d1ff83d84e8376d5b2cbd714ceeeb001c7b9b",
@@ -19,5 +19,5 @@
     "nemotron-3.5-lightning-free",
     "space-bunny-free"
   ],
-  "lastChecked": "2026-09-27T09:54:54.497Z"
+  "lastChecked": "2026-09-28T10:44:21.264Z"
 }
