@@ -719,6 +719,41 @@ test("command spec: /freeflow deploy warns with exact retry/remove commands when
  });
 });
 
+test("command spec: /freeflow deploy retries probe when initial edge routing returns 404 and reports ok on retry", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  const liveUrl = "https://relay-propagation-case.vercel.app";
+  let probeAttempts = 0;
+  t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
+   if (url.endsWith("/v1/models")) {
+    probeAttempts++;
+    if (probeAttempts === 1) {
+     return { status: 404, body: {} };
+    }
+    return { status: 200, body: {} };
+   }
+   if (url.includes("/v13/deployments/")) return { body: { readyState: "READY", url: "relay-propagation-case.vercel.app" } };
+   if (url.includes("/v13/deployments") && init?.method === "POST") return { body: { id: "dep1", projectId: "proj1" } };
+   if (url.includes("/v9/projects/")) return { body: {} };
+   return { status: 500, body: {} };
+  }));
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({
+   selectValue: VERCEL_OPTION,
+   inputValues: ["fake-token-12345", "propagate-run"],
+   confirmValue: true,
+  });
+  await spec.handler("deploy", ctx);
+  assert.equal(probeAttempts, 2, "must probe twice: 404 then 200");
+  assert.ok(notifications.some((n) => n.message.includes("Waiting for edge routing to propagate")));
+  const done = notifications.find((n) => n.message.includes("Deployed & active"));
+  assert.ok(done, `deploy must succeed, got: ${JSON.stringify(notifications)}`);
+  assert.ok(done.message.includes("reachable"), "must be marked reachable once propagated");
+  assert.ok(!done.message.includes("unreachable"), "must not be reported unreachable");
+ });
+});
+
 test("command spec: /freeflow remove refuses the active relay so the sticky primary is never stranded", async (t) => {
  await withSavedDiskState(async () => {
   resetAllRelayHealth();

@@ -3,7 +3,6 @@ import { startProxy } from "../src/proxy.ts";
 import { probeRelay } from "../src/probe.ts";
 import { loadRelayState } from "../src/relay-state.ts";
 import { ONBOARDED_FLAG_FILE } from "../src/config.ts";
-import { agent } from "../src/relay.ts";
 import fs from "node:fs";
 
 const results: string[] = [];
@@ -37,7 +36,7 @@ try {
 const state = loadRelayState();
 ok(`relay pool: ${state.relays.length} relay(s), mode=${state.mode}, enabled=${state.enabled}`);
 for (const relay of state.relays) {
-	const probe = await probeRelay(relay.url);
+	const probe = await probeRelay(relay.url, relay.auth);
 	if (probe.ok) {
 		ok(`probe ${relay.label || "?"} → HTTP ${probe.status} in ${probe.latencyMs}ms`);
 	} else {
@@ -45,9 +44,7 @@ for (const relay of state.relays) {
 	}
 }
 
-	console.log(results.join("\n"));
-	const failures = results.filter((r) => r.startsWith("  ✗")).length;
-	console.log(failures === 0 ? `\nALL LIVE CHECKS PASS (${results.length})` : `\n${failures} FAILURES`);
-	// Close the keep-alive agent so libuv has no live handles at exit (Windows).
-	await agent.close();
-	process.exit(failures === 0 ? 0 : 1);
+console.log(results.join("\n"));
+const failures = results.filter((r) => r.startsWith("  ✗")).length;
+console.log(failures === 0 ? `\nALL LIVE CHECKS PASS (${results.length})` : `\n${failures} FAILURES`);
+process.exit(failures === 0 ? 0 : 1);

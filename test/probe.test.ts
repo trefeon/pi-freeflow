@@ -213,3 +213,62 @@ test("probeRelay supports direct opencode in chat endpoint mode", async () => {
   globalThis.fetch = realFetch;
  }
 });
+
+test("probeRelay retries when initial attempts fail and returns ok when a retry succeeds", async () => {
+ const realFetch = globalThis.fetch;
+ try {
+  let calls = 0;
+  const retryEvents: Array<{ attempt: number; maxRetries: number; status: number }> = [];
+  globalThis.fetch = (async () => {
+   calls++;
+   if (calls < 3) {
+    return fakeResponse(false, 404);
+   }
+   return fakeResponse(true, 200);
+  }) as typeof fetch;
+
+  const result = await probeRelay("https://relay.example.com", "secret", {
+   retries: 3,
+   retryDelayMs: 10,
+   onRetry: (attempt, maxRetries, lastResult) => {
+    retryEvents.push({ attempt, maxRetries, status: lastResult.status });
+   },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 200);
+  assert.equal(calls, 3);
+  assert.equal(retryEvents.length, 2);
+  assert.deepEqual(retryEvents[0], { attempt: 1, maxRetries: 3, status: 404 });
+  assert.deepEqual(retryEvents[1], { attempt: 2, maxRetries: 3, status: 404 });
+ } finally {
+  globalThis.fetch = realFetch;
+ }
+});
+
+test("probeRelay exhausts retries and returns the last failure if all attempts fail", async () => {
+ const realFetch = globalThis.fetch;
+ try {
+  let calls = 0;
+  const retryEvents: number[] = [];
+  globalThis.fetch = (async () => {
+   calls++;
+   return fakeResponse(false, 404);
+  }) as typeof fetch;
+
+  const result = await probeRelay("https://relay.example.com", undefined, {
+   retries: 2,
+   retryDelayMs: 10,
+   onRetry: (attempt) => {
+    retryEvents.push(attempt);
+   },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 404);
+  assert.equal(calls, 3);
+  assert.deepEqual(retryEvents, [1, 2]);
+ } finally {
+  globalThis.fetch = realFetch;
+ }
+});

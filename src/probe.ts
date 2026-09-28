@@ -24,6 +24,15 @@ export interface RelayProbeOptions {
  model?: string;
  /** Timeout in milliseconds (defaults to 5000) */
  timeoutMs?: number;
+ /**
+  * Number of retry attempts when the probe returns !ok or throws.
+  * Defaults to 0 (single attempt). Useful post-deploy for edge DNS propagation.
+  */
+ retries?: number;
+ /** Delay between retries in milliseconds (defaults to 2000). */
+ retryDelayMs?: number;
+ /** Optional progress callback before each retry */
+ onRetry?: (attempt: number, maxRetries: number, lastResult: RelayProbeResult) => void;
 }
 
 /**
@@ -41,7 +50,7 @@ export interface RelayProbeOptions {
  * @param auth Optional per-relay shared secret; sent as x-relay-auth so
  *   deployed relays (which enforce it) answer the probe instead of 401.
  */
-export async function probeRelay(
+async function probeRelayOnce(
  url: string,
  auth?: string,
  opts?: RelayProbeOptions,
@@ -118,4 +127,27 @@ export async function probeRelay(
    error: (e as Error)?.message || String(e),
   };
  }
+}
+
+export async function probeRelay(
+ url: string,
+ auth?: string,
+ opts?: RelayProbeOptions,
+): Promise<RelayProbeResult> {
+ const retries = Math.max(0, opts?.retries ?? 0);
+ const retryDelay = Math.max(10, opts?.retryDelayMs ?? 2000);
+
+ for (let attempt = 0; attempt <= retries; attempt++) {
+  if (attempt > 0) {
+   const { promise, resolve } = Promise.withResolvers<void>();
+   setTimeout(resolve, retryDelay);
+   await promise;
+  }
+  const result = await probeRelayOnce(url, auth, opts);
+  if (result.ok || attempt === retries) {
+   return result;
+  }
+  opts?.onRetry?.(attempt + 1, retries, result);
+ }
+ return { ok: false, status: 0, latencyMs: 0, error: "Probe failed" };
 }

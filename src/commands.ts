@@ -12,7 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getClientPort, isJsRuntimeExecutable, resolveDaemonRuntime } from "./client.ts";
 import { refreshCatalog, setAliveCatalog } from "./catalog.ts";
-import { DAEMON_SPAWN_ENV, DEBUG_STATE_FILE, HOST, LOG_FILE, PORT, RELAY_STATE_FILE } from "./config.ts";
+import { DAEMON_SPAWN_ENV, DATA_DIR_ENV, DEBUG_STATE_FILE, HOST, LOG_FILE, PORT, RELAY_STATE_FILE } from "./config.ts";
 import {
  compareVersions,
  fetchLatestVersion,
@@ -83,6 +83,17 @@ export function updateStatusBar(ui?: ExtensionUIContext): void {
 
 export const STARTUP_TASK_NAME = "pi-freeflow-daemon";
 export const STARTUP_SERVICE_NAME = "pi-freeflow.service";
+
+let deployProbeRetries = 5;
+let deployProbeRetryDelayMs: number | null = null;
+
+/** Test-only: override post-deploy probe retry count and delay. */
+export function _setDeployProbeOptionsForTest(
+ opts: { retries?: number; retryDelayMs?: number } | null,
+): void {
+ deployProbeRetries = opts?.retries ?? 5;
+ deployProbeRetryDelayMs = opts?.retryDelayMs ?? null;
+}
 
 export interface StartupPlan {
  platform: string;
@@ -755,7 +766,18 @@ export function createCommandSpec(
      }
      let probeNote = "";
      try {
-      const probe = await probeRelay(finalUrl, auth);
+      const retryDelay =
+       deployProbeRetryDelayMs ?? (process.env[DATA_DIR_ENV] ? 10 : 2000);
+      const probe = await probeRelay(finalUrl, auth, {
+       retries: deployProbeRetries,
+       retryDelayMs: retryDelay,
+       onRetry: (attempt, total) => {
+        ctx.ui.notify(
+         `Waiting for edge routing to propagate (${attempt}/${total})…`,
+         "info",
+        );
+       },
+      });
       probeNote = probe.ok
        ? ` ✓ reachable (HTTP ${probe.status}, ${probe.latencyMs}ms)`
        : ` ⚠ deployed but unreachable (${probe.error || `HTTP ${probe.status}`}) — run /freeflow test ${finalUrl} to retry, or /freeflow remove ${finalUrl} to drop it`;
