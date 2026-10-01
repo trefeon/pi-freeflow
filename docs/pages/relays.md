@@ -25,7 +25,7 @@ Instead of VPN tunnels, pi-freeflow uses standard edge worker scripts across **C
 
 | Status / Event | Action | Rationale |
 | :--- | :--- | :--- |
-| **HTTP 200 (OK)** | Success (sticky active) | Active relay is saved as sticky target |
+| **HTTP 200 (OK)** | Success | In `auto` the winner becomes the sticky target; in `spread` the pool is left as-is |
 | **HTTP 429 (Rate Limit)** | Roll to next relay | IP quota exceeded; fresh egress IP per relay |
 | **Relay Edge 404 (Dead Deployment)** | Roll to next relay | Deployment missing or deleted on relay host; auto-failover |
 | **HTTP 502 / 503** | Roll to next relay | Upstream edge transient error |
@@ -34,6 +34,15 @@ Instead of VPN tunnels, pi-freeflow uses standard edge worker scripts across **C
 | **Socket / DNS error** | Roll to next relay | Relay host unreachable |
 | **Pool exhausted** | Direct upstream fallback | All relays failed; direct to provider |
 
+## Relay Modes
+
+| Command | Behaviour |
+| :--- | :--- |
+| `/freeflow off` | Always talk direct to upstream — no relays. |
+| `/freeflow auto` | Default. Relay turns on when you pick a `freeflow/*` model. Every request starts at the active relay and rolls to the next healthy one on a rate limit, timeout, or edge failure. |
+| `/freeflow on` | Always relay, regardless of which model is selected. |
+| `/freeflow spread` | Relay turns on and each request starts at a rotating healthy relay instead of one sticky primary, so parallel sessions and subagents land on different egress IPs. A conversation's reasoning issuer still outranks the rotation, and a rate-limited relay is never preferred. |
+
 ## Relay Pool Management
 
 Relay state is persisted in `~/.pi/agent/pi-freeflow-relay-state.json`:
@@ -41,6 +50,7 @@ Relay state is persisted in `~/.pi/agent/pi-freeflow-relay-state.json`:
 ```json
 {
   "enabled": true,
+  "mode": "auto",
   "url": "https://active-relay.workers.dev",
   "relays": [
     { "url": "https://active-relay.workers.dev", "label": "CF-Primary" },

@@ -17,7 +17,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
 | **33 free models** | 10 from OpenCode Zen, 18 from KiloCode Gateway, 5 from Cline, context windows up to 1M. Full list below. | **$0** |
-| **Relay pool** | Route requests through your own Cloudflare Workers and Vercel Edge relays. Requests rotate across the pool. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your platforms' free tiers |
+| **Relay pool** | Route requests through your own Cloudflare Workers and Vercel Edge relays. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Every model has a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`. | **$0** |
 | **Shared local proxy** | One daemon on `127.0.0.1:28180` serves every session on the machine, so parallel subagents reuse it instead of opening their own connections. | **$0** |
@@ -167,7 +167,7 @@ The same command set works identically in OMP and Pi:
 /freeflow label <index|url> <name># Assign a friendly label to a relay
 /freeflow remove <index|url|label># Remove a relay from the pool
 /freeflow test <index|url|label>  # Probe a relay for reachability and latency
-/freeflow on | off | auto         # Toggle relay mode (auto = enabled for freeflow)
+/freeflow on|off|auto|spread     # Relay mode (auto = enabled for freeflow, spread = rotate pool)
 /freeflow deploy <platform>       # Guided relay deploy: vercel|cloudflare|deno, token in-memory, auto-adds
 /freeflow logs [lines]            # Inspect recent proxy logs
 /freeflow trace [req-id]          # Tail logs filtered by request correlation ID
@@ -347,7 +347,7 @@ src/
 ├── models.ts         # 33-model catalog definitions
 ├── catalog.ts        # model catalog cache (24h disk)
 ├── proxy.ts          # local proxy server (127.0.0.1:28180)
-├── relay.ts          # relay selection and round-robin
+├── relay.ts          # relay fetch, rolling on retryable failures
 ├── relay-state.ts    # relay pool state, health tracking
 ├── stream-pipe.ts    # SSE stream piping and truncation resilience
 ├── commands.ts       # /freeflow CLI subcommands
