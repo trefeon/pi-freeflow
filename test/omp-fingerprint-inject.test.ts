@@ -31,9 +31,9 @@ test("isOmpLikeCaller: OMP markers and glob-without-find detect, Pi does not", (
  assert.equal(isOmpLikeCaller(["read", "bash"]), false);
 });
 
-test("OMP_FINGERPRINT_DEFS: real schemas for all six slots, never the COMPAT text", () => {
- assert.deepEqual(Object.keys(OMP_FINGERPRINT_DEFS).sort(), [...OPENCODE_FINGERPRINT_TOOLS].sort());
- for (const name of OPENCODE_FINGERPRINT_TOOLS) {
+test("OMP_FINGERPRINT_DEFS: real schemas for five slots, edit excluded (no static host-executable schema)", () => {
+ assert.deepEqual(Object.keys(OMP_FINGERPRINT_DEFS).sort(), ["bash", "glob", "grep", "read", "write"]);
+ for (const name of Object.keys(OMP_FINGERPRINT_DEFS) as Array<keyof typeof OMP_FINGERPRINT_DEFS>) {
   const def = OMP_FINGERPRINT_DEFS[name];
   assert.ok(def.description && !def.description.includes("never be invoked"), `${name}: real description`);
   const params = def.parameters as { type?: unknown; properties?: unknown; required?: unknown };
@@ -41,9 +41,14 @@ test("OMP_FINGERPRINT_DEFS: real schemas for all six slots, never the COMPAT tex
   assert.ok(params.properties && typeof params.properties === "object", `${name}: non-empty properties`);
   assert.ok(Object.keys(params.properties as Record<string, unknown>).length > 0, `${name}: executable params`);
  }
+ // OMP GlobTool's pattern carrier is `path` (optional), never required `pattern`.
+ const globProps = (OMP_FINGERPRINT_DEFS.glob.parameters as { properties: Record<string, unknown> }).properties;
+ assert.ok("path" in globProps, "injected glob carries path");
+ assert.ok(!("pattern" in globProps), "injected glob has no pattern prop");
+ assert.ok(!("required" in (OMP_FINGERPRINT_DEFS.glob.parameters as Record<string, unknown>)), "injected glob is all-optional");
 });
 
-test("injectFingerprintTools: partial OMP [ask,glob] on responses yields real schemas, no COMPAT text", () => {
+test("injectFingerprintTools: partial OMP [ask,glob] on responses yields real schemas, edit stays cloaked", () => {
  const askParams = { type: "object", properties: { question: { type: "string" } }, required: ["question"] };
  const globParams = { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] };
  const tools = [
@@ -57,15 +62,22 @@ test("injectFingerprintTools: partial OMP [ask,glob] on responses yields real sc
  for (const t of out) {
   assert.equal(t.type, "function");
   assert.ok(typeof t.name === "string");
-  assert.ok(!String(t.description).includes("never be invoked"), `${t.name}: no COMPAT description`);
+  if (t.name === "edit") {
+   assert.equal(t.description, COMPAT_TOOL_DESCRIPTION, "injected edit is always the cloaked placeholder");
+   assert.deepEqual(paramsOf(t), { type: "object", properties: {} });
+  } else {
+   assert.ok(!String(t.description).includes("never be invoked"), `${t.name}: no COMPAT description`);
+  }
  }
  const read = out.find((t) => t.name === "read")!;
  assert.deepEqual(paramsOf(read), OMP_FINGERPRINT_DEFS.read.parameters, "injected read carries the real schema");
+ const glob = out.find((t) => t.name === "glob")!;
+ assert.equal(glob.description, "Find files", "caller-declared glob keeps its own schema, never the injected def");
+ assert.deepEqual(paramsOf(glob), globParams);
  const ask = out.find((t) => t.name === "ask")!;
  assert.equal(ask.description, "Ask a question", "caller tools untouched");
  assert.deepEqual(paramsOf(ask), askParams);
 });
-
 test("injectFingerprintTools: Pi callers keep empty placeholders; explicit ompLike overrides", () => {
  const pi = [responsesTool("find", "Find files", { type: "object", properties: { p: { type: "string" } } })];
  const piOut = injectFingerprintTools(pi, "/v1/responses");
@@ -81,8 +93,13 @@ test("injectFingerprintTools: Pi callers keep empty placeholders; explicit ompLi
   true,
  );
  assert.ok(
-  forced.every((t) => !String(t.description).includes("never be invoked")),
-  "explicit ompLike=true forces real defs",
+  forced.every((t) => String(t.name) === "edit" || !String(t.description).includes("never be invoked")),
+  "explicit ompLike=true forces real defs (edit excepted, always cloaked)",
+ );
+ assert.equal(
+  forced.find((t) => String(t.name) === "edit")?.description,
+  COMPAT_TOOL_DESCRIPTION,
+  "injected edit stays the cloaked placeholder even when forced",
  );
  const forcedPi = injectFingerprintTools([responsesTool("ask", "a", { type: "object" })], "/v1/responses", false);
  const injected = forcedPi.filter((t) => String(t.name) !== "ask");
@@ -112,7 +129,7 @@ test("injectFingerprintTools: full OMP inventory injects nothing; idempotent and
  assert.ok(canon && Object.keys(canon.parameters.properties as Record<string, unknown>).length > 0);
 });
 
-test("enforce: partial OMP [ask,glob] on /v1/responses yields real schemas, empty cloak list", () => {
+test("enforce: partial OMP [ask,glob] on /v1/responses yields real schemas, edit cloaked", () => {
  const body: Record<string, unknown> = {
   model: "muse-spark-1.3-contributor-free",
   input: "hi",
@@ -125,12 +142,16 @@ test("enforce: partial OMP [ask,glob] on /v1/responses yields real schemas, empt
  const r = enforceOpencodeFingerprint(body, "/v1/responses");
  assert.equal(r.callerHadTools, true);
  assert.equal(r.addedTools, true);
- assert.deepEqual(r.injected, [], "real definitions are never cloaked");
- assert.deepEqual([...r.injectedReal].sort(), ["bash", "edit", "grep", "read", "write"]);
+ assert.deepEqual(r.injected, ["edit"], "only the non-executable edit placeholder is cloaked");
+ assert.deepEqual([...r.injectedReal].sort(), ["bash", "grep", "read", "write"]);
  const tools = body.tools as Array<Record<string, unknown>>;
  assert.equal(tools.length, 7);
  for (const t of tools) {
   const name = String(t.name);
+  if (name === "edit") {
+   assert.equal(t.description, COMPAT_TOOL_DESCRIPTION, "injected edit is the cloaked placeholder");
+   continue;
+  }
   assert.ok(!String(t.description).includes("never be invoked"), `${name}: no COMPAT description`);
   const params = t.parameters as { properties?: Record<string, unknown> };
   assert.ok(params.properties && Object.keys(params.properties).length > 0, `${name}: executable params`);

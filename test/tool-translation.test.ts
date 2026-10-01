@@ -1,13 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+	convertSseToJson,
 	enforceOpencodeFingerprint,
 	ensureMessagesFingerprintTools,
-	convertSseToJson,
+	sseToChatCompletionJson,
 	sseToMessagesJson,
+	sseToResponsesJson,
 } from "../src/opencode-fingerprint.ts";
 import {
 	ALL_HOST_TOOL_NAMES,
+	COMPAT_TOOL_DESCRIPTION,
 	OMP_HIDDEN_TOOL_NAMES,
 	OMP_TOOL_NAMES,
 	OPENCODE_FINGERPRINT_TOOLS,
@@ -15,6 +18,7 @@ import {
 	apiForPathname,
 	buildFindGlobRestore,
 	canonicalizeTool,
+	clineChatBodyFromResponsesBody,
 	injectFingerprintTools,
 	restoreToolChoiceForCaller,
 	restoreToolNameForCaller,
@@ -493,4 +497,211 @@ test("translateToolsForPath: hidden plus full host sets survive every path", () 
 		assert.ok(names.includes("ls") && names.includes("powershell"), `${path}: Pi ls/powershell verbatim`);
 		assert.ok(names.includes("browser") && names.includes("computer"), `${path}: OMP browser/computer present`);
 	}
+});
+
+/**
+ * Full-inventory round-trip contract (E2eMatrixTests): every caller-declared
+ * schema rides upstream VERBATIM on all three wire paths — params,
+ * description, required, strict, and extra top-level fields — the fingerprint
+ * sextet appears exactly once, and downstream restore maps glob->find plus
+ * caller casing. Fails without PassthroughFix if translation rewrites schemas
+ * or duplicates/drops fingerprint slots.
+ */
+function richCallerTool(name: string, host: string): Record<string, unknown> {
+	return {
+		type: "function",
+		function: {
+			name,
+			description: `${name} host tool`,
+			parameters: {
+				type: "object",
+				properties: {
+					input: { type: "string", description: `${name} primary input` },
+					opts: { type: "object", properties: { verbose: { type: "boolean" } } },
+				},
+				required: ["input"],
+			},
+		},
+		strict: true,
+		"x-host": host,
+	};
+}
+
+function upstreamSchemaOf(t: Record<string, unknown>): Record<string, unknown> {
+	const fn = t.function as Record<string, unknown> | undefined;
+	const cand = fn?.parameters ?? (t as Record<string, unknown>).parameters ?? (t as Record<string, unknown>).input_schema;
+	return cand as Record<string, unknown>;
+}
+
+test("contract: full Pi inventory round-trips verbatim on all three paths", () => {
+	for (const path of PATHS) {
+		const caller = PI_TOOL_NAMES.map((n) => richCallerTool(n, "pi"));
+		const snapshot = JSON.parse(JSON.stringify(caller)) as Array<Record<string, unknown>>;
+		const translated = translateToolsForPath(caller, path);
+		const withFp = injectFingerprintTools([...translated], path);
+		const names = withFp.map((t) => upstreamNameOf(t).toLowerCase());
+		assert.equal(names.length, new Set(names).size, `${path}: no duplicate upstream names`);
+		for (const fp of OPENCODE_FINGERPRINT_TOOLS) {
+			assert.equal(names.filter((n) => n === fp).length, 1, `${path}: fingerprint ${fp} exactly once`);
+		}
+		assert.ok(!names.includes("find"), `${path}: caller find never sent upstream as find`);
+		for (const orig of snapshot) {
+			const fn = orig.function as Record<string, unknown>;
+			const cname = String(fn.name);
+			const uname = cname.toLowerCase() === "find" ? "glob" : cname;
+			const hit = withFp.find((t) => upstreamNameOf(t).toLowerCase() === uname.toLowerCase());
+			assert.ok(hit, `${path}: keeps caller tool ${cname}`);
+			assert.equal(upstreamDescOf(hit!), `${cname} host tool`, `${path}: ${cname} description verbatim`);
+			assert.deepEqual(upstreamSchemaOf(hit!), (fn.parameters as Record<string, unknown>), `${path}: ${cname} params verbatim`);
+			assert.equal((hit as Record<string, unknown>).strict, true, `${path}: ${cname} strict verbatim`);
+			assert.equal((hit as Record<string, unknown>)["x-host"], "pi", `${path}: ${cname} extra field verbatim`);
+		}
+		const restore = buildFindGlobRestore(caller);
+		assert.equal(restore.renamedFindToGlob, true, `${path}: Pi find->glob rename recorded`);
+		assert.equal(restoreToolNameForCaller("glob", restore), "find", `${path}: upstream glob restores to caller find`);
+		assert.equal(restoreToolNameForCaller("read", restore), "read", `${path}: untouched names restore verbatim`);
+	}
+});
+
+test("contract: full OMP inventory round-trips verbatim, zero injected", () => {
+	const all = [...OMP_TOOL_NAMES, ...OMP_HIDDEN_TOOL_NAMES];
+	for (const path of PATHS) {
+		const caller = all.map((n) => richCallerTool(n, "omp"));
+		const translated = translateToolsForPath(caller, path);
+		assert.equal(translated.length, all.length, `${path}: OMP covers every fingerprint slot, nothing added or dropped`);
+		const names = translated.map((t) => upstreamNameOf(t).toLowerCase());
+		for (const fp of OPENCODE_FINGERPRINT_TOOLS) {
+			assert.equal(names.filter((n) => n === fp).length, 1, `${path}: fingerprint ${fp} exactly once`);
+		}
+		for (const tool of translated) {
+			const uname = upstreamNameOf(tool);
+			const orig = caller.find((c) => String((c.function as Record<string, unknown>).name).toLowerCase() === uname.toLowerCase());
+			assert.ok(orig, `${path}: upstream ${uname} maps to a caller tool`);
+			assert.equal(upstreamDescOf(tool), `${(orig!.function as Record<string, unknown>).name} host tool`, `${path}: ${uname} description verbatim`);
+			assert.deepEqual(upstreamSchemaOf(tool), ((orig!.function as Record<string, unknown>).parameters as Record<string, unknown>), `${path}: ${uname} params verbatim`);
+			assert.equal((tool as Record<string, unknown>)["x-host"], "omp", `${path}: ${uname} extra field verbatim`);
+		}
+		const again = injectFingerprintTools([...translated], path);
+		assert.equal(again.length, translated.length, `${path}: re-inject adds zero when caller owns every slot`);
+	}
+});
+
+test("contract: OMP-like injected glob uses the host path-optional schema", () => {
+	// Catches PassthroughFix bug #1: the old injected glob demanded
+	// {pattern: required}, but the real OMP GlobTool carries its pattern in an
+	// OPTIONAL `path` field ({path?, hidden?, gitignore?, limit?}). A model
+	// handed the old def emits pattern-shaped calls the host cannot execute.
+	for (const path of PATHS) {
+		const caller = [richCallerTool("ask", "omp"), richCallerTool("todo", "omp")];
+		const withFp = injectFingerprintTools(translateToolsForPath(caller, path), path);
+		const glob = withFp.find((t) => upstreamNameOf(t).toLowerCase() === "glob");
+		assert.ok(glob, `${path}: missing glob is injected for OMP-like callers`);
+		const schema = upstreamSchemaOf(glob!) as { properties?: Record<string, unknown>; required?: unknown };
+		assert.ok(schema.properties && typeof schema.properties === "object", `${path}: injected glob has executable properties`);
+		assert.ok("path" in (schema.properties as Record<string, unknown>), `${path}: injected glob accepts the host path field`);
+		const required = Array.isArray(schema.required) ? (schema.required as unknown[]) : [];
+		assert.ok(!required.includes("pattern"), `${path}: injected glob must not demand pattern`);
+	}
+});
+
+test("contract: injected edit never ships the unexecutable path+edit shape", () => {
+	// Catches PassthroughFix bug #2: the old injected edit used
+	// {path, edit: string}, which matches NO host (OMP default is hashline
+	// {input}, Pi wants an edits[] array) yet rode the cloak-exempt path, so
+	// models could invoke a def the host rejects. Fixed behavior: a cloaked
+	// COMPAT placeholder, or the real OMP hashline {input} def.
+	for (const path of PATHS) {
+		const caller = [richCallerTool("ask", "omp"), richCallerTool("todo", "omp")];
+		const withFp = injectFingerprintTools(translateToolsForPath(caller, path), path);
+		const edit = withFp.find((t) => upstreamNameOf(t).toLowerCase() === "edit");
+		assert.ok(edit, `${path}: missing edit is injected for OMP-like callers`);
+		const schema = upstreamSchemaOf(edit!) as { properties?: Record<string, unknown> };
+		const props = (schema.properties ?? {}) as Record<string, unknown>;
+		const desc = String(upstreamDescOf(edit!));
+		const isCompat = desc === COMPAT_TOOL_DESCRIPTION;
+		const isHashline = "input" in props;
+		const isOldBroken = "edit" in props && !("input" in props) && !isCompat;
+		assert.ok(!isOldBroken, `${path}: injected edit must not use the {path, edit} shape`);
+		assert.ok(isCompat || isHashline, `${path}: injected edit is a cloaked placeholder or the host hashline def`);
+	}
+});
+
+test("contract: aggregate cloak strips injected-only, restores caller names, keeps ids/args", () => {
+	// Regression guard for CloakStreamFix: only names in this request's
+	// injected[] list are stripped; caller-owned same-name calls survive with
+	// casing + glob->find restored, ids and argument payloads value-identical.
+	// `injected` holds only truly-missing slots: caller-owned bash/read/glob are
+	// absent so they survive; caller-less grep is present so it strips. This is
+	// the observable proof of the injected-only rule: same-name caller calls are
+	// indistinguishable by name and must survive.
+	const injected = ["grep", "edit", "write"];
+	const caseRestore = { bash: "Bash" };
+	const findGlob = { renamedFindToGlob: true };
+	const chatFrame = (delta: unknown, finish?: string): string =>
+		`data: ${JSON.stringify({ id: "c1", choices: [{ index: 0, delta, ...(finish ? { finish_reason: finish } : {}) }] })}`;
+	const chatSse = [
+		chatFrame({
+			tool_calls: [
+				{ index: 0, id: "call_bash_9", type: "function", function: { name: "bash", arguments: '{"command":"ls é"}' } },
+				{ index: 1, id: "call_grep_9", type: "function", function: { name: "grep", arguments: '{"pattern":"x"}' } },
+				{ index: 2, id: "call_glob_9", type: "function", function: { name: "glob", arguments: '{"pattern":"*.ts"}' } },
+			]
+		}),
+		chatFrame({}, "tool_calls"),
+		"data: [DONE]",
+	].join("\n\n");
+	const chat = sseToChatCompletionJson(chatSse, true, caseRestore, findGlob, injected) as {
+		choices: Array<{ message: { tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> } }>;
+	};
+	const chatCalls = chat.choices[0].message.tool_calls ?? [];
+	assert.deepEqual(chatCalls.map((c) => c.function.name), ["Bash", "find"], "caller Bash keeps casing, upstream glob restores to find, injected grep stripped");
+	assert.equal(chatCalls[0].id, "call_bash_9", "caller call id preserved");
+	assert.equal(chatCalls[0].function.arguments, '{"command":"ls é"}', "caller args value-preserved through restore");
+	assert.ok(!JSON.stringify(chat).includes("call_grep_9"), "stripped call id never leaks");
+
+	const respSse = [
+		'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_9","object":"response","status":"completed","output":[{"type":"function_call","id":"fc_read_9","name":"read","arguments":"{\\"path\\":\\"a.txt\\"}"},{"type":"function_call","id":"fc_grep_9","name":"grep","arguments":"{\\"pattern\\":\\"x\\"}"},{"type":"function_call","id":"fc_glob_9","name":"glob","arguments":"{\\"pattern\\":\\"*.ts\\"}"}]}}',
+	].join("\n\n");
+	const resp = sseToResponsesJson(respSse, true, caseRestore, findGlob, injected) as {
+		output: Array<{ type: string; id?: string; name?: string; arguments?: string }>;
+	};
+	const calls = resp.output.filter((o) => o.type === "function_call");
+	assert.deepEqual(calls.map((c) => c.name).sort(), ["find", "read"], "responses keeps caller calls only, injected grep stripped");
+	assert.ok(calls.some((c) => c.name === "find" && c.id === "fc_glob_9" && c.arguments === '{"pattern":"*.ts"}'), "glob restores to find with id/args intact");
+	assert.ok(calls.some((c) => c.name === "read" && c.id === "fc_read_9"), "caller read survives with id intact");
+	assert.ok(!calls.some((c) => c.name === "grep"), "injected grep stripped");
+
+	const msgSse = [
+		'data: {"type":"message_start","message":{"id":"msg_9","model":"m"}}',
+		'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_bash_9","name":"bash"}}',
+		'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"cmd\\":\\"ls\\"}"}}',
+		'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_grep_9","name":"grep"}}',
+		'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"pattern\\":\\"x\\"}"}}',
+		'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}',
+	].join("\n\n");
+	const msg = sseToMessagesJson(msgSse, true, caseRestore, findGlob, injected) as {
+		content: Array<{ type: string; id?: string; name?: string; input?: unknown }>;
+	};
+	const uses = msg.content.filter((b) => b.type === "tool_use");
+	assert.equal(uses.length, 1, "messages strips the injected grep block");
+	assert.equal(uses[0].name, "Bash", "messages restores caller casing");
+	assert.equal(uses[0].id, "tu_bash_9", "messages preserves the block id");
+	assert.deepEqual(uses[0].input, { cmd: "ls" }, "messages aggregates input deltas");
+});
+
+test("contract: cline body translation reshapes tools with zero fingerprint", () => {
+	// Kilo/Cline paths bypass the fingerprint entirely: tools are only
+	// reshaped to chat, never injected, and the stream policy is untouched.
+	const caller = [richCallerTool("ask", "omp"), richCallerTool("find", "pi")];
+	const out = clineChatBodyFromResponsesBody({
+		model: "cline-free/deepseek-v4.1-flash",
+		input: [{ role: "user", content: "hi" }],
+		tools: JSON.parse(JSON.stringify(caller)),
+		tool_choice: "auto",
+		stream: false,
+	});
+	assert.ok(Array.isArray(out.tools), "cline tools ride along");
+	assert.equal((out.tools as unknown[]).length, 2, "cline adds zero fingerprint tools");
+	assert.ok(!("stream" in out), "cline translation never imposes a stream policy");
+	assert.equal(out.tool_choice, "auto", "cline carries tool_choice verbatim");
 });

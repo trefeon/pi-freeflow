@@ -105,8 +105,20 @@ export const COMPAT_TOOL_DESCRIPTION =
  * may legitimately invoke them and the host can execute them). Single source
  * of truth for every injection site; Pi callers keep the empty COMPAT
  * placeholders above. Descriptions must never match COMPAT_TOOL_DESCRIPTION.
+ *
+ * `edit` is deliberately absent: OMP's edit schema is edit-mode dependent
+ * (default hashline `{ input }`, replace `{ path, old_string, new_string }`,
+ * patch `{ path, edits[] }`) while Pi wants `{ path, edits[{ oldText,
+ * newText }] }`, so no single static def executes on either host. An injected
+ * edit is always the cloaked COMPAT placeholder (see fingerprintFill in
+ * src/opencode-fingerprint.ts); a caller-declared edit still passes through
+ * verbatim and executes normally.
+ *
+ * `glob` carries OMP GlobTool's real shape: the pattern carrier is `path`
+ * (optional — omitted searches the workspace root), never a required
+ * `pattern` prop.
  */
-export const OMP_FINGERPRINT_DEFS: Record<FingerprintToolName, { description: string; parameters: Record<string, unknown> }> = {
+export const OMP_FINGERPRINT_DEFS: Record<Exclude<FingerprintToolName, "edit">, { description: string; parameters: Record<string, unknown> }> = {
  bash: {
   description: "Run a shell command and return its output.",
   parameters: {
@@ -119,8 +131,12 @@ export const OMP_FINGERPRINT_DEFS: Record<FingerprintToolName, { description: st
   description: "Find files by glob pattern.",
   parameters: {
    type: "object",
-   properties: { pattern: { type: "string", description: "Glob pattern to match." } },
-   required: ["pattern"],
+   properties: {
+    path: { type: "string", description: "Glob, file, or directory to search — a single path or a semicolon-delimited list. Omitted searches the workspace root." },
+    hidden: { type: "boolean", description: "Include hidden files." },
+    gitignore: { type: "boolean", description: "Respect gitignore." },
+    limit: { type: "number", description: "Max results." },
+   },
   },
  },
  grep: {
@@ -140,17 +156,6 @@ export const OMP_FINGERPRINT_DEFS: Record<FingerprintToolName, { description: st
    type: "object",
    properties: { path: { type: "string", description: "File path to read." } },
    required: ["path"],
-  },
- },
- edit: {
-  description: "Edit a file on disk.",
-  parameters: {
-   type: "object",
-   properties: {
-    path: { type: "string", description: "File path to edit." },
-    edit: { type: "string", description: "Edit to apply." },
-   },
-   required: ["path", "edit"],
   },
  },
  write: {
@@ -468,7 +473,9 @@ export function translateToolsForPath(tools: unknown[], pathname: string): Recor
  * OMP-like callers (explicit `ompLike`, else auto-detected from the array via
  * {@link isOmpLikeCaller}) get REAL minimal executable definitions from
  * {@link OMP_FINGERPRINT_DEFS}; everyone else (Pi) keeps the empty COMPAT
- * placeholders. Re-injecting injected output adds zero tools.
+ * placeholders. `edit` is always the COMPAT placeholder, even for OMP-like
+ * callers — no static edit def executes on either host, so it must stay
+ * cloaked downstream. Re-injecting injected output adds zero tools.
  */
 export function injectFingerprintTools(
  tools: Record<string, unknown>[],
@@ -484,7 +491,7 @@ export function injectFingerprintTools(
  const api = apiForPathname(pathname);
  for (const name of OPENCODE_FINGERPRINT_TOOLS) {
   if (present.has(name.toLowerCase())) continue;
-  const def = omp ? OMP_FINGERPRINT_DEFS[name] : null;
+  const def = omp && name !== "edit" ? OMP_FINGERPRINT_DEFS[name] : null;
   const canon: CanonicalTool = {
    name,
    description: def ? def.description : COMPAT_TOOL_DESCRIPTION,
@@ -504,14 +511,10 @@ export function injectFingerprintTools(
 
 /**
  * Responses <-> Chat body translation. Cline serves chat completions only, so
- * responses-path requests for Cline models are translated to chat upstream
+ * the responses body is reshaped to chat before the Cline branch sends it,
  * and the chat answer is translated back. Tool shape conversion reuses
  * translateToolsForPath; only the message envelopes are remapped here.
- * Server-side pointers (`previous_response_id`) and caller-bound reasoning
- * blobs never cross: text is extracted, everything else is dropped, so the
- * translated body stays portable by construction.
  */
-
 /** Extract plain text from a Responses content field (string or parts array). */
 function responsesTextOf(content: unknown): string | null {
  if (typeof content === "string") return content;

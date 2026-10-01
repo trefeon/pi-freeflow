@@ -67,10 +67,14 @@ export function isPlaceholderToolName(name: unknown): boolean {
 /**
  * Fill for one missing fingerprint slot: the shared OMP real definition when
  * the caller is OMP-like, otherwise the empty COMPAT placeholder Pi keeps.
- * Single lockstep source for the three wire-shape ensure functions below.
+ * `edit` is always COMPAT, even for OMP-like callers: no single static edit
+ * schema executes on either host (OMP is edit-mode dependent, Pi wants
+ * edits[]), so it must stay in the cloaked `injected` list, never
+ * `injectedReal`. Single lockstep source for the three wire-shape ensure
+ * functions below.
  */
 function fingerprintFill(name: FingerprintToolName, omp: boolean): { description: string; schema: Record<string, unknown> } {
- if (!omp) return { description: COMPAT_TOOL_DESCRIPTION, schema: { type: "object", properties: {} } };
+ if (!omp || name === "edit") return { description: COMPAT_TOOL_DESCRIPTION, schema: { type: "object", properties: {} } };
  const def = OMP_FINGERPRINT_DEFS[name];
  return { description: def.description, schema: { ...(def.parameters as Record<string, unknown>) } };
 }
@@ -152,7 +156,8 @@ function restoreCallerName(name: string, caseRestore?: CaseRestoreMap, findGlob?
  * Merge missing fingerprint declarations (canonical translator set) into Chat
  * Completions bodies. Case-insensitive and idempotent: Bash counts as bash.
  * Preserves caller tools verbatim; missing slots become executable real
- * definitions for OMP-like callers, empty no-ops otherwise. Explicit `ompLike`
+ * definitions for OMP-like callers (edit excepted, always the cloaked
+ * placeholder), empty no-ops otherwise. Explicit ompLike
  * overrides auto-detection (pass pre-translation caller names when find was
  * already renamed to glob).
  */
@@ -187,7 +192,8 @@ export function ensureChatFingerprintTools(body: Record<string, unknown>, ompLik
  * Merge missing fingerprint declarations (canonical translator set) into
  * Responses API bodies. Case-insensitive and idempotent.
  * Uses the flat Responses tool shape ({ type: "function", name, description, parameters }).
- * Missing slots become executable real definitions for OMP-like callers,
+ * Missing slots become executable real definitions for OMP-like callers
+ * (edit excepted, always the cloaked placeholder),
  * empty no-ops otherwise; see ensureChatFingerprintTools for the override.
  */
 export function ensureResponsesFingerprintTools(body: Record<string, unknown>, ompLike?: boolean): void {
@@ -219,7 +225,8 @@ export function ensureResponsesFingerprintTools(body: Record<string, unknown>, o
  * Merge missing fingerprint declarations (canonical translator set) into
  * Anthropic Messages bodies. Case-insensitive and idempotent.
  * Uses the Anthropic tool shape ({ name, description, input_schema }).
- * Missing slots become executable real definitions for OMP-like callers,
+ * Missing slots become executable real definitions for OMP-like callers
+ * (edit excepted, always the cloaked placeholder),
  * empty no-ops otherwise; see ensureChatFingerprintTools for the override.
  */
 export function ensureMessagesFingerprintTools(body: Record<string, unknown>, ompLike?: boolean): void {
@@ -309,10 +316,11 @@ export function normalizeResponsesBody(body: Record<string, unknown>): void {
  * src/tool-translation.ts), then the missing slots injected in that shape: real
  * executable definitions for OMP-like callers (ask/task/todo/hub/lsp present,
  * or glob without find, detected on pre-translation caller names), empty
- * no-ops for Pi. Returns the original stream flag, caller-tools flag, whether
- * injection added tools, and the bounded per-request restore records
- * (caseRestore, findGlob, injected, injectedReal) for downstream cloaking.
- * Cloaking strips by `injected` (truly-empty placeholders) only: names in
+ * no-ops for Pi. `edit` is always the cloaked placeholder (no static edit
+ * schema executes on either host). Returns the original stream flag,
+ * caller-tools flag, whether injection added tools, and the bounded
+ * per-request restore records (caseRestore, findGlob, injected, injectedReal)
+ * for downstream cloaking. Cloaking strips by `injected` only: names in
  * `injectedReal` were served with executable definitions, so model calls to
  * them execute downstream instead of being cloaked.
  */
@@ -360,10 +368,11 @@ export function enforceOpencodeFingerprint(
  // so Pi find-callers are never mistaken for OMP glob-callers.
  const ompLike = isOmpLikeCaller(callerNames);
  const missing = OPENCODE_FINGERPRINT_TOOLS.filter((n) => !callerUpstream.has(n.toLowerCase()));
- // Cloak list carries only the truly-empty placeholders; real definitions
- // survive downstream so injected OMP calls execute.
- const injected = ompLike ? [] : [...missing];
- const injectedReal = ompLike ? [...missing] : [];
+ // Cloak list carries the truly-empty placeholders plus `edit` (never
+ // executable when injected); real definitions survive downstream so
+ // injected OMP calls execute.
+ const injected = missing.filter((n) => !ompLike || n === "edit");
+ const injectedReal = ompLike ? missing.filter((n) => n !== "edit") : [];
 
  if (Array.isArray(body.tools)) {
   body.tools = translateToolsForPath(body.tools, pathname);
@@ -592,10 +601,12 @@ export function sseToChatCompletionJson(
 
 /**
  * Strip injected placeholder function_call items from a Responses object in
- * place. Only names this request injected are removed, whether or not the
- * caller declared tools; caller calls keep restored names.
+ * place. Only names this request injected are removed; caller calls keep
+ * restored names (caller casing, upstream glob back to caller find). Tool-less
+ * callers never see function_call items: every call is dropped, never leaked.
+ * Ids and arguments ride verbatim (only the name is ever rewritten).
  */
-function cloakResponsesObject(resp: unknown, caseRestore?: CaseRestoreMap, findGlob?: FindGlobRestore, injected?: readonly string[]): void {
+function cloakResponsesObject(resp: unknown, callerHadTools = true, caseRestore?: CaseRestoreMap, findGlob?: FindGlobRestore, injected?: readonly string[]): void {
  if (!resp || typeof resp !== "object" || Array.isArray(resp)) return;
  const output = (resp as Record<string, unknown>).output;
  if (!Array.isArray(output)) return;
@@ -605,6 +616,7 @@ function cloakResponsesObject(resp: unknown, caseRestore?: CaseRestoreMap, findG
    const rec = item as Record<string, unknown>;
    if (rec.type === "function_call") {
     if (typeof rec.name === "string" && injected !== undefined && injected.includes(rec.name.toLowerCase())) continue;
+    if (!callerHadTools) continue;
     if (typeof rec.name === "string") rec.name = restoreCallerName(rec.name, caseRestore, findGlob);
    }
   }
@@ -631,7 +643,7 @@ export function sseToResponsesJson(
   try {
    const parsed = JSON.parse(ev.data);
    if (parsed?.type === "response.completed" && parsed.response && typeof parsed.response === "object") {
-    cloakResponsesObject(parsed.response, caseRestore, findGlob, injected);
+    cloakResponsesObject(parsed.response, callerHadTools, caseRestore, findGlob, injected);
     return parsed.response as Record<string, unknown>;
    }
   } catch { }
@@ -642,7 +654,7 @@ export function sseToResponsesJson(
   try {
    const parsed = JSON.parse(ev.data);
    if (parsed?.response && typeof parsed.response === "object") {
-    cloakResponsesObject(parsed.response, caseRestore, findGlob, injected);
+    cloakResponsesObject(parsed.response, callerHadTools, caseRestore, findGlob, injected);
     return parsed.response as Record<string, unknown>;
    }
   } catch { }
@@ -651,7 +663,7 @@ export function sseToResponsesJson(
  try {
   const parsed = JSON.parse(sseText);
   if (parsed && typeof parsed === "object") {
-   cloakResponsesObject(parsed, caseRestore, findGlob, injected);
+   cloakResponsesObject(parsed, callerHadTools, caseRestore, findGlob, injected);
    return parsed;
   }
  } catch { }
@@ -665,8 +677,11 @@ export function sseToResponsesJson(
 }
 /**
  * Drop placeholder tool_use blocks from a complete Anthropic message in place.
- * Tool-less callers never see tool_use; callers with tools keep only their own
- * blocks, names restored.
+ * Only names this request injected are removed; caller blocks keep restored
+ * names (caller casing, upstream glob back to caller find). Tool-less callers
+ * never see tool_use: stray placeholder input folds to text, matching the
+ * SSE aggregator fallback below. Block objects ride verbatim (only names
+ * are ever rewritten).
  */
 function cloakMessagesContent(
  msg: unknown,
@@ -679,6 +694,7 @@ function cloakMessagesContent(
  const content = (msg as Record<string, unknown>).content;
  if (!Array.isArray(content)) return;
  const kept: unknown[] = [];
+ const folded: string[] = [];
  for (const block of content) {
   if (
    block &&
@@ -687,14 +703,29 @@ function cloakMessagesContent(
    (block as Record<string, unknown>).type === "tool_use"
   ) {
    const rec = block as Record<string, unknown>;
-   if (typeof rec.name === "string" && injected !== undefined && injected.includes(rec.name.toLowerCase())) continue;
-   if (callerHadTools) {
+   const isInjected = typeof rec.name === "string" && injected !== undefined && injected.includes(rec.name.toLowerCase());
+   if (callerHadTools && !isInjected) {
     if (typeof rec.name === "string") rec.name = restoreCallerName(rec.name, caseRestore, findGlob);
     kept.push(block);
+   } else if (!callerHadTools) {
+    let text = "";
+    if (typeof rec.input === "string") text = rec.input;
+    else if (rec.input !== null && typeof rec.input === "object") {
+     try {
+      text = JSON.stringify(rec.input);
+     } catch {
+      text = "";
+     }
+    }
+    folded.push(text || (typeof rec.name === "string" ? rec.name : ""));
    }
    continue;
   }
   kept.push(block);
+ }
+ if (!callerHadTools && kept.every((b) => !(b && typeof b === "object" && !Array.isArray(b) && (b as Record<string, unknown>).type === "text"))) {
+  const fallback = folded.filter(Boolean).join("\n");
+  if (fallback) kept.push({ type: "text", text: fallback });
  }
  (msg as Record<string, unknown>).content = kept;
 }

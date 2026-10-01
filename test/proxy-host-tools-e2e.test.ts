@@ -1,5 +1,12 @@
-import test from "node:test";
+import fs from "node:fs";
 import assert from "node:assert/strict";
+import test from "node:test";
+import {
+	CLINE_POOL_BACKUP_FILE,
+	CLINE_POOL_FILE,
+	_resetClinePoolCacheForTest,
+	savePool,
+} from "../src/cline-accounts.ts";
 import http from "node:http";
 import { startProxy } from "../src/proxy.ts";
 import {
@@ -168,16 +175,23 @@ test("proxy e2e: chat non-stream carries mixed host tools upstream and restores 
 	assert.deepEqual(upstream.tool_choice, callerChoice, "tool_choice must be carried, not imposed");
 	assert.ok(Array.isArray(upstream.tools));
 	const tools = upstream.tools as Array<unknown>;
-	assert.equal(tools.length, 12, "8 caller tools translated + 4 injected real definitions (OMP-like caller)");
+	assert.equal(tools.length, 12, "8 caller tools translated + 4 injected (3 real defs + cloaked edit, OMP-like caller)");
 	assertFingerprintOnce(tools, "chat");
-	// OMP-like caller (ask present): injected slots carry executable real schemas, never COMPAT text.
-	for (const n of ["grep", "read", "edit", "write"]) {
+	// OMP-like caller (ask present): injected grep/read/write carry executable real
+	// schemas, never COMPAT text. Injected edit is always the cloaked placeholder:
+	// no static edit schema executes on either host.
+	for (const n of ["grep", "read", "write"]) {
 		const t = byUpstreamName(tools, n) as Record<string, unknown>;
 		const fn = t.function as Record<string, unknown>;
 		assert.ok(!String(fn.description).includes("never be invoked"), `injected ${n} is a real definition`);
 		const params = fn.parameters as { properties?: Record<string, unknown> };
 		assert.ok(params.properties && Object.keys(params.properties).length > 0, `injected ${n} has executable params`);
 	}
+	const injectedEdit = byUpstreamName(tools, "edit") as Record<string, unknown>;
+	assert.ok(
+		String((injectedEdit.function as Record<string, unknown>).description).includes("never be invoked"),
+		"injected edit stays the cloaked placeholder",
+	);
 	// Caller find arrives as glob with params/description verbatim; no raw find upstream.
 	assert.ok(!tools.some((t) => upstreamToolName(t).toLowerCase() === "find"), "caller find must be renamed to glob upstream");
 	const glob = byUpstreamName(tools, "glob");
@@ -400,4 +414,66 @@ test("proxy e2e: kilo path bypass leaves caller tools untouched", async () => {
 	assert.ok(Array.isArray(upstream.tools));
 	assert.deepEqual(upstream.tools, callerTools, "kilo tools pass through verbatim: find stays find, Bash keeps casing, no fingerprint injected");
 	assert.deepEqual(JSON.parse(clientBody), JSON.parse(kiloJson));
+});
+
+const CLINE_MODEL = "cline-free/deepseek-v4.1-flash";
+
+test("proxy e2e: cline responses path reshapes tools with zero fingerprint", async () => {
+	// Cline bypass (observable contract): a Cline-model request never carries
+	// the OpenCode fingerprint — tools are only reshaped responses->chat
+	// (caller find becomes glob), nothing is injected, and no store policy is
+	// added. (Cline upstream always streams for aggregation; that is transport,
+	// not fingerprint.) Fails if the enforcement call-site ever fingerprints
+	// Cline bodies (upstream would see 6 extra tools).
+	const read = (p: string): string | null => (fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null);
+	const mainBefore = read(CLINE_POOL_FILE);
+	const bakBefore = read(CLINE_POOL_BACKUP_FILE);
+	try {
+		fs.rmSync(CLINE_POOL_FILE, { force: true });
+		fs.rmSync(CLINE_POOL_BACKUP_FILE, { force: true });
+		_resetClinePoolCacheForTest();
+		savePool({ accounts: [{ slot: "main", token: "workos:test-key-aaa111", addedAt: new Date().toISOString() }] });
+		_resetClinePoolCacheForTest();
+		const callerTools = mixedCallerTools().filter((t) => ["ask", "find"].includes(String((t.function as Record<string, unknown>).name)));
+		const chatJson = JSON.stringify({
+			id: "chatcmpl-cline",
+			object: "chat.completion",
+			model: CLINE_MODEL,
+			choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+		});
+		let clientBody = "";
+		const upstream = await withProxyAndMock(29321, (res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(chatJson);
+		}, async (port) => {
+			const res = await postJson(port, "/v1/responses", {
+				model: CLINE_MODEL,
+				input: "hi",
+				stream: false,
+				tools: callerTools,
+				tool_choice: "auto",
+			});
+			assert.equal(res.status, 200);
+			clientBody = res.body;
+		});
+		assert.ok(upstream);
+		assert.ok(Array.isArray(upstream.messages), "cline upstream speaks chat completions");
+		assert.ok(Array.isArray(upstream.tools));
+		assert.equal((upstream.tools as unknown[]).length, 2, "cline adds zero fingerprint tools");
+		const names = (upstream.tools as Array<unknown>).map(upstreamToolName);
+		assert.ok(names.includes("ask"), "cline keeps caller ask");
+		assert.ok(names.includes("glob"), "cline reshapes caller find to chat glob");
+		assert.equal(upstream.stream, true, "cline upstream always streams for aggregation (transport, not fingerprint)");
+		assert.ok(!("store" in upstream), "cline never adds store");
+		assert.equal(upstream.tool_choice, "auto", "cline carries tool_choice verbatim");
+		const client = JSON.parse(clientBody) as Record<string, unknown>;
+		assert.equal(client.object, "response", "cline chat answer maps back to a responses object");
+	} finally {
+		_resetClinePoolCacheForTest();
+		if (mainBefore !== null) fs.writeFileSync(CLINE_POOL_FILE, mainBefore, "utf8");
+		else fs.rmSync(CLINE_POOL_FILE, { force: true });
+		if (bakBefore !== null) fs.writeFileSync(CLINE_POOL_BACKUP_FILE, bakBefore, "utf8");
+		else fs.rmSync(CLINE_POOL_BACKUP_FILE, { force: true });
+		_resetClinePoolCacheForTest();
+	}
 });

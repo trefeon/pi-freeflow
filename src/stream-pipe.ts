@@ -105,6 +105,7 @@ export interface SseStreamCloakState {
  responsesDroppedByIndex: Map<number, boolean>;
  responsesDroppedByItemId: Map<string, boolean>;
  chatDroppedByIndex: Map<number, boolean>;
+ messagesDroppedByIndex: Map<number, boolean>;
 }
 
 export function createSseStreamCloakState(): SseStreamCloakState {
@@ -112,23 +113,24 @@ export function createSseStreamCloakState(): SseStreamCloakState {
   responsesDroppedByIndex: new Map(),
   responsesDroppedByItemId: new Map(),
   chatDroppedByIndex: new Map(),
+  messagesDroppedByIndex: new Map(),
  };
 }
 
 /**
  * True when the stream needs no rewrite and must flow byte-identical:
- * nothing injected, no casing to restore, no find->glob rename. Messages
- * paths are out of scope and always bypass.
+ * nothing injected, no casing to restore, no find->glob rename, and the
+ * caller declared tools. Tool-less callers must still cloak on every path
+ * when the injected record exists (legacy direct calls keep everything).
  */
 export function shouldBypassStreamCloak(cloak?: StreamCloakOptions): boolean {
  if (!cloak) return true;
- if (cloak.pathname.endsWith("/messages")) return true;
  if (cloak.injected !== undefined && cloak.injected.length > 0) return false;
  if (cloak.caseRestore && Object.keys(cloak.caseRestore).length > 0) return false;
  if (cloak.findGlob?.renamedFindToGlob === true) return false;
- // Tool-less chat callers must still see tool_calls stripped when the
+ // Tool-less callers must still see tool calls stripped when the
  // injected record exists (legacy direct calls keep everything).
- if (!cloak.callerHadTools && !cloak.pathname.endsWith("/responses") && cloak.injected !== undefined) return false;
+ if (!cloak.callerHadTools && cloak.injected !== undefined) return false;
  return true;
 }
 
@@ -189,13 +191,15 @@ function rewriteResponsesBlock(
  const type = parsed.type;
  const hadEventPrefix = /^\s*event:/m.test(block);
 
- // New function_call item announced: drop when injected, else restore name.
+ // New function_call item announced: drop when injected; tool-less callers
+ // drop every function_call, never leaking calls downstream. Ids and
+ // arguments ride verbatim (only the name is ever rewritten).
  if (type === "response.output_item.added" || type === "response.output_item.done") {
   const item = parsed.item;
   if (item && typeof item === "object" && !Array.isArray(item)) {
    const rec = item as Record<string, unknown>;
    if (rec.type === "function_call" && typeof rec.name === "string") {
-    if (isInjectedName(rec.name, cloak.injected)) {
+    if (isInjectedName(rec.name, cloak.injected) || !cloak.callerHadTools) {
      const itemId = rec.id ?? rec.call_id;
      if (typeof parsed.output_index === "number") state.responsesDroppedByIndex.set(parsed.output_index, true);
      if (typeof itemId === "string") state.responsesDroppedByItemId.set(itemId, true);
@@ -212,7 +216,9 @@ function rewriteResponsesBlock(
  }
 
  // Argument deltas carry no name: earlier added/done decisions rule by index/id.
+ // Tool-less callers drop every function_call_arguments delta outright.
  if (type === "response.function_call_arguments.delta" || type === "response.function_call_arguments.done") {
+  if (!cloak.callerHadTools) return null;
   const droppedByIndex = typeof parsed.output_index === "number" && state.responsesDroppedByIndex.get(parsed.output_index) === true;
   const droppedById = typeof parsed.item_id === "string" && state.responsesDroppedByItemId.get(parsed.item_id) === true;
   if (droppedByIndex || droppedById) return null;
@@ -239,7 +245,7 @@ function rewriteResponsesBlock(
  return block;
 }
 
-/** Aggregate-cloak mirror for a Responses object: drop injected, restore kept. */
+/** Aggregate-cloak mirror for a Responses object: drop injected (all calls when tool-less), restore kept. */
 function cloakStreamResponsesObject(resp: unknown, cloak: StreamCloakOptions): void {
  if (!resp || typeof resp !== "object" || Array.isArray(resp)) return;
  const output = (resp as Record<string, unknown>).output;
@@ -250,6 +256,7 @@ function cloakStreamResponsesObject(resp: unknown, cloak: StreamCloakOptions): v
    const rec = item as Record<string, unknown>;
    if (rec.type === "function_call") {
     if (isInjectedName(rec.name, cloak.injected)) continue;
+    if (!cloak.callerHadTools) continue;
     if (typeof rec.name === "string") rec.name = restoreStreamName(rec.name, cloak);
    }
   }
@@ -412,6 +419,65 @@ function cloakStreamChatMessage(msg: unknown, cloak: StreamCloakOptions): void {
 }
 
 /**
+ * Rewrite one Anthropic Messages SSE block: drop injected tool_use blocks
+ * (including input_json continuations via per-index tracking), restore
+ * surviving names. Tool-less callers drop every tool_use, never leaking
+ * calls downstream. Null drops the block.
+ */
+function rewriteMessagesBlock(
+ block: string,
+ state: SseStreamCloakState,
+ cloak: StreamCloakOptions,
+): string | null {
+ const { event, data, hasData } = splitSseBlock(block);
+ if (!hasData || data === undefined || data === "[DONE]") return block;
+ let parsed: Record<string, unknown>;
+ try {
+  const p: unknown = JSON.parse(data);
+  if (!p || typeof p !== "object" || Array.isArray(p)) return block;
+  parsed = p as Record<string, unknown>;
+ } catch {
+  return block;
+ }
+ const type = typeof parsed.type === "string" ? parsed.type : "";
+ const hadEventPrefix = /^\s*event:/m.test(block);
+ const index = typeof parsed.index === "number" ? parsed.index : 0;
+ // New content block announced: drop injected tool_use, else restore name.
+ if (type === "content_block_start") {
+  const cb = parsed.content_block;
+  if (cb && typeof cb === "object" && !Array.isArray(cb) && (cb as Record<string, unknown>).type === "tool_use") {
+   const rec = cb as Record<string, unknown>;
+   if (typeof rec.name === "string" && (isInjectedName(rec.name, cloak.injected) || !cloak.callerHadTools)) {
+    state.messagesDroppedByIndex.set(index, true);
+    return null;
+   }
+   if (typeof rec.name === "string") {
+    const restored = restoreStreamName(rec.name, cloak);
+    if (restored !== rec.name) {
+     rec.name = restored;
+     return emitSseBlock(event, JSON.stringify(parsed), hadEventPrefix);
+    }
+   }
+  }
+  return block;
+ }
+ // Input deltas carry no name: the start verdict rules by index.
+ if (type === "content_block_delta") {
+  if (state.messagesDroppedByIndex.get(index) === true) return null;
+  return block;
+ }
+ // Block close for a dropped tool_use carries no name: drop it too.
+ if (type === "content_block_stop") {
+  if (state.messagesDroppedByIndex.get(index) === true) {
+   state.messagesDroppedByIndex.delete(index);
+   return null;
+  }
+  return block;
+ }
+ return block;
+}
+
+/**
  * Rewrite one raw SSE block for the streaming cloak. Returns null to drop
  * the block, otherwise the block to forward (identical string when no change,
  * so full-inventory streams stay byte-identical).
@@ -423,7 +489,7 @@ export function rewriteSseBlock(
 ): string | null {
  if (block.trim() === "") return block;
  if (cloak.pathname.endsWith("/responses")) return rewriteResponsesBlock(block, state, cloak);
- if (cloak.pathname.endsWith("/messages")) return block;
+ if (cloak.pathname.endsWith("/messages")) return rewriteMessagesBlock(block, state, cloak);
  return rewriteChatBlock(block, state, cloak);
 }
 /**

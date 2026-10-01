@@ -208,3 +208,109 @@ test("full-inventory stream passes through byte-identical", async () => {
 
  assert.equal(body, sse, "nothing to cloak means byte-identical passthrough");
 });
+
+test("messages stream: injected tool_use dropped with continuations, caller names restored", async () => {
+ // Fails without CloakStreamFix: the messages path used to bypass the
+ // streaming cloak entirely (byte-identical passthrough), so injected calls
+ // leaked and caller casing/find->glob were never restored on the pipe.
+ const cloak: StreamCloakOptions = {
+  callerHadTools: true,
+  caseRestore: { bash: "Bash" },
+  findGlob: { renamedFindToGlob: true },
+  injected: ["grep", "edit"],
+  pathname: "/v1/messages",
+ };
+ const sse = [
+  'data: {"type":"message_start","message":{"id":"msg_stream_1","model":"m"}}',
+  'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_bash_s","name":"bash"}}',
+  'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"cmd\\":\\"ls\\"}"}}',
+  'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_grep_s","name":"grep"}}',
+  'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"SECRET_GREP_ARG"}}',
+  'data: {"type":"content_block_stop","index":1}',
+  'data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"tu_glob_s","name":"glob"}}',
+  'data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\\"pattern\\":\\"*.ts\\"}"}}',
+  'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}',
+ ].join("\n\n");
+
+ const body = await runStreamed(sse, "/v1/messages", cloak, thirds(sse));
+
+ assert.ok(!body.includes("tu_grep_s"), "injected grep block never reaches the host");
+ assert.ok(!body.includes("SECRET_GREP_ARG"), "dropped block deltas never reach the host");
+ assert.ok(body.includes('"name":"Bash"'), "caller Bash keeps its casing on the pipe");
+ assert.ok(body.includes('"name":"find"'), "upstream glob restores to caller find on the pipe");
+ assert.ok(body.includes("tu_bash_s") && body.includes("tu_glob_s"), "surviving block ids ride verbatim");
+ assert.ok(body.includes("*.ts"), "surviving block arguments flow through");
+});
+
+test("messages stream: tool-less caller drops every tool_use", async () => {
+ // Fails without CloakStreamFix for the same bypass reason: a tool-less
+ // caller used to see raw tool_use blocks on the messages stream.
+ const cloak: StreamCloakOptions = {
+  callerHadTools: false,
+  caseRestore: {},
+  findGlob: { renamedFindToGlob: false },
+  injected: ["bash", "glob", "grep", "read", "edit", "write"],
+  pathname: "/v1/messages",
+ };
+ const sse = [
+  'data: {"type":"message_start","message":{"id":"msg_stream_2","model":"m"}}',
+  'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_read_s","name":"read"}}',
+  'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"a.txt\\"}"}}',
+  'data: {"type":"content_block_stop","index":0}',
+  'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}',
+ ].join("\n\n");
+
+ const body = await runStreamed(sse, "/v1/messages", cloak, thirds(sse));
+
+ assert.ok(!body.includes("tu_read_s"), "dropped block id never leaks");
+ assert.ok(!body.includes('"type":"tool_use"'), "tool-less callers never see tool_use blocks on the pipe");
+});
+test("responses stream: tool-less caller drops every function_call even with an empty injected list", async () => {
+ // Fails without CloakStreamFix: the old responses streaming cloak stripped
+ // only names present in injected[], so with an empty record every call
+ // leaked. Tool-less callers own no tools, so every call must drop.
+ const cloak: StreamCloakOptions = {
+  callerHadTools: false,
+  caseRestore: {},
+  findGlob: { renamedFindToGlob: false },
+  injected: [],
+  pathname: "/v1/responses",
+ };
+ const sse = [
+  'event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"call_leak","name":"read","arguments":"{\\"path\\":\\"a.txt\\"}"}}',
+  'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_2","object":"response","status":"completed","output":[{"type":"function_call","id":"call_leak","name":"read","arguments":"{\\"path\\":\\"a.txt\\"}"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}',
+ ].join("\n\n");
+
+ const body = await runStreamed(sse, "/v1/responses", cloak, thirds(sse));
+
+ assert.ok(!body.includes("function_call"), "tool-less callers never see function_call on the pipe");
+ assert.ok(!body.includes("call_leak"), "dropped call id never leaks");
+});
+
+test("chat stream: caller-owned same-name call survives with restored casing", async () => {
+ // Guard for the injected-only rule on the pipe: bash is a fingerprint name
+ // but this request did NOT inject it (caller owns Bash), so the model call
+ // survives with casing restored while the truly-injected grep strips —
+ // including its nameless argument continuation.
+ const cloak: StreamCloakOptions = {
+  callerHadTools: true,
+  caseRestore: { bash: "Bash" },
+  findGlob: { renamedFindToGlob: false },
+  injected: ["grep"],
+  pathname: "/v1/chat/completions",
+ };
+ const sse = [
+  'data: {"id":"c9","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_bash_k","type":"function","function":{"name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}},{"index":1,"id":"call_grep_k","type":"function","function":{"name":"grep","arguments":"{}"}}]}}]}',
+  'data: {"id":"c9","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"SECRET_GREP_TAIL"}}]}}]}',
+  'data: {"id":"c9","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" tail"}}]}}]}',
+  "data: [DONE]",
+ ].join("\n\n");
+
+ const body = await runStreamed(sse, "/v1/chat/completions", cloak, thirds(sse));
+
+ assert.ok(body.includes("call_bash_k"), "caller-owned call id flows through");
+ assert.ok(body.includes('"name":"Bash"'), "caller casing restored on the pipe");
+ assert.ok(body.includes("tail"), "surviving call continuations flow through");
+ assert.ok(!body.includes("call_grep_k"), "injected call id never leaks");
+ assert.ok(!body.includes("SECRET_GREP_TAIL"), "dropped call continuations never reach the host");
+});
