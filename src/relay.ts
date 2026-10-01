@@ -60,6 +60,8 @@ function isRelayDeploymentDisabled(res: Response, bodyText: string | null): bool
  */
 export interface RelayAffinity {
 	preferred?: string;
+	/** Stable key used to shard requests across healthy relays in spread mode. */
+	spreadKey?: string;
 	onServed?: (relay: string | null) => void;
 }
 
@@ -89,7 +91,7 @@ export async function relayFetch(
 		affinity.onServed?.(null);
 		return fetch(url, opts as unknown as RequestInit);
 	}
-	const candidates = orderedRelayCandidates(affinity.preferred);
+	const candidates = orderedRelayCandidates(affinity.preferred, affinity.spreadKey);
 
 	if (candidates.length === 0) {
 		// Empty pool: skip straight to upstream instead of logging a misleading
@@ -321,7 +323,11 @@ export async function relayFetch(
 			const affinityServed =
 				Boolean(affinity.preferred) &&
 				targetUrl.trim() === (affinity.preferred ?? "").trim();
-			if (relayState.url !== targetUrl && !affinityServed) {
+			// Spread mode has no single primary: every request picks its own
+			// healthy relay, so rewriting the sticky URL here would churn the
+			// state file and spam "active relay auto-switched" on every turn.
+			const spreadMode = relayState.mode === "spread";
+			if (relayState.url !== targetUrl && !affinityServed && !spreadMode) {
 				log("info", `active relay auto-switched to ${targetUrl}`, {
 					previous: relayState.url,
 				}, rid);

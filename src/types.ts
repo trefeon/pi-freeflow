@@ -41,7 +41,7 @@ export interface KnownRelay {
  /** Shared secret set by /freeflow deploy; proxy sends x-relay-auth only when present. */
  auth?: string;
 }
-export type RelayMode = "auto" | "on" | "off";
+export type RelayMode = "auto" | "on" | "off" | "spread";
 
 export interface RelayState {
  mode?: RelayMode;

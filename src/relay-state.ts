@@ -104,7 +104,7 @@ function parseRelayState(raw: string): RelayState | null {
 			return null;
 		}
 		const mode: RelayMode =
-			s?.mode === "on" || s?.mode === "off" || s?.mode === "auto"
+			s?.mode === "on" || s?.mode === "off" || s?.mode === "auto" || s?.mode === "spread"
 				? s.mode
 				: "auto";
 		return {
@@ -722,21 +722,50 @@ export function getOrderedRelayUrls(): string[] {
 }
 
 /**
- * Candidate relay order for one request, with an optional preferred relay
- * hoisted to the front. Used for per-conversation affinity: reasoning
- * `encrypted_content` is only readable by the backend that issued it, so a
- * conversation stays on its issuing relay while that relay is healthy.
- * A cooling (recently failed/429) preferred relay is left where the health
- * partition already placed it — reviving a rate-limited egress helps nobody.
+ * Candidate relay order for one request.
+ *
+ * A `preferred` relay (the reasoning issuer for this conversation) is hoisted
+ * to the front while it is healthy: reasoning `encrypted_content` is only
+ * readable by the backend that issued it, so a conversation stays on its
+ * issuing relay. A cooling (recently failed/429) preferred relay is left where
+ * the health partition already placed it — reviving a rate-limited egress
+ * helps nobody.
+ *
+ * In `spread` mode, with no preferred relay, the healthy relays are rotated so
+ * concurrent traffic (main agent + subagents) lands on different egress IPs
+ * instead of saturating the single sticky primary. A stable `spreadKey` (the
+ * conversation key on /responses) keeps one conversation on one relay; without
+ * a key the cursor round-robins per request. Cooling relays stay at the tail,
+ * so a rate-limited IP is never preferred.
  */
-export function orderedRelayCandidates(preferredRelay?: string): string[] {
+export function orderedRelayCandidates(preferredRelay?: string, spreadKey?: string): string[] {
 	const ordered = getOrderedRelayUrls();
 	const preferred = (preferredRelay ?? "").trim();
-	if (!preferred) return ordered;
-	const index = ordered.indexOf(preferred);
-	if (index <= 0) return ordered;
-	if (!isRelayHealthy(preferred)) return ordered;
-	return [ordered[index], ...ordered.slice(0, index), ...ordered.slice(index + 1)];
+	if (preferred) {
+		const index = ordered.indexOf(preferred);
+		if (index <= 0) return ordered;
+		if (!isRelayHealthy(preferred)) return ordered;
+		return [ordered[index], ...ordered.slice(0, index), ...ordered.slice(index + 1)];
+	}
+	if (activeRelayState.mode !== "spread") return ordered;
+	const healthy = ordered.filter((u) => isRelayHealthy(u));
+	const cooling = ordered.filter((u) => !isRelayHealthy(u));
+	if (healthy.length <= 1) return [...healthy, ...cooling];
+	const k = spreadKey ? stableHash(spreadKey) % healthy.length : spreadCursor++ % healthy.length;
+	return [...healthy.slice(k), ...healthy.slice(0, k), ...cooling];
+}
+
+/** Round-robin cursor for spread mode when no stable key is available. */
+let spreadCursor = 0;
+
+/** FNV-1a: stable string -> bucket index for per-conversation sharding. */
+function stableHash(s: string): number {
+	let h = 2166136261;
+	for (let i = 0; i < s.length; i++) {
+		h ^= s.charCodeAt(i);
+		h = Math.imul(h, 16777619);
+	}
+	return h >>> 0;
 }
 
 /**
@@ -934,10 +963,10 @@ export function parseRelayImport(raw: string): {
 
 	const rawMode = rawState.mode;
 	const mode: RelayMode =
-		rawMode === "on" || rawMode === "off" || rawMode === "auto"
+		rawMode === "on" || rawMode === "off" || rawMode === "auto" || rawMode === "spread"
 			? rawMode
 			: "auto";
-	if (rawMode !== "on" && rawMode !== "off" && rawMode !== "auto") {
+	if (rawMode !== "on" && rawMode !== "off" && rawMode !== "auto" && rawMode !== "spread") {
 		warnings.push("Unknown relay mode in file; using automatic mode.");
 	}
 

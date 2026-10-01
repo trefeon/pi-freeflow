@@ -514,10 +514,11 @@ export function createCommandSpec(
 ): Omit<RegisteredCommand, "name"> {
  return {
   description:
-   "Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | debug on|off | refresh | update | deploy cloudflare | deploy deno | deploy vercel | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot]",
+   "Relay egress: auto | spread | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | debug on|off | refresh | update | deploy cloudflare | deploy deno | deploy vercel | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot]",
   getArgumentCompletions: (prefix: string) =>
    [
     "auto",
+    "spread",
     "on",
     "off",
     "hide",
@@ -1081,6 +1082,18 @@ export function createCommandSpec(
     });
     persist();
     flash();
+   } else if (sub === "spread") {
+    applyRelayState((s) => {
+     s.mode = "spread";
+     s.enabled = true;
+     s.url = s.url || "";
+     if (s.url) {
+      ensureRelay(s, s.url);
+     }
+     return s;
+    });
+    persist();
+    flash();
    } else if (sub === "on") {
     applyRelayState((s) => {
      s.mode = "on";
@@ -1135,7 +1148,9 @@ export function createCommandSpec(
       ? "Mode: off (always direct)"
       : relayState.mode === "on"
        ? "Mode: on (always relay)"
-       : "Mode: auto (enabled on session, auto-rolls on 429/5xx)";
+       : relayState.mode === "spread"
+        ? "Mode: spread (rotates across healthy relays, auto-rolls on 429/5xx)"
+        : "Mode: auto (enabled on session, auto-rolls on 429/5xx)";
     const poolLine = `${relayState.relays.length} relay(s)${relayState.relays.length > 0
      ? ` | active: ${shortRelayLabel(relayState.url, relayState.relays)}`
      : ""
@@ -1859,6 +1874,7 @@ export function createCommandSpec(
      "Mode: AUTO (auto-detect on model select)",
      "Mode: ON (always relay)",
      "Mode: OFF (always direct)",
+     "Mode: SPREAD (rotate across healthy relays)",
     ]);
     if (choice === `Mode: ${currentMode} (${relayState.enabled ? "ON" : "OFF"}) → ${activeLabel}`) {
      flash();
@@ -1912,6 +1928,18 @@ export function createCommandSpec(
      applyRelayState((s) => {
       s.mode = "off";
       s.enabled = false;
+      return s;
+     });
+     persist();
+     flash();
+    } else if (choice === "Mode: SPREAD (rotate across healthy relays)") {
+     applyRelayState((s) => {
+      s.mode = "spread";
+      s.enabled = true;
+      s.url = s.url || "";
+      if (s.url) {
+       ensureRelay(s, s.url);
+      }
       return s;
      });
      persist();

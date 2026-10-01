@@ -1256,6 +1256,7 @@ export function startProxy(
            reqId,
            {
             preferred: typeof issuer === "string" ? issuer : undefined,
+            spreadKey: conversationKey ?? reqId,
             onServed: (relay) => {
              servedIssuer = relay;
              issuerReported = true;
