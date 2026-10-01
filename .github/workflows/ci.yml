@@ -78,7 +78,7 @@ jobs:
         run: |
           echo "=== Verifying npm package tarball contents ==="
           npm pack --dry-run
-          
+
           PACK_FILES=$(npm pack --dry-run --json 2>/dev/null | node -e "
             let d='';
             process.stdin.on('data', c => d += c);
@@ -90,8 +90,8 @@ jobs:
               } catch {}
             });
           ")
-          
-          if echo "$PACK_FILES" | grep -E "(test/|devdocs/|reference/|\.env)"; then
+
+          if echo "$PACK_FILES" | grep -E "(test/|devdocs/|devthings/|reference/|\.env)"; then
             echo "ERROR: Forbidden files found in npm package whitelist!"
             exit 1
           fi

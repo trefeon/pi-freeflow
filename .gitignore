@@ -41,6 +41,7 @@ pi-freeflow-relay-state.json
 
 # ── Internal Docs & Scratch / Test Scripts ────────────────────────────
 devdocs/
+devthings/
 reference/
 HANDOFF.md
 IMPROVEMENTS-PLAN.md
