@@ -1324,12 +1324,16 @@ export function startProxy(
           res,
           req,
           reqId,
-          relayState.url,
+          servedIssuer ?? "direct",
           streamCloak,
          );
         } else {
          if (!response.ok) {
-          log("warn", `upstream ${response.status} for model ${String((parsedBody as Record<string, unknown> | null)?.model ?? "?")} via relay ${relayState.url || "pool"}`, { status: response.status, model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url, relay: relayState.url }, reqId);
+          // Attribute the failure to the relay that actually served this turn,
+          // not the machine-wide sticky/affinity primary, which may be a
+          // different host entirely (logged the wrong relay before this).
+          const servedRelay = servedIssuer ?? "direct";
+          log("warn", `upstream ${response.status} for model ${String((parsedBody as Record<string, unknown> | null)?.model ?? "?")} via ${servedRelay === "direct" ? "direct upstream" : `relay ${servedRelay}`}`, { status: response.status, model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url, relay: servedRelay }, reqId);
          }
          let rawText = await response.text();
          let ct =
