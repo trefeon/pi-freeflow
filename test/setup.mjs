@@ -10,17 +10,16 @@ import path from "node:path";
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "pi-freeflow-sandbox-"));
 process.env["PI_FREEFLOW_DATA_DIR"] = sandbox;
 
-// Disable detached daemon spawning for the whole suite. Tests call the real
-// client entrypoints (ensureDaemon), and without this a test would spawn a
-// daemon detached from the test process, pointed at this sandbox. The sandbox is
-// removed on exit, so that daemon would outlive the run with no state file and
-// squat the shared proxy port serving an empty relay pool. The key is derived
-// from the data-dir key so no environment name is duplicated as a literal here.
-const dataDirKey = Object.keys(process.env).find(
-	(k) => k.endsWith("_DATA_DIR") && process.env[k] === sandbox,
-);
-if (!dataDirKey) throw new Error("test/setup.mjs: could not locate the data-dir env key");
-process.env[dataDirKey.replace(/_DATA_DIR$/, "_DAEMON_SPAWN")] = "0";
+// Point the suite at a dedicated proxy port. A test that spawns a daemon must
+// never be able to occupy the real default port: such a daemon outlives the run
+// still holding this sandbox as its data directory, and would then serve an
+// empty relay pool to the user's live sessions. Mirrors test/user-flow-env.ts —
+// the key name is read from src/config.ts source text so no environment name is
+// duplicated here.
+const configSrc = fs.readFileSync(new URL("../src/config.ts", import.meta.url), "utf8");
+const portMatch = /process\.env\.([A-Z0-9_]+)_PORT/.exec(configSrc);
+if (!portMatch) throw new Error("test/setup.mjs: src/config.ts must read a *_PORT env var");
+process.env[`${portMatch[1]}_PORT`] = "29752";
 
 process.on("exit", () => {
 	try {
