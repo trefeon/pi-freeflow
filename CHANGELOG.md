@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.30.0
+
+### Minor Changes
+
+- **Spread relay mode.** `/freeflow spread` sends each request to a rotating healthy relay instead of always starting at one sticky relay, so parallel sessions and subagents land on different egress IPs rather than crowding a single one. A conversation's reasoning issuer still outranks the rotation, so in-progress chats are never rerouted, and a relay that is cooling down is never preferred. The interactive relay menu and `/freeflow status` show the new mode.
+
+  **Helper tools the proxy injects for API compatibility can no longer reach your host.** On the messages API path those injected tool calls were passed straight through; they are now stripped on every path, and a host that declares no tools never receives tool calls at all.
+
+  **Injected file-search helper now matches the shape your host expects**, so a call to it executes instead of being rejected.
+
 ## 1.29.0
 
 ### Minor Changes
