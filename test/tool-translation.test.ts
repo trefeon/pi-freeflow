@@ -209,15 +209,24 @@ test("injectFingerprintTools: completes the placeholder set in every target shap
 	assert.ok(messages.every((t) => "input_schema" in t && !("function" in t)));
 });
 
-test("ensureMessagesFingerprintTools: anthropic shape with input_schema", () => {
-	const body: Record<string, unknown> = { tools: [{ name: "todo", description: "t" }] };
-	ensureMessagesFingerprintTools(body);
-	const tools = body.tools as Array<Record<string, unknown>>;
-	assert.equal(tools.length, 7);
-	const bash = tools.find((t) => t.name === "bash");
+test("ensureMessagesFingerprintTools: OMP caller gets real defs, Pi caller keeps placeholders", () => {
+	const ompBody: Record<string, unknown> = { tools: [{ name: "todo", description: "t" }] };
+	ensureMessagesFingerprintTools(ompBody);
+	const ompTools = ompBody.tools as Array<Record<string, unknown>>;
+	assert.equal(ompTools.length, 7);
+	const bash = ompTools.find((t) => t.name === "bash");
 	assert.ok(bash);
-	assert.ok((bash.description as string).includes("never be invoked"));
-	assert.deepEqual(bash.input_schema, { type: "object", properties: {} });
+	assert.ok(!(bash.description as string).includes("never be invoked"), "OMP bash is executable, not a placeholder");
+	const schema = bash.input_schema as { type?: unknown; properties?: Record<string, unknown> };
+	assert.equal(schema.type, "object");
+	assert.ok(Object.keys(schema.properties ?? {}).length > 0, "OMP bash carries a real params schema");
+	const piBody: Record<string, unknown> = { tools: [{ name: "find", description: "f" }] };
+	ensureMessagesFingerprintTools(piBody, false);
+	const piTools = piBody.tools as Array<Record<string, unknown>>;
+	const piBash = piTools.find((t) => t.name === "bash");
+	assert.ok(piBash);
+	assert.ok((piBash.description as string).includes("never be invoked"), "Pi keeps the empty placeholder");
+	assert.deepEqual(piBash.input_schema, { type: "object", properties: {} });
 });
 
 test("enforceOpencodeFingerprint: messages path translates caller tools and injects placeholder set", () => {

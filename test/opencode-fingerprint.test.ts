@@ -4,6 +4,7 @@ import {
 	OPENCODE_FINGERPRINT_TOOLS,
 	convertSseToJson,
 	enforceOpencodeFingerprint,
+	normalizeResponsesBody,
 	ensureChatFingerprintTools,
 	ensureResponsesFingerprintTools,
 	isPlaceholderToolName,
@@ -353,4 +354,87 @@ test("sseToMessagesJson: drops placeholder tool_use, keeps caller blocks with re
 	assert.equal(res.content.length, 1);
 	assert.equal(res.content[0].name, "find", "upstream glob restored to caller find");
 	assert.deepEqual(res.content[0].input, { q: 1 });
+});
+
+test("normalizeResponsesBody: canned OMP chat leftovers reach responses shape", () => {
+	const body: Record<string, unknown> = {
+		model: "muse-spark-1.3-contributor-free",
+		messages: [{ role: "user", content: "hi" }],
+		max_tokens: 200,
+		temperature: 0.5,
+		top_p: 1,
+		parallel_tool_calls: false,
+		tool_choice: "none",
+		reasoning: { effort: "max" },
+		stream: false,
+	};
+	normalizeResponsesBody(body);
+	assert.deepEqual(body.input, [{ role: "user", content: "hi" }]);
+	assert.ok(!("messages" in body));
+	assert.equal(body.max_output_tokens, 200);
+	assert.ok(!("max_tokens" in body));
+	assert.ok(!("temperature" in body) && !("top_p" in body));
+	assert.ok(!("parallel_tool_calls" in body), "false dropped (absent-or-true only)");
+	assert.ok(!("tool_choice" in body), "none dropped, never 400");
+	assert.deepEqual(body.reasoning, { effort: "xhigh" }, "spark max clamps to xhigh");
+	assert.equal(body.store, false);
+	assert.equal(body.stream, false, "stream policy stays with enforce, not normalize");
+});
+
+test("normalizeResponsesBody: auto + parallel true + ultra survive, non-spark untouched", () => {
+	const body: Record<string, unknown> = {
+		model: "muse-spark-1.2-contributor-free",
+		input: "hi",
+		max_completion_tokens: 50,
+		tool_choice: "auto",
+		parallel_tool_calls: true,
+		reasoning: { effort: "ultra" },
+	};
+	normalizeResponsesBody(body);
+	assert.equal(body.tool_choice, "auto");
+	assert.equal(body.parallel_tool_calls, true);
+	assert.deepEqual(body.reasoning, { effort: "xhigh" });
+	assert.equal(body.max_output_tokens, 50);
+	const other: Record<string, unknown> = {
+		model: "big-pickle",
+		reasoning: { effort: "max" },
+		tool_choice: { type: "none" },
+	};
+	normalizeResponsesBody(other);
+	assert.deepEqual(other.reasoning, { effort: "max" }, "non-spark effort never clamped");
+	assert.ok(!("tool_choice" in other), "{ type: none } dropped");
+});
+
+test("enforceOpencodeFingerprint: responses path normalizes before fingerprint", () => {
+	const body: Record<string, unknown> = {
+		model: "muse-spark-1.3-contributor-free",
+		messages: [{ role: "user", content: "hi" }],
+		max_tokens: 200,
+		temperature: 0.5,
+		tool_choice: "none",
+		reasoning: { effort: "max" },
+		stream: false,
+		tools: [{ type: "function", name: "my_tool", description: "m", parameters: { type: "object" } }],
+	};
+	const r = enforceOpencodeFingerprint(body, "/v1/responses");
+	assert.equal(r.clientRequestedStream, false);
+	assert.equal(body.stream, true, "upstream still forced stream:true");
+	assert.ok(Array.isArray(body.input) && !("messages" in body));
+	assert.equal(body.max_output_tokens, 200);
+	assert.ok(!("tool_choice" in body));
+	assert.deepEqual(body.reasoning, { effort: "xhigh" });
+	assert.equal(body.store, false);
+	assert.equal((body.tools as unknown[]).length, 7, "caller tool + sextet");
+	const chat: Record<string, unknown> = {
+		model: "big-pickle",
+		messages: [{ role: "user", content: "hi" }],
+		temperature: 0.5,
+		tool_choice: "none",
+		stream: false,
+	};
+	enforceOpencodeFingerprint(chat, "/v1/chat/completions");
+	assert.ok(Array.isArray(chat.messages), "chat path keeps messages");
+	assert.equal(chat.temperature, 0.5, "chat path keeps temperature");
+	assert.equal(chat.tool_choice, "none", "chat path keeps caller choice");
+	assert.ok(!("store" in chat), "store stays responses-only");
 });

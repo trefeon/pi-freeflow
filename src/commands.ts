@@ -514,7 +514,7 @@ export function createCommandSpec(
 ): Omit<RegisteredCommand, "name"> {
  return {
   description:
-   "Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | debug on|off | refresh | update | deploy vercel | deploy cloudflare | deploy deno | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot]",
+   "Relay egress: auto | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | debug on|off | refresh | update | deploy cloudflare | deploy deno | deploy vercel | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot]",
   getArgumentCompletions: (prefix: string) =>
    [
     "auto",
@@ -536,9 +536,9 @@ export function createCommandSpec(
     "test opencode",
     "url",
     "deploy",
-    "deploy vercel",
     "deploy cloudflare",
     "deploy deno",
+    "deploy vercel",
     "install-startup",
     "uninstall-startup",
     "cline",
@@ -666,20 +666,20 @@ export function createCommandSpec(
    };
 
    const DEPLOY_OPTIONS: Record<string, DeployPlatform> = {
-    "Vercel (1M req/mo — recommended)": "vercel",
-    "Cloudflare (100k req/day)": "cloudflare",
+    "Cloudflare (100k req/day — recommended)": "cloudflare",
     "Deno Deploy (100k req/day)": "deno",
+    "Vercel (last resort — Hobby 10GB origin cap)": "vercel",
    };
 
    const parseDeployPlatform = (raw?: string): DeployPlatform | null => {
     const v = (raw || "").trim().toLowerCase();
-    if (!v || v === "vercel") return "vercel";
-    if (v === "cloudflare" || v === "cf") return "cloudflare";
+    if (!v || v === "cloudflare" || v === "cf") return "cloudflare";
     if (v === "deno") return "deno";
+    if (v === "vercel") return "vercel";
     return null;
    };
 
-   const doDeploy = async (platform: DeployPlatform = "vercel") => {
+   const doDeploy = async (platform: DeployPlatform = "cloudflare") => {
     const defaultName = `relay-${Date.now().toString(36)}`;
     const label =
      platform === "cloudflare"
@@ -832,6 +832,10 @@ export function createCommandSpec(
      ctx.ui.notify("No saved relays (direct upstream mode)", "info");
      return;
     }
+    const isDeadParked = (url: string): boolean => {
+     const h = getRelayHealth(url);
+     return h != null && h.lastStatus === 402 && Date.now() < h.cooldownUntil;
+    };
     const lines = relayState.relays.map((r, idx) => {
      const star = r.url === relayState.url ? "★" : " ";
      const shortName = r.label ? `[${r.label}]` : `[${shortRelayLabel(r.url, relayState.relays)}]`;
@@ -839,11 +843,13 @@ export function createCommandSpec(
      const health = getRelayHealth(r.url);
      const isCooling = health && Date.now() < health.cooldownUntil;
      const remainingSec = isCooling ? Math.ceil((health.cooldownUntil - Date.now()) / 1000) : 0;
-     const healthBadge = isCooling
-      ? ` ⚠️ [cooling ${remainingSec}s: ${health.lastStatus ? `HTTP ${health.lastStatus}` : "error"}]`
-      : health?.lastLatencyMs != null && Number.isFinite(health.lastLatencyMs)
-       ? ` ✓ [${health.lastLatencyMs}ms]`
-       : " ✓";
+     const healthBadge = isDeadParked(r.url)
+      ? ` ✖ [dead — HTTP 402 disabled deployment, parked ${remainingSec}s]`
+      : isCooling
+       ? ` ⚠️ [cooling ${remainingSec}s: ${health.lastStatus ? `HTTP ${health.lastStatus}` : "error"}]`
+       : health?.lastLatencyMs != null && Number.isFinite(health.lastLatencyMs)
+        ? ` ✓ [${health.lastLatencyMs}ms]`
+        : " ✓";
      const counterText = health && (health.successCount != null || health.failureCount != null)
       ? ` ${health.successCount ?? 0} ok / ${health.failureCount ?? 0} fail`
       : "";
@@ -1144,7 +1150,14 @@ export function createCommandSpec(
      })
      .join(" | ");
     const clineLine = formatClineStatusSnippet(loadPool());
-    ctx.ui.notify(`${modeLine} | ${poolLine}\n${stateFileLine}\nUpstream: ${upstreamLine}\n${clineLine}`, "info");
+    const deadParked = relayState.relays.filter((r) => {
+     const h = getRelayHealth(r.url);
+     return h != null && h.lastStatus === 402 && Date.now() < h.cooldownUntil;
+    });
+    const deadLine = deadParked.length
+     ? `\nDead relays (HTTP 402 disabled deployment, parked): ${deadParked.map((r) => r.url).join(", ")} — delete the Vercel project, run /freeflow remove <url>, then deploy Cloudflare`
+     : "";
+    ctx.ui.notify(`${modeLine} | ${poolLine}\n${stateFileLine}\nUpstream: ${upstreamLine}\n${clineLine}${deadLine}`, "info");
    } else if (sub === "kill" || sub === "stop" || sub === "shutdown") {
     const port = getClientPort() || PORT;
     try {
@@ -1815,7 +1828,7 @@ export function createCommandSpec(
      const pf = parseDeployPlatform(rest);
      if (!pf) {
       ctx.ui.notify(
-       "Unknown platform. Use: vercel | cloudflare | deno",
+       "Unknown platform. Use: cloudflare | deno | vercel",
        "warning",
       );
      } else {
@@ -1840,9 +1853,9 @@ export function createCommandSpec(
      "Share relays (export file)…",
      "Load relays from file (import)…",
      "List saved relays",
-     "Deploy Vercel relay…",
      "Deploy Cloudflare relay…",
      "Deploy Deno relay…",
+     "Deploy Vercel relay (last resort)…",
      "Mode: AUTO (auto-detect on model select)",
      "Mode: ON (always relay)",
      "Mode: OFF (always direct)",
@@ -1865,7 +1878,7 @@ export function createCommandSpec(
      await runImport(picked, "merge", false);
     } else if (choice === "List saved relays") {
      showList();
-    } else if (choice === "Deploy Vercel relay…") {
+    } else if (choice === "Deploy Vercel relay (last resort)…") {
      await doDeploy("vercel");
     } else if (choice === "Deploy Cloudflare relay…") {
      await doDeploy("cloudflare");

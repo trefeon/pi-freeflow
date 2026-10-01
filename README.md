@@ -82,17 +82,24 @@ stays in memory and is never written to disk.
 
 Manual fallback per platform:
 
-**Option A: Cloudflare Workers, auto deploy**
+**Option A: Cloudflare Workers, auto deploy (recommended)**
 ```bash
 /freeflow deploy cloudflare  # prompts token in-memory, auto-adds to pool
+# or shorthand: /freeflow deploy (defaults to Cloudflare)
 ```
 Manual fallback: `dash.cloudflare.com` → Workers → Create → Deploy → Edit code → paste the canonical worker source (see below) → Deploy → `/freeflow add https://your.workers.dev cf-worker-1`
 
-**Option B: Vercel Edge Relay, auto deploy**
+**Option B: Deno Deploy, auto deploy**
+```bash
+/freeflow deploy deno  # prompts token in-memory, auto-adds to pool
+```
+Manual fallback: `dash.deno.com` → New Project → Playground → paste the canonical worker source (see below) → Deploy → `/freeflow add https://your-project.deno.dev deno-relay-1`
+
+**Option C: Vercel Edge Relay (last resort, paid plan only)**
 ```bash
 /freeflow deploy vercel  # prompts token in-memory, auto-adds to pool
-# or shorthand: /freeflow deploy
 ```
+Only use with a paid plan: the Hobby plan caps Fast Origin Transfer at 10 GB (~1.2 MB per streaming turn, about 8,000 turns), then every deployment in the project returns HTTP 402 until the quota resets.
 Manual fallback: push 2 files (`api/relay.js` + `vercel.json`) to GitHub, then Import on `vercel.com`, then `/freeflow add https://your.vercel.app vercel-relay-1`
 
 For `api/relay.js`, use the canonical worker source (see below); `vercel.json` stays:
@@ -100,12 +107,6 @@ For `api/relay.js`, use the canonical worker source (see below); `vercel.json` s
 ```json
 { "rewrites": [{ "source": "/(.*)", "destination": "/api/relay" }] }
 ```
-
-**Option C: Deno Deploy, auto deploy**
-```bash
-/freeflow deploy deno  # prompts token in-memory, auto-adds to pool
-```
-Manual fallback: `dash.deno.com` → New Project → Playground → paste the canonical worker source (see below) → Deploy → `/freeflow add https://your-project.deno.dev deno-relay-1`
 
 **Canonical worker source (all platforms)**
 

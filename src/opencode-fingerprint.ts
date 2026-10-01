@@ -27,13 +27,16 @@
  */
 import {
  COMPAT_TOOL_DESCRIPTION,
+ OMP_FINGERPRINT_DEFS,
  OPENCODE_FINGERPRINT_TOOLS,
  buildFindGlobRestore,
+ isOmpLikeCaller,
  restoreToolNameForCaller,
  retargetToolChoiceForUpstream,
  translateToolsForPath,
  upstreamToolNameFor,
  type FindGlobRestore,
+ type FingerprintToolName,
 } from "./tool-translation.ts";
 
 /**
@@ -60,6 +63,16 @@ for (const n of OPENCODE_FINGERPRINT_TOOLS) PLACEHOLDER_BY_LOWER_NAME[n.toLowerC
 /** True for placeholder names (case-insensitive): injected compat tools only. */
 export function isPlaceholderToolName(name: unknown): boolean {
  return typeof name === "string" && PLACEHOLDER_BY_LOWER_NAME[name.toLowerCase()] === true;
+}
+/**
+ * Fill for one missing fingerprint slot: the shared OMP real definition when
+ * the caller is OMP-like, otherwise the empty COMPAT placeholder Pi keeps.
+ * Single lockstep source for the three wire-shape ensure functions below.
+ */
+function fingerprintFill(name: FingerprintToolName, omp: boolean): { description: string; schema: Record<string, unknown> } {
+ if (!omp) return { description: COMPAT_TOOL_DESCRIPTION, schema: { type: "object", properties: {} } };
+ const def = OMP_FINGERPRINT_DEFS[name];
+ return { description: def.description, schema: { ...(def.parameters as Record<string, unknown>) } };
 }
 
 /**
@@ -136,11 +149,14 @@ function restoreCallerName(name: string, caseRestore?: CaseRestoreMap, findGlob?
 }
 
 /**
- * Merge missing placeholder declarations (canonical translator set) into Chat
+ * Merge missing fingerprint declarations (canonical translator set) into Chat
  * Completions bodies. Case-insensitive and idempotent: Bash counts as bash.
- * Preserves caller tools verbatim; missing placeholders appended as no-ops.
+ * Preserves caller tools verbatim; missing slots become executable real
+ * definitions for OMP-like callers, empty no-ops otherwise. Explicit `ompLike`
+ * overrides auto-detection (pass pre-translation caller names when find was
+ * already renamed to glob).
  */
-export function ensureChatFingerprintTools(body: Record<string, unknown>): void {
+export function ensureChatFingerprintTools(body: Record<string, unknown>, ompLike?: boolean): void {
  if (!body || typeof body !== "object") return;
  const present = new Set<string>();
  if (Array.isArray(body.tools)) {
@@ -151,14 +167,16 @@ export function ensureChatFingerprintTools(body: Record<string, unknown>): void 
  } else {
   body.tools = [];
  }
+ const omp = ompLike ?? isOmpLikeCaller(present);
  for (const name of OPENCODE_FINGERPRINT_TOOLS) {
   if (present.has(name)) continue;
+  const fill = fingerprintFill(name, omp);
   (body.tools as unknown[]).push({
    type: "function",
    function: {
     name,
-    description: COMPAT_TOOL_DESCRIPTION,
-    parameters: { type: "object", properties: {} },
+    description: fill.description,
+    parameters: fill.schema,
    },
   });
   present.add(name);
@@ -166,11 +184,13 @@ export function ensureChatFingerprintTools(body: Record<string, unknown>): void 
 }
 
 /**
- * Merge missing placeholder declarations (canonical translator set) into
+ * Merge missing fingerprint declarations (canonical translator set) into
  * Responses API bodies. Case-insensitive and idempotent.
  * Uses the flat Responses tool shape ({ type: "function", name, description, parameters }).
+ * Missing slots become executable real definitions for OMP-like callers,
+ * empty no-ops otherwise; see ensureChatFingerprintTools for the override.
  */
-export function ensureResponsesFingerprintTools(body: Record<string, unknown>): void {
+export function ensureResponsesFingerprintTools(body: Record<string, unknown>, ompLike?: boolean): void {
  if (!body || typeof body !== "object") return;
  const present = new Set<string>();
  if (Array.isArray(body.tools)) {
@@ -181,24 +201,28 @@ export function ensureResponsesFingerprintTools(body: Record<string, unknown>): 
  } else {
   body.tools = [];
  }
+ const omp = ompLike ?? isOmpLikeCaller(present);
  for (const name of OPENCODE_FINGERPRINT_TOOLS) {
   if (present.has(name)) continue;
+  const fill = fingerprintFill(name, omp);
   (body.tools as unknown[]).push({
    type: "function",
    name,
-   description: COMPAT_TOOL_DESCRIPTION,
-   parameters: { type: "object", properties: {} },
+   description: fill.description,
+   parameters: fill.schema,
   });
   present.add(name);
  }
 }
 
 /**
- * Merge missing placeholder declarations (canonical translator set) into
+ * Merge missing fingerprint declarations (canonical translator set) into
  * Anthropic Messages bodies. Case-insensitive and idempotent.
  * Uses the Anthropic tool shape ({ name, description, input_schema }).
+ * Missing slots become executable real definitions for OMP-like callers,
+ * empty no-ops otherwise; see ensureChatFingerprintTools for the override.
  */
-export function ensureMessagesFingerprintTools(body: Record<string, unknown>): void {
+export function ensureMessagesFingerprintTools(body: Record<string, unknown>, ompLike?: boolean): void {
  if (!body || typeof body !== "object") return;
  const present = new Set<string>();
  if (Array.isArray(body.tools)) {
@@ -209,25 +233,88 @@ export function ensureMessagesFingerprintTools(body: Record<string, unknown>): v
  } else {
   body.tools = [];
  }
+ const omp = ompLike ?? isOmpLikeCaller(present);
  for (const name of OPENCODE_FINGERPRINT_TOOLS) {
   if (present.has(name)) continue;
+  const fill = fingerprintFill(name, omp);
   (body.tools as unknown[]).push({
    name,
-   description: COMPAT_TOOL_DESCRIPTION,
-   input_schema: { type: "object", properties: {} },
+   description: fill.description,
+   input_schema: fill.schema,
   });
   present.add(name);
  }
+}
+
+/**
+ * Normalize a Zen Responses body to what upstream accepts. OMP/Pi hosts
+ * sometimes carry Chat Completions leftovers on the responses path and
+ * upstream rejects them with 400:
+ * - `messages` becomes `input` (copied when `input` is absent, dropped either
+ *   way — the responses API has no `messages` field).
+ * - `max_tokens` / `max_completion_tokens` become `max_output_tokens` (copied
+ *   when absent, dropped either way).
+ * - `temperature` / `top_p` are dropped (Responses rejects them).
+ * - `parallel_tool_calls: false` is dropped; absent-or-true rides verbatim.
+ * - `tool_choice` is auto-or-absent: `"none"` (string or `{ type: "none" }`)
+ *   is dropped, everything else rides (named choices still retarget find->glob).
+ * - `store` defaults to false (never persisted server-side).
+ * - spark reasoning effort clamps `max` / `ultra` to `xhigh`: the spark
+ *   thinkingLevelMap declares `max: null` (unoffered) and upstream serves at
+ *   most `xhigh`, so a stale or hand-built `max`/`ultra` effort would 400.
+ *   Only spark model ids are clamped; `off: null` stays untouched everywhere.
+ * Zen-responses only: chat/messages paths keep their own fields, and Kilo/Cline
+ * bodies never reach here (the proxy fingerprints Zen bodies exclusively).
+ */
+export function normalizeResponsesBody(body: Record<string, unknown>): void {
+ if (!body || typeof body !== "object") return;
+ if (body.input === undefined && Array.isArray(body.messages)) {
+  body.input = body.messages;
+ }
+ delete body.messages;
+ if (body.max_output_tokens === undefined) {
+  if (typeof body.max_tokens === "number") body.max_output_tokens = body.max_tokens;
+  else if (typeof body.max_completion_tokens === "number") body.max_output_tokens = body.max_completion_tokens;
+ }
+ delete body.max_tokens;
+ delete body.max_completion_tokens;
+ delete body.temperature;
+ delete body.top_p;
+ if (body.parallel_tool_calls === false) delete body.parallel_tool_calls;
+ const choice = body.tool_choice;
+ if (typeof choice === "string" ? choice.toLowerCase() === "none" : (
+  choice !== null && typeof choice === "object" && !Array.isArray(choice)
+  && (choice as Record<string, unknown>).type === "none"
+ )) delete body.tool_choice;
+ if (typeof body.model === "string" && /muse-spark/i.test(body.model)) {
+  const reasoning = body.reasoning;
+  if (reasoning !== null && typeof reasoning === "object" && !Array.isArray(reasoning)) {
+   const effort = (reasoning as Record<string, unknown>).effort;
+   if (typeof effort === "string" && (effort.toLowerCase() === "max" || effort.toLowerCase() === "ultra")) {
+    (reasoning as Record<string, unknown>).effort = "xhigh";
+   }
+  }
+  for (const key of ["reasoning_effort", "reasoningEffort"] as const) {
+   const flat = body[key];
+   if (typeof flat === "string" && (flat.toLowerCase() === "max" || flat.toLowerCase() === "ultra")) body[key] = "xhigh";
+  }
+ }
+ if (body.store === undefined) body.store = false;
 }
 
 /**
  * Enforce the full OpenCode free-tier client fingerprint on a parsed request body.
  * Caller placeholders are lowercased (Bash -> bash, tool_choice retargeted),
  * tools translated to the target path's wire shape (Pi find -> upstream glob via
- * src/tool-translation.ts), then the missing placeholders injected in that shape.
- * Returns the original stream flag, caller-tools flag, whether injection added
- * tools, and the bounded per-request restore records (caseRestore, findGlob,
- * injected) for downstream response cloaking.
+ * src/tool-translation.ts), then the missing slots injected in that shape: real
+ * executable definitions for OMP-like callers (ask/task/todo/hub/lsp present,
+ * or glob without find, detected on pre-translation caller names), empty
+ * no-ops for Pi. Returns the original stream flag, caller-tools flag, whether
+ * injection added tools, and the bounded per-request restore records
+ * (caseRestore, findGlob, injected, injectedReal) for downstream cloaking.
+ * Cloaking strips by `injected` (truly-empty placeholders) only: names in
+ * `injectedReal` were served with executable definitions, so model calls to
+ * them execute downstream instead of being cloaked.
  */
 export function enforceOpencodeFingerprint(
  body: Record<string, unknown>,
@@ -239,9 +326,13 @@ export function enforceOpencodeFingerprint(
  caseRestore: CaseRestoreMap;
  findGlob: FindGlobRestore;
  injected: string[];
+ injectedReal: string[];
 } {
  const clientRequestedStream = body.stream === true;
  const callerHadTools = Array.isArray(body.tools) && body.tools.length > 0;
+ // Zen responses shape conformance first (Chat leftovers, tool_choice none,
+ // spark effort clamp, store default): Kilo/Cline bodies never reach here.
+ if (pathname.endsWith("/responses")) normalizeResponsesBody(body);
  // Upstream Zen free tier mandates stream: true for all free requests
  body.stream = true;
 
@@ -255,13 +346,24 @@ export function enforceOpencodeFingerprint(
   body.tool_choice = retargetToolChoiceForUpstream(body.tool_choice, findGlob) as Record<string, unknown> | string;
  }
  const callerUpstream = new Set<string>();
+ const callerNames = new Set<string>();
  if (Array.isArray(body.tools)) {
   for (const tool of body.tools) {
    const n = toolNameOf(tool);
-   if (n) callerUpstream.add(upstreamToolNameFor(n).toLowerCase());
+   if (n) {
+    callerNames.add(n.toLowerCase());
+    callerUpstream.add(upstreamToolNameFor(n).toLowerCase());
+   }
   }
  }
- const injected = OPENCODE_FINGERPRINT_TOOLS.filter((n) => !callerUpstream.has(n.toLowerCase()));
+ // OMP detection runs on pre-translation names: find is still visible here,
+ // so Pi find-callers are never mistaken for OMP glob-callers.
+ const ompLike = isOmpLikeCaller(callerNames);
+ const missing = OPENCODE_FINGERPRINT_TOOLS.filter((n) => !callerUpstream.has(n.toLowerCase()));
+ // Cloak list carries only the truly-empty placeholders; real definitions
+ // survive downstream so injected OMP calls execute.
+ const injected = ompLike ? [] : [...missing];
+ const injectedReal = ompLike ? [...missing] : [];
 
  if (Array.isArray(body.tools)) {
   body.tools = translateToolsForPath(body.tools, pathname);
@@ -269,22 +371,21 @@ export function enforceOpencodeFingerprint(
 
  const before = Array.isArray(body.tools) ? body.tools.length : 0;
  if (pathname.endsWith("/responses")) {
-  ensureResponsesFingerprintTools(body);
-  if (body.store === undefined) {
-   body.store = false;
-  }
+  ensureResponsesFingerprintTools(body, ompLike);
  } else if (pathname.endsWith("/messages")) {
-  ensureMessagesFingerprintTools(body);
+  ensureMessagesFingerprintTools(body, ompLike);
  } else {
-  ensureChatFingerprintTools(body);
+  ensureChatFingerprintTools(body, ompLike);
  }
  const after = Array.isArray(body.tools) ? body.tools.length : 0;
 
  // Note: Upstream OpenCode Zen explicitly rejects any tool_choice other than "auto"
- // with HTTP 400 (only "auto" is supported). We never impose tool_choice: "none".
- // The explicit placeholder description and output-aggregator guarantee clean text.
+ // with HTTP 400 (only "auto" is supported). tool_choice is auto-or-absent here:
+ // normalizeResponsesBody drops "none" upstream, and we never impose a choice.
+ // Empty-placeholder callers stay silent via the COMPAT description and the
+ // output-aggregator; real OMP definitions execute normally.
 
- return { clientRequestedStream, callerHadTools, addedTools: after > before, caseRestore, findGlob, injected };
+ return { clientRequestedStream, callerHadTools, addedTools: after > before, caseRestore, findGlob, injected, injectedReal };
 }
 
 /**

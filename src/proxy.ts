@@ -71,7 +71,7 @@ import {
  isExpiredReasoningReference,
  isReasoningCallerMismatch,
 } from "./responses.ts";
-import { pipeUpstreamStream } from "./stream-pipe.ts";
+import { pipeUpstreamStream, type StreamCloakOptions } from "./stream-pipe.ts";
 import {
  decideZenRoute,
  isUnprovenSession,
@@ -109,7 +109,7 @@ export function _reset429HintForTest(): void { last429HintAt = 0; }
 
 /** Deploy guidance attached to a natural upstream 429 once the throttle allows. */
 const RATE_LIMIT_HINT =
- "Shared free-tier IP quota reached. Add your own relay egress: /freeflow deploy (Vercel 1M/mo recommended)";
+ "Shared free-tier IP quota reached. Add your own relay egress: /freeflow deploy (Cloudflare recommended, 100k req/day free)";
 
 /**
  * Attach the deploy hint to a natural upstream 429 JSON body. Anything else —
@@ -1050,6 +1050,12 @@ export function startProxy(
     callerInjected = fp.injected;
     bodyModified = true;
    }
+   // Streaming cloak: thread this request's placeholder records into the SSE
+   // pipe so streamed deltas get the same strip+restore as aggregated bodies.
+   // Kilo/Cline bypass the fingerprint, so their streams stay verbatim.
+   const streamCloak: StreamCloakOptions | undefined = !isKilo && !isCline && callerInjected !== undefined
+    ? { callerHadTools, caseRestore: callerCaseRestore, findGlob: callerFindGlob, injected: callerInjected, pathname: target.pathname }
+    : undefined;
 
    const isStream = clientRequestedStream;
 
@@ -1318,6 +1324,7 @@ export function startProxy(
           req,
           reqId,
           relayState.url,
+          streamCloak,
          );
         } else {
          if (!response.ok) {
@@ -1496,6 +1503,7 @@ export function startProxy(
         req,
         reqId,
         "direct",
+        streamCloak,
        );
       } else if (upstreamRes.body) {
        let rawText = await upstreamRes.text();
