@@ -314,8 +314,30 @@ async function validateModel(port: number, model: ModelDef): Promise<Capability>
  return cap;
 }
 
+/**
+ * Own a proxy instance for this run.
+ *
+ * `startProxy` deliberately ATTACHES to an already-running proxy on the same
+ * port and resolves `{ server: null }` (single-port reuse). A validation run
+ * must never measure a proxy it does not control: a stale instance that retires
+ * mid-sweep turns every later request into a bare `fetch failed`, which reads as
+ * "model unavailable" and silently invalidates the whole matrix. So walk a few
+ * ports until one is genuinely ours, and fail loudly if none is.
+ */
+async function startOwnedProxy() {
+ const candidates = [TEST_PORT, TEST_PORT + 1, TEST_PORT + 2, TEST_PORT + 3];
+ for (const candidate of candidates) {
+  const { server, port } = await startProxy(candidate);
+  if (server) return { server, port };
+ }
+ throw new Error(
+  `could not own a proxy on any of ${candidates.join(", ")} — another pi-freeflow proxy holds them. ` +
+  "Stop it so the sweep measures its own instance.",
+ );
+}
+
 async function main(): Promise<void> {
- const { server, port } = await startProxy(TEST_PORT);
+ const { server, port } = await startOwnedProxy();
  console.log(`proxy on :${port}`);
  console.log(
   `spoof headers: UA=${opencodeHeaders()["User-Agent"]} session=${opencodeHeaders()["x-opencode-session"]?.slice(0, 12)}…\n`,
