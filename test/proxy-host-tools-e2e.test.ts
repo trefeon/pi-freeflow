@@ -168,8 +168,16 @@ test("proxy e2e: chat non-stream carries mixed host tools upstream and restores 
 	assert.deepEqual(upstream.tool_choice, callerChoice, "tool_choice must be carried, not imposed");
 	assert.ok(Array.isArray(upstream.tools));
 	const tools = upstream.tools as Array<unknown>;
-	assert.equal(tools.length, 12, "8 caller tools translated + 4 injected placeholders");
+	assert.equal(tools.length, 12, "8 caller tools translated + 4 injected real definitions (OMP-like caller)");
 	assertFingerprintOnce(tools, "chat");
+	// OMP-like caller (ask present): injected slots carry executable real schemas, never COMPAT text.
+	for (const n of ["grep", "read", "edit", "write"]) {
+		const t = byUpstreamName(tools, n) as Record<string, unknown>;
+		const fn = t.function as Record<string, unknown>;
+		assert.ok(!String(fn.description).includes("never be invoked"), `injected ${n} is a real definition`);
+		const params = fn.parameters as { properties?: Record<string, unknown> };
+		assert.ok(params.properties && Object.keys(params.properties).length > 0, `injected ${n} has executable params`);
+	}
 	// Caller find arrives as glob with params/description verbatim; no raw find upstream.
 	assert.ok(!tools.some((t) => upstreamToolName(t).toLowerCase() === "find"), "caller find must be renamed to glob upstream");
 	const glob = byUpstreamName(tools, "glob");
@@ -205,7 +213,7 @@ test("proxy e2e: chat non-stream carries mixed host tools upstream and restores 
 	assert.deepEqual(actual, expected);
 	const msg = (JSON.parse(clientBody) as { choices: Array<{ message: { tool_calls?: Array<{ function: { name: string } }> } }> }).choices[0].message;
 	const names = (msg.tool_calls ?? []).map((tc) => tc.function.name);
-	assert.deepEqual(names, ["find", "Bash", "ask"], "upstream glob restores to caller find, bash restores to caller Bash, injected read cloaked");
+	assert.deepEqual(names, ["find", "Bash", "ask", "read"], "upstream glob restores to caller find, bash restores to caller Bash, injected read executes (real def, not cloaked)");
 });
 
 test("proxy e2e: responses non-stream stores false, flat tools, function_call restore", async () => {
@@ -246,7 +254,7 @@ test("proxy e2e: responses non-stream stores false, flat tools, function_call re
 	assert.equal(upstream.tool_choice, "auto", "tool_choice must be carried, not imposed");
 	assert.ok(Array.isArray(upstream.tools));
 	const tools = upstream.tools as Array<Record<string, unknown>>;
-	assert.equal(tools.length, 12, "8 caller tools translated + 4 injected placeholders");
+	assert.equal(tools.length, 12, "8 caller tools translated + 4 injected real definitions (OMP-like caller)");
 	assertFingerprintOnce(tools, "responses");
 	for (const t of tools) {
 		assert.equal(t.type, "function", "responses tools use the flat shape");
@@ -272,7 +280,7 @@ test("proxy e2e: responses non-stream stores false, flat tools, function_call re
 	const calls = ((JSON.parse(clientBody) as { output: Array<Record<string, unknown>> }).output ?? [])
 		.filter((item) => item.type === "function_call")
 		.map((item) => String(item.name));
-	assert.deepEqual(calls, ["find", "Bash", "ask"], "upstream glob restores to caller find, injected read cloaked");
+	assert.deepEqual(calls, ["find", "Bash", "ask", "read"], "upstream glob restores to caller find, injected read executes (real def, not cloaked)");
 });
 
 test("proxy e2e: messages non-stream uses anthropic shape and restores tool_use names", async () => {
@@ -313,7 +321,7 @@ test("proxy e2e: messages non-stream uses anthropic shape and restores tool_use 
 	assert.ok(!("tool_choice" in upstream), "tool_choice must not be imposed when the caller sends none");
 	assert.ok(Array.isArray(upstream.tools));
 	const tools = upstream.tools as Array<Record<string, unknown>>;
-	assert.equal(tools.length, 12, "8 caller tools translated + 4 injected placeholders");
+	assert.equal(tools.length, 12, "8 caller tools translated + 4 injected real definitions (OMP-like caller)");
 	assertFingerprintOnce(tools, "messages");
 	for (const t of tools) {
 		assert.ok(typeof t.name === "string", "anthropic tools carry a flat name");
@@ -332,7 +340,7 @@ test("proxy e2e: messages non-stream uses anthropic shape and restores tool_use 
 	const blocks = ((JSON.parse(clientBody) as { content: Array<Record<string, unknown>> }).content ?? [])
 		.filter((b) => b.type === "tool_use")
 		.map((b) => String(b.name));
-	assert.deepEqual(blocks, ["find", "Bash", "ask"], "upstream glob restores to caller find, injected grep cloaked");
+	assert.deepEqual(blocks, ["find", "Bash", "ask", "grep"], "upstream glob restores to caller find, injected grep executes (real def, not cloaked)");
 });
 
 test("proxy e2e: chat stream:true still fingerprints upstream and streams to the client", async () => {

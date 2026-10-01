@@ -664,6 +664,10 @@ export function shortRelayLabel(url: string, relays?: KnownRelay[]): string {
  * Reloads from disk only when another process changed the state file (mtime moved),
  * so cross-session relay-pool updates propagate to workers while this process's own
  * unpersisted runtime overrides survive between external writes.
+ * Within each health partition, meter-free relays come first and `*.vercel.app`
+ * relays are last resort (existing health/cooldown order preserved): Vercel Hobby
+ * origin quota binds ~10x before data quota, so a healthy-but-quota-near Vercel
+ * relay burns paid-adjacent budget. Vercel stays as failover.
  */
 export function getOrderedRelayUrls(): string[] {
 	const mtime = currentDiskStateMtimeMs();
@@ -694,7 +698,23 @@ export function getOrderedRelayUrls(): string[] {
 		// Partition into healthy candidates first, degraded/cooling candidates at the tail
 		const healthy = rawOrdered.filter((u) => isRelayHealthy(u));
 		const cooling = rawOrdered.filter((u) => !isRelayHealthy(u));
-		const ordered = [...healthy, ...cooling];
+		// Vercel last resort within each partition: non-Vercel first, Vercel tail.
+		const vercelFlag = new Map<string, boolean>();
+		for (const u of rawOrdered) {
+			let isVercel = false;
+			try {
+				isVercel = new URL(u).hostname.toLowerCase().endsWith(".vercel.app");
+			} catch {
+				isVercel = false;
+			}
+			vercelFlag.set(u, isVercel);
+		}
+		const ordered = [
+			...healthy.filter((u) => !vercelFlag.get(u)),
+			...healthy.filter((u) => vercelFlag.get(u)),
+			...cooling.filter((u) => !vercelFlag.get(u)),
+			...cooling.filter((u) => vercelFlag.get(u)),
+		];
 
 		return ordered;
 	}

@@ -51,11 +51,13 @@ Relay state is persisted in `~/.pi/agent/pi-freeflow-relay-state.json`:
 
 ## Deployment Options
 
-### Cloudflare Worker (Recommended)
-Free tier: 100,000 requests/day, no 25-second execution limit. Deploy via `/freeflow deploy cloudflare` or manually paste a 40-line edge worker script.
+Deploy order: Cloudflare first, Deno second, Vercel only as a last resort.
 
-### Vercel Edge Function
-Free tier: 1,000,000 requests/month. Deploy via `/freeflow deploy vercel` (in-memory token, auto-adds to pool) or manual Git deploy with `api/relay.js` + `vercel.json`.
+### Cloudflare Worker (Recommended)
+Free tier: 100,000 requests/day with no meter on origin transfer, so streaming stays free. Deploy via `/freeflow deploy cloudflare` or manually paste a 40-line edge worker script.
 
 ### Deno Deploy
 Free tier: 100,000 requests/day. Deploy via `/freeflow deploy deno` or manual playground paste.
+
+### Vercel Edge Function (Last Resort)
+Only use with a paid plan or a spare Hobby project you can afford to lose: the Hobby plan caps Fast Origin Transfer at 10 GB, and a streaming relay burns roughly 1.2 MB per turn (about 8,000 turns total). Once the cap is hit, every deployment in the project returns HTTP 402 and the whole pool goes dark until the quota resets. Deploy via `/freeflow deploy vercel` (in-memory token, auto-adds to pool) or manual Git deploy with `api/relay.js` + `vercel.json`.

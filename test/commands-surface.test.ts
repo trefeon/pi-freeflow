@@ -58,6 +58,7 @@ function createMockContext(opts: {
  inputValues?: Array<string | undefined>;
  selectValue?: string | null;
  confirmValue?: boolean;
+ onSelect?: (prompt: string, options: string[]) => void;
 } = {}): {
  ctx: ExtensionContext;
  notifications: Array<{ message: string; type?: string }>;
@@ -82,6 +83,7 @@ function createMockContext(opts: {
    return Promise.resolve(v !== undefined ? v : (defaultValue ?? ""));
   },
   select(_prompt: string, options: string[]) {
+   opts.onSelect?.(_prompt, options);
    const v = opts.selectValue;
    if (v === undefined) return Promise.resolve(options[0]);
    return Promise.resolve(v === null ? undefined : v);
@@ -114,7 +116,7 @@ function singleRelayState(): RelayState {
  };
 }
 
-const VERCEL_OPTION = "Vercel (1M req/mo — recommended)";
+const VERCEL_OPTION = "Vercel (last resort — Hobby 10GB origin cap)";
 
 // ── /freeflow test ───────────────────────────────────────────────────
 
@@ -375,6 +377,67 @@ test("command spec: /freeflow list shows latency badge and ok/fail counters", as
   );
  });
 });
+test("command spec: /freeflow list marks a 402-disabled relay dead, healthy relay stays clean", async () => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  const state: RelayState = {
+   mode: "auto",
+   enabled: true,
+   url: "https://relay1.example.com",
+   relays: [
+    { url: "https://relay1.example.com", label: "relay1" },
+    { url: "https://relay2.example.com", label: "relay2" },
+   ],
+  };
+  setActiveRelayState(state, false);
+  markRelayFailure("https://relay1.example.com", 402, "DEPLOYMENT_DISABLED");
+  markRelaySuccess("https://relay2.example.com", 120);
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext();
+  await spec.handler("list", ctx);
+  const msg = notifications.find((n) => n.message.includes("Saved Relays"));
+  assert.ok(msg, `expected list header, got: ${JSON.stringify(notifications)}`);
+  const deadLine = msg.message.split("\n").find((l) => l.includes("relay1.example.com")) ?? "";
+  assert.ok(deadLine.toLowerCase().includes("dead"), `402 relay line must carry a dead badge, got: ${deadLine}`);
+  assert.ok(deadLine.includes("402"), `402 relay line must name the status, got: ${deadLine}`);
+  const healthyLine = msg.message.split("\n").find((l) => l.includes("relay2.example.com")) ?? "";
+  assert.ok(!healthyLine.toLowerCase().includes("dead"), `healthy relay must not carry a dead badge, got: ${healthyLine}`);
+ });
+});
+
+test("command spec: /freeflow status calls out 402-disabled relays with the fix", async () => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  const state: RelayState = {
+   mode: "auto",
+   enabled: true,
+   url: "https://relay1.example.com",
+   relays: [
+    { url: "https://relay1.example.com", label: "relay1" },
+    { url: "https://relay2.example.com", label: "relay2" },
+   ],
+  };
+  setActiveRelayState(state, false);
+  markRelayFailure("https://relay1.example.com", 402, "DEPLOYMENT_DISABLED");
+  markRelaySuccess("https://relay2.example.com", 120);
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext();
+  await spec.handler("status", ctx);
+  const banner = notifications.map((n) => n.message).join("\n");
+  assert.ok(banner.toLowerCase().includes("dead"), `status must call out the dead relay, got: ${banner}`);
+  assert.ok(banner.includes("relay1.example.com"), `status must name the dead relay url, got: ${banner}`);
+  assert.ok(banner.toLowerCase().includes("remove"), `status must point at the remove fix, got: ${banner}`);
+  assert.ok(banner.toLowerCase().includes("cloudflare"), `status must point at the Cloudflare fix, got: ${banner}`);
+  resetAllRelayHealth();
+  markRelaySuccess("https://relay1.example.com", 120);
+  markRelaySuccess("https://relay2.example.com", 120);
+  const { ctx: ctx2, notifications: notes2 } = createMockContext();
+  await spec.handler("status", ctx2);
+  const clean = notes2.map((n) => n.message).join("\n");
+  assert.ok(!clean.toLowerCase().includes("dead"), `healthy pool must not call out dead relays, got: ${clean}`);
+ });
+});
+
 
 // ── /freeflow logs relay <text> ──────────────────────────────────────
 
@@ -513,6 +576,44 @@ test("command spec: /freeflow deploy confirm declined notifies Deploy cancelled"
    notifications.some((n) => n.message.includes("Deploy cancelled")),
    `expected Deploy cancelled notify, got: ${JSON.stringify(notifications)}`,
   );
+ });
+});
+
+test("command spec: /freeflow deploy picker lists Cloudflare first (recommended), Vercel last", async () => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  let seenOptions: string[] | null = null;
+  const { ctx } = createMockContext({
+   selectValue: null,
+   onSelect: (_prompt, options) => { seenOptions = options; },
+  });
+
+  const spec = createCommandSpec(mockApi);
+  await spec.handler("deploy", ctx);
+
+  assert.ok(seenOptions, "deploy picker must present platform options");
+  const opts = seenOptions as string[];
+  assert.ok(opts[0].toLowerCase().includes("cloudflare"), `first option must be Cloudflare, got: ${JSON.stringify(opts)}`);
+  assert.ok(opts[0].toLowerCase().includes("recommend"), `first option must be marked recommended, got: ${JSON.stringify(opts)}`);
+  const last = opts[opts.length - 1];
+  assert.ok(last.toLowerCase().includes("vercel"), `last option must be Vercel, got: ${JSON.stringify(opts)}`);
+  assert.ok(last.toLowerCase().includes("last resort"), `Vercel option must be marked last resort, got: ${JSON.stringify(opts)}`);
+ });
+});
+
+test("command spec: /freeflow deploy <unknown> names cloudflare first", async () => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext();
+
+  await spec.handler("deploy bogus-platform", ctx);
+
+  const msg = notifications.find((n) => n.message.includes("Unknown platform"));
+  assert.ok(msg, `expected Unknown platform notify, got: ${JSON.stringify(notifications)}`);
+  assert.ok(msg.message.includes("cloudflare | deno | vercel"), `platforms must be Cloudflare-first, got: ${msg.message}`);
  });
 });
 

@@ -99,6 +99,87 @@ export const ALL_HOST_TOOL_NAMES: ReadonlySet<string> = new Set([
 export const COMPAT_TOOL_DESCRIPTION =
  "Do not call this tool. It exists only for API compatibility and must never be invoked.";
 
+/**
+ * Real minimal executable definitions for the fingerprint slots, used when the
+ * caller looks like OMP (full tool inventory covers these names, so the model
+ * may legitimately invoke them and the host can execute them). Single source
+ * of truth for every injection site; Pi callers keep the empty COMPAT
+ * placeholders above. Descriptions must never match COMPAT_TOOL_DESCRIPTION.
+ */
+export const OMP_FINGERPRINT_DEFS: Record<FingerprintToolName, { description: string; parameters: Record<string, unknown> }> = {
+ bash: {
+  description: "Run a shell command and return its output.",
+  parameters: {
+   type: "object",
+   properties: { command: { type: "string", description: "Shell command to run." } },
+   required: ["command"],
+  },
+ },
+ glob: {
+  description: "Find files by glob pattern.",
+  parameters: {
+   type: "object",
+   properties: { pattern: { type: "string", description: "Glob pattern to match." } },
+   required: ["pattern"],
+  },
+ },
+ grep: {
+  description: "Search file contents for a pattern.",
+  parameters: {
+   type: "object",
+   properties: {
+    pattern: { type: "string", description: "Search pattern." },
+    path: { type: "string", description: "File or directory to search." },
+   },
+   required: ["pattern"],
+  },
+ },
+ read: {
+  description: "Read a file from disk.",
+  parameters: {
+   type: "object",
+   properties: { path: { type: "string", description: "File path to read." } },
+   required: ["path"],
+  },
+ },
+ edit: {
+  description: "Edit a file on disk.",
+  parameters: {
+   type: "object",
+   properties: {
+    path: { type: "string", description: "File path to edit." },
+    edit: { type: "string", description: "Edit to apply." },
+   },
+   required: ["path", "edit"],
+  },
+ },
+ write: {
+  description: "Write a file to disk.",
+  parameters: {
+   type: "object",
+   properties: {
+    path: { type: "string", description: "File path to write." },
+    content: { type: "string", description: "File content." },
+   },
+   required: ["path", "content"],
+  },
+ },
+};
+
+/** Caller tool names that only an OMP host sends (never Pi). */
+export const OMP_CALLER_MARKERS = ["ask", "task", "todo", "hub", "lsp"] as const;
+
+/**
+ * True when a lowercased caller-tool name set looks like OMP: any of
+ * ask/task/todo/hub/lsp present, or glob present without find (Pi sends find,
+ * OMP sends glob). Case-insensitive; pass already-lowercased names.
+ */
+export function isOmpLikeCaller(lowerNames: Iterable<string>): boolean {
+ const set = lowerNames instanceof Set ? lowerNames : new Set(lowerNames);
+ for (const m of OMP_CALLER_MARKERS) if (set.has(m)) return true;
+ return set.has("glob") && !set.has("find");
+}
+
 export interface CanonicalTool {
  name: string;
  description: string;
@@ -381,26 +462,33 @@ export function translateToolsForPath(tools: unknown[], pathname: string): Recor
  return out;
 }
 /**
- * Inject the missing compat placeholder tools into an already-translated tool
- * array, using the target path's shape. Idempotent and case-insensitive:
- * `Bash` satisfies `bash` and is never duplicated.
+ * Inject the missing fingerprint tools into an already-translated tool array,
+ * using the target path's shape. Idempotent and case-insensitive: `Bash`
+ * satisfies `bash` and is never duplicated.
+ * OMP-like callers (explicit `ompLike`, else auto-detected from the array via
+ * {@link isOmpLikeCaller}) get REAL minimal executable definitions from
+ * {@link OMP_FINGERPRINT_DEFS}; everyone else (Pi) keeps the empty COMPAT
+ * placeholders. Re-injecting injected output adds zero tools.
  */
 export function injectFingerprintTools(
  tools: Record<string, unknown>[],
  pathname: string,
+ ompLike?: boolean,
 ): Record<string, unknown>[] {
  const present = new Set<string>();
  for (const tool of tools) {
   const canon = canonicalizeTool(tool);
   if (canon) present.add(canon.name.trim().toLowerCase());
  }
+ const omp = ompLike ?? isOmpLikeCaller(present);
  const api = apiForPathname(pathname);
  for (const name of OPENCODE_FINGERPRINT_TOOLS) {
   if (present.has(name.toLowerCase())) continue;
+  const def = omp ? OMP_FINGERPRINT_DEFS[name] : null;
   const canon: CanonicalTool = {
    name,
-   description: COMPAT_TOOL_DESCRIPTION,
-   parameters: { type: "object", properties: {} },
+   description: def ? def.description : COMPAT_TOOL_DESCRIPTION,
+   parameters: def ? { ...(def.parameters as Record<string, unknown>) } : { type: "object", properties: {} },
   };
   tools.push(
    api === "responses"
