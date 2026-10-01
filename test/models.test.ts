@@ -216,7 +216,6 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "nemotron-3-ultra-free": { ctx: 1_000_000, max: 128_000, reasoning: true },
   "nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 262_144, reasoning: true },
   "big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
-  "ling-3.0-flash-fin-free": { ctx: 262_144, max: 131_072, reasoning: true },
   // KiloCode Gateway
   "dots-studio/dots-3-note-preview:free": { ctx: 512_000, max: 512_000, reasoning: true },
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": { ctx: 256_000, max: 131_072, reasoning: true },
@@ -231,7 +230,6 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "openrouter/free": { ctx: 200_000, max: 65_536, reasoning: true },
   "nvidia/nemotron-3.5-content-safety:free": { ctx: 128_000, max: 8_192, reasoning: false },
   // Added 2026-08-30 (live-verified)
-  "inclusionai/ling-3.0-flash-fin:free": { ctx: 262_144, max: 32_768, reasoning: true },
   "inclusionai/ling-3.0-flash-sante:free": { ctx: 262_144, max: 32_768, reasoning: true },
   "thinkingmachines/inkling-small:free": { ctx: 1_048_576, max: 262_144, reasoning: true },
   // Resurrected 2026-09-28 (live: Kilo free list isFree:true + keyless chat 200)
@@ -259,7 +257,6 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 });
 
 test("new alias map resolves to canonical kilo ids", () => {
- assert.equal(resolveCanonicalModelId("ling-3.0-flash-fin"), "inclusionai/ling-3.0-flash-fin:free");
  assert.equal(resolveCanonicalModelId("inkling-small"), "thinkingmachines/inkling-small:free");
  assert.equal(resolveCanonicalModelId("ling-3.0-flash-sante"), "inclusionai/ling-3.0-flash-sante:free");
  assert.equal(resolveCanonicalModelId("step-3.7-flash"), "stepfun/step-3.7-flash:free");

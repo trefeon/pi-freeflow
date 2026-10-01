@@ -37,6 +37,11 @@ import type {
  * - z-ai/glm-5.2:free: gone 2026-09-28 — :free ID absent (keyless 404); only the paid
  *   z-ai/glm-5.2 remains (isFree:false, keyless 401 PAID_MODEL_AUTH_REQUIRED).
  * - inclusionai/ling-3.0-flash-vl:free: gone from the live Kilo free list — only the paid counterpart remains.
+ * - ling-3.0-flash-fin-free: unserved upstream (2026-10-01) — persistent keyless 400
+ *   "Error from provider (Console): Upstream request failed: Endpoint is unavailable.",
+ *   reproduced across separate runs on different days while every other Zen model answers.
+ * - inclusionai/ling-3.0-flash-fin:free: gone from Kilo (2026-10-01) — keyless chat 404
+ *   "The requested model ... does not exist".
  */
 export const DEAD_MODEL_IDS = new Set<string>([
  "jev-1.13-free",
@@ -54,6 +59,8 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "nex-agi/nex-n2.5-mini:free",
  "z-ai/glm-5.2:free",
  "inclusionai/ling-3.0-flash-vl:free",
+ "ling-3.0-flash-fin-free",
+ "inclusionai/ling-3.0-flash-fin:free",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.
