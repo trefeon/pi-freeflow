@@ -8,6 +8,7 @@
   "freeModels": [
     "big-pickle",
     "deepseek-v4-flash-free",
+    "fledge-alpha-free",
     "jev-1.13-free",
     "ling-3.0-flash-fin-free",
     "longcat-2.5-preview-free",
@@ -19,5 +20,5 @@
     "nemotron-3.5-lightning-free",
     "space-bunny-free"
   ],
-  "lastChecked": "2026-10-01T10:49:39.465Z"
+  "lastChecked": "2026-10-02T10:24:02.323Z"
 }
