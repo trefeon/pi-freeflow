@@ -8,6 +8,7 @@ import path from "node:path";
 import { RELAY_STATE_FILE } from "../src/config.ts";
 import {
 	ensureRelay,
+	ewmaBadge,
 	findRelay,
 	getActiveRelayState,
 	getOrderedRelayUrls,
@@ -495,4 +496,132 @@ test("ensureRelay rejects invalid relay URLs", () => {
 	assert.throws(() => ensureRelay(state, "https://relay.local"), /Relay URL rejected/);
 	assert.throws(() => ensureRelay(state, "https://good.example.com:9999"), /Relay URL rejected/);
 	assert.equal(state.relays.length, 0, "rejected URLs must not enter the pool");
+});
+// ── Phase 1 smart-routing: margin-gated EWMA challenger ───────────────────
+
+function seedEwma(url: string, samples: number[]): void {
+	for (const ms of samples) markRelaySuccess(url, ms);
+}
+
+function autoPool(active: string, urls: string[]): RelayState {
+	return { enabled: true, url: active, relays: urls.map((url) => ({ url })), mode: "auto" };
+}
+
+test("challenger: sub-margin gap keeps the sticky primary", () => {
+	resetAllRelayHealth();
+	withSavedDiskState(() => {
+		const slow = "https://primary-slow.example.com";
+		const fast = "https://challenger-fast.example.com";
+		setActiveRelayState(autoPool(slow, [slow, fast]), false);
+		seedEwma(slow, [2000, 2000, 2000]);
+		seedEwma(fast, [1200, 1200, 1200]);
+		// Gap 800ms < max(1500, 25% of 2000): upstream noise, not worth a cold hop.
+		assert.deepEqual(getOrderedRelayUrls(), [slow, fast]);
+	});
+	resetAllRelayHealth();
+});
+
+test("challenger: above-margin gap promotes challenger, primary stays second", () => {
+	resetAllRelayHealth();
+	withSavedDiskState(() => {
+		const slow = "https://sticky-slow.example.com";
+		const fast = "https://fast-challenger.example.com";
+		setActiveRelayState(autoPool(slow, [slow, fast]), false);
+		seedEwma(slow, [5000, 5000, 5000]);
+		seedEwma(fast, [1000, 1000, 1000]);
+		// Gap 4000ms > max(1500, 25% of 5000): switch, nothing removed.
+		assert.deepEqual(getOrderedRelayUrls(), [fast, slow]);
+	});
+	resetAllRelayHealth();
+});
+
+test("challenger: under-floor relay cannot challenge even with a huge gap", () => {
+	resetAllRelayHealth();
+	withSavedDiskState(() => {
+		const slow = "https://sticky-measured.example.com";
+		const fresh = "https://fresh-relay.example.com";
+		setActiveRelayState(autoPool(slow, [slow, fresh]), false);
+		seedEwma(slow, [5000, 5000, 5000]);
+		seedEwma(fresh, [100, 100]);
+		assert.deepEqual(getOrderedRelayUrls(), [slow, fresh], "2 samples < floor 3: no promotion");
+	});
+	resetAllRelayHealth();
+});
+
+test("challenger: unknown-sample relays sort after measured, before cooling", () => {
+	resetAllRelayHealth();
+	withSavedDiskState(() => {
+		const sticky = "https://sticky-measured.example.com";
+		const newcomer = "https://newcomer-unknown.example.com";
+		const down = "https://down-cooling.example.com";
+		setActiveRelayState(autoPool(sticky, [sticky, newcomer, down]), false);
+		seedEwma(sticky, [3000, 3000, 3000]);
+		seedEwma(newcomer, [900]);
+		markRelayFailure(down, 503);
+		assert.deepEqual(getOrderedRelayUrls(), [sticky, newcomer, down]);
+	});
+	resetAllRelayHealth();
+});
+
+test("challenger: 429-cooling beats any EWMA — fastest relay stays tailed", () => {
+	resetAllRelayHealth();
+	withSavedDiskState(() => {
+		const slow = "https://steady-slow.example.com";
+		const hot = "https://hot-fast.example.com";
+		setActiveRelayState(autoPool(hot, [hot, slow]), false);
+		seedEwma(slow, [5000, 5000, 5000]);
+		seedEwma(hot, [200, 200, 200]);
+		markRelayFailure(hot, 429);
+		assert.equal(isRelayHealthy(hot), false);
+		assert.deepEqual(getOrderedRelayUrls(), [slow, hot], "cooling partition excludes first");
+	});
+	resetAllRelayHealth();
+});
+
+test("challenger: Vercel band exempt — fast Vercel never jumps non-Vercel", () => {
+	resetAllRelayHealth();
+	withSavedDiskState(() => {
+		const slow = "https://steady-origin.example.com";
+		const vercel = "https://fast-embassy.vercel.app";
+		setActiveRelayState(autoPool(slow, [slow, vercel]), false);
+		seedEwma(slow, [5000, 5000, 5000]);
+		seedEwma(vercel, [200, 200, 200]);
+		assert.deepEqual(getOrderedRelayUrls(), [slow, vercel], "latency never crosses the metered band");
+	});
+	resetAllRelayHealth();
+});
+
+test("challenger: recovering relay cannot challenge until its first post-recovery success", (t) => {
+	t.mock.timers.enable({ apis: ["Date"] });
+	resetAllRelayHealth();
+	try {
+		withSavedDiskState(() => {
+			const slow = "https://sticky-slow.example.com";
+			const cand = "https://candidate-fast.example.com";
+			setActiveRelayState(autoPool(slow, [slow, cand]), false);
+			seedEwma(slow, [5000, 5000, 5000]);
+			seedEwma(cand, [500, 500, 500]);
+			markRelayFailure(cand, 503);
+			t.mock.timers.tick(46_000);
+			assert.equal(isRelayHealthy(cand), true, "503 cooldown (45s) must have expired");
+			assert.deepEqual(getOrderedRelayUrls(), [slow, cand], "recovering challenger must not displace sticky");
+			markRelaySuccess(cand, 500);
+			assert.deepEqual(getOrderedRelayUrls(), [cand, slow], "cleared challenger wins on margin");
+		});
+	} finally {
+		resetAllRelayHealth();
+	}
+});
+
+test("ewmaBadge: shows ~Nms avg with samples, blank without", () => {
+	resetAllRelayHealth();
+	try {
+		assert.equal(ewmaBadge(undefined), "");
+		const url = "https://badge-relay.example.com";
+		markRelaySuccess(url, 1200);
+		assert.equal(ewmaBadge(getRelayHealth(url)), " ~1200ms avg");
+		assert.equal(ewmaBadge(getRelayHealth("https://never-seen.example.com")), "");
+	} finally {
+		resetAllRelayHealth();
+	}
 });

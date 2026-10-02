@@ -385,6 +385,12 @@ export interface RelayHealth {
 	failureCount?: number;
 	/** timestamp of the most recent HTTP 429 (if any) */
 	last429At?: number;
+	/** coarse per-relay headers-latency EWMA (Phase 1 smart-routing signal) */
+	ewmaMs?: number;
+	/** samples feeding ewmaMs (floor-gates challenger selection) */
+	ewmaSamples?: number;
+	/** slow-start flag: set on failure, cleared on next success */
+	recovering?: boolean;
 }
 
 const relayHealthMap = new Map<string, RelayHealth>();
@@ -394,6 +400,16 @@ let last429Warn = 0;
 const RELAY_429_BURST_WINDOW_MS = 60_000;
 const RELAY_429_BURST_THRESHOLD = 5;
 const recent429Timestamps: number[] = [];
+
+// Phase 1 smart-routing priors (code-reviewed constants, not user knobs).
+/** EWMA weight per headers-latency sample (dampens one-off outliers). */
+export const RELAY_EWMA_ALPHA = 0.3;
+/** Min samples before a relay EWMA can win the challenger rule. */
+export const RELAY_EWMA_FLOOR = 3;
+/** Challenger margin floor: switch only when worth the cold-cache cost. */
+export const RELAY_EWMA_MARGIN_MS = 1500;
+/** Challenger margin ratio: effective margin is max(floor, ratio x primary EWMA). */
+export const RELAY_EWMA_MARGIN_RATIO = 0.25;
 
 /**
  * Mark a relay as healthy and active on successful response.
@@ -405,9 +421,12 @@ export function markRelaySuccess(url: string, latencyMs?: number): void {
 	const clean = url.trim();
 	if (typeof latencyMs === "number" && Number.isFinite(latencyMs)) {
 		const prev = relayHealthMap.get(clean);
+		const sample = Math.round(latencyMs);
+		const ewmaMs = prev?.ewmaMs === undefined ? sample : Math.round(RELAY_EWMA_ALPHA * sample + (1 - RELAY_EWMA_ALPHA) * prev.ewmaMs);
+		const ewmaSamples = (prev?.ewmaSamples ?? 0) + 1;
 		const record: RelayHealth = prev
-			? { ...prev, consecutiveFailures: 0, lastFailureTime: 0, cooldownUntil: 0, lastLatencyMs: Math.round(latencyMs), successCount: (prev?.successCount ?? 0) + 1 }
-			: { consecutiveFailures: 0, lastFailureTime: 0, cooldownUntil: 0, lastLatencyMs: Math.round(latencyMs) };
+			? { ...prev, consecutiveFailures: 0, lastFailureTime: 0, cooldownUntil: 0, lastLatencyMs: sample, successCount: (prev?.successCount ?? 0) + 1, ewmaMs, ewmaSamples, recovering: false }
+			: { consecutiveFailures: 0, lastFailureTime: 0, cooldownUntil: 0, lastLatencyMs: sample, successCount: 1, ewmaMs: sample, ewmaSamples: 1 };
 		relayHealthMap.set(clean, record);
 		return;
 	}
@@ -470,6 +489,7 @@ export function markRelayFailure(url: string, status?: number, error?: string): 
 		lastStatus: status,
 		lastError: error,
 		failureCount: (prev.failureCount ?? 0) + 1,
+		recovering: true,
 		last429At: status === 429 ? now : prev.last429At || undefined,
 	});
 }
@@ -709,8 +729,10 @@ export function getOrderedRelayUrls(): string[] {
 			}
 			vercelFlag.set(u, isVercel);
 		}
+		// Phase 1 challenger: latency preference applies WITHIN the healthy-nonVercel
+		// band only — Vercel failover, cooling tail, and spread sharding below are untouched.
 		const ordered = [
-			...healthy.filter((u) => !vercelFlag.get(u)),
+			...applyEwmaChallenger(healthy.filter((u) => !vercelFlag.get(u))),
 			...healthy.filter((u) => vercelFlag.get(u)),
 			...cooling.filter((u) => !vercelFlag.get(u)),
 			...cooling.filter((u) => vercelFlag.get(u)),
@@ -719,6 +741,56 @@ export function getOrderedRelayUrls(): string[] {
 		return ordered;
 	}
 	return [];
+}
+
+/**
+ * Phase 1 challenger rule for the healthy-nonVercel band (sticky order in,
+ * at most one promotion out). The band head (sticky primary) keeps its lead
+ * unless a measured challenger — EWMA samples >= RELAY_EWMA_FLOOR and not
+ * recovering — beats it by more than max(RELAY_EWMA_MARGIN_MS,
+ * RELAY_EWMA_MARGIN_RATIO x head EWMA). Sub-margin gaps keep sticky order so
+ * a cold-cache hop is never spent on upstream noise. Relays with too few
+ * samples ("unknown") sort after measured relays but ahead of cooling, in
+ * sticky order. Cooling/Vercel/spread/affinity handling is untouched.
+ */
+function applyEwmaChallenger(band: string[]): string[] {
+	if (band.length <= 1) return band;
+	const head = band[0];
+	const rest = band.slice(1);
+	const floored = (u: string): boolean => (relayHealthMap.get(u)?.ewmaSamples ?? 0) >= RELAY_EWMA_FLOOR;
+	const measured = rest.filter(floored);
+	const unknown = rest.filter((u) => !floored(u));
+	const headEwma = relayHealthMap.get(head)?.ewmaMs;
+	if (headEwma !== undefined && Number.isFinite(headEwma)) {
+		let challenger: string | undefined;
+		let best = Number.POSITIVE_INFINITY;
+		for (const u of measured) {
+			if (relayHealthMap.get(u)?.recovering) continue;
+			const ewma = relayHealthMap.get(u)?.ewmaMs;
+			if (ewma === undefined || !Number.isFinite(ewma)) continue;
+			if (ewma < best) {
+				best = ewma;
+				challenger = u;
+			}
+		}
+		const margin = Math.max(RELAY_EWMA_MARGIN_MS, RELAY_EWMA_MARGIN_RATIO * headEwma);
+		if (challenger !== undefined && headEwma - best > margin) {
+			return [challenger, ...band.filter((u) => u !== challenger)];
+		}
+	}
+	return [head, ...measured, ...unknown];
+}
+
+/**
+ * Phase 1 list-badge fragment for the EWMA average (" ~Nms avg"), or "" when
+ * the relay has no EWMA samples yet. Pure read of in-memory health:
+ * "/freeflow list" appends it next to the last-sample badge (one-line wiring
+ * in commands.ts, left for the command layer).
+ */
+export function ewmaBadge(health: RelayHealth | undefined): string {
+	const ms = health?.ewmaMs;
+	if (ms === undefined || !Number.isFinite(ms) || (health?.ewmaSamples ?? 0) <= 0) return "";
+	return ` ~${Math.round(ms)}ms avg`;
 }
 
 /**

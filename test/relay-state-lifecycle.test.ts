@@ -24,7 +24,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { RELAY_STATE_FILE } from "../src/config.ts";
 import {
+	getRelayHealth,
 	loadRelayState,
+	markRelayFailure,
+	markRelaySuccess,
+	resetAllRelayHealth,
 	resolveRelayState,
 	saveRelayState,
 } from "../src/relay-state.ts";
@@ -303,4 +307,71 @@ test("stale tmp litter from crashed saves is cleaned up on load", () => {
 			fs.rmSync(fresh, { force: true });
 		} catch {}
 	});
+});
+
+// ── Phase 1 smart-routing stats (EWMA + successCount quirk fix) ─────────────
+// In-memory health map only: no disk writes, reset per test for isolation.
+
+test("ewma: first success seeds ewmaMs and successCount 1 (quirk fix)", () => {
+	resetAllRelayHealth();
+	markRelaySuccess("https://ewma1.example.com", 1000);
+	const h = getRelayHealth("https://ewma1.example.com");
+	assert.equal(h?.ewmaMs, 1000);
+	assert.equal(h?.ewmaSamples, 1);
+	assert.equal(h?.successCount, 1);
+	assert.equal(h?.lastLatencyMs, 1000);
+	resetAllRelayHealth();
+});
+
+test("ewma: second sample applies α=0.3 (1000 then 2000 → 1300)", () => {
+	resetAllRelayHealth();
+	const url = "https://ewma2.example.com";
+	markRelaySuccess(url, 1000);
+	markRelaySuccess(url, 2000);
+	const h = getRelayHealth(url);
+	assert.equal(h?.ewmaMs, 1300);
+	assert.equal(h?.ewmaSamples, 2);
+	assert.equal(h?.successCount, 2);
+	assert.equal(h?.lastLatencyMs, 2000);
+	resetAllRelayHealth();
+});
+
+test("ewma: third sample folds with α=0.3 (1300 then 3000 → 1810)", () => {
+	resetAllRelayHealth();
+	const url = "https://ewma3.example.com";
+	markRelaySuccess(url, 1000);
+	markRelaySuccess(url, 2000);
+	markRelaySuccess(url, 3000);
+	const h = getRelayHealth(url);
+	assert.equal(h?.ewmaMs, 1810);
+	assert.equal(h?.ewmaSamples, 3);
+	assert.equal(h?.successCount, 3);
+	resetAllRelayHealth();
+});
+
+test("ewma: no-latency success still deletes the record (unchanged semantics)", () => {
+	resetAllRelayHealth();
+	const url = "https://ewma4.example.com";
+	markRelaySuccess(url, 1000);
+	markRelaySuccess(url);
+	assert.equal(getRelayHealth(url), undefined);
+	resetAllRelayHealth();
+});
+
+test("ewma: failure preserves ewma and sets recovering; next success clears it", () => {
+	resetAllRelayHealth();
+	const url = "https://ewma5.example.com";
+	markRelaySuccess(url, 1000);
+	markRelaySuccess(url, 2000);
+	markRelayFailure(url, 500, "boom");
+	const failed = getRelayHealth(url);
+	assert.equal(failed?.ewmaMs, 1300);
+	assert.equal(failed?.ewmaSamples, 2);
+	assert.equal(failed?.recovering, true);
+	markRelaySuccess(url, 2000);
+	const ok = getRelayHealth(url);
+	assert.equal(ok?.ewmaMs, 1510);
+	assert.equal(ok?.ewmaSamples, 3);
+	assert.equal(ok?.recovering, false);
+	resetAllRelayHealth();
 });

@@ -44,6 +44,7 @@ import {
  EXPORT_MAX_BYTES,
  findRelay,
  getActiveRelayState,
+ ewmaBadge,
  getRelayHealth,
  loadRelayState,
  parseRelayImport,
@@ -849,7 +850,7 @@ export function createCommandSpec(
       : isCooling
        ? ` ⚠️ [cooling ${remainingSec}s: ${health.lastStatus ? `HTTP ${health.lastStatus}` : "error"}]`
        : health?.lastLatencyMs != null && Number.isFinite(health.lastLatencyMs)
-        ? ` ✓ [${health.lastLatencyMs}ms]`
+        ? ` ✓ [${health.lastLatencyMs}ms]${ewmaBadge(health)}`
         : " ✓";
      const counterText = health && (health.successCount != null || health.failureCount != null)
       ? ` ${health.successCount ?? 0} ok / ${health.failureCount ?? 0} fail`
