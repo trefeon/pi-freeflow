@@ -458,38 +458,47 @@ async function ensureInProcessFallback(): Promise<number> {
 
 async function triggerRecovery(port: number, why: string): Promise<void> {
  if (ensuring) return;
- const now = Date.now();
- if (isBreakerHalted(now)) {
-  logWarn(`recovery breaker halted — serving in-process fallback meanwhile (${why})`);
-  void ensureInProcessFallback();
-  return;
- }
- const opened = recordRecoveryFailure(now);
- if (opened) {
-  void ensureInProcessFallback();
-  return;
- }
- const delay = computeRecoveryBackoffMs(backoffAttempt - 1);
- logWarn(`watchdog recovery (${why}) — backing off ${Math.round(delay)}ms before respawn`);
- stopHeartbeatInternal();
- heartbeatPort = 0;
- await new Promise<void>((r) => setTimeout(r, delay));
+ ensuring = true;
  try {
-  const health = await getDaemonHealth(port);
-  if (health && (health.activeRequests ?? 0) > 0) {
-   trackBusyEdge(health.activeRequests ?? 0, health.lastBytesAt ?? 0, Date.now());
-   if (!isStuckBusy(busySince, health.lastBytesAt ?? 0, Date.now())) {
-    logInfo(`watchdog recovery deferred — daemon busy (${health.activeRequests} active, waiting for 5min-stuck + 60s-quiet)`);
-    await attachTo(port);
-    return;
-   }
+  const now = Date.now();
+  if (isBreakerHalted(now)) {
+   logWarn(`recovery breaker halted — serving in-process fallback meanwhile (${why})`);
+   void ensureInProcessFallback();
+   return;
   }
-  const ver = health?.version ?? PKG_VERSION;
-  await killStaleDaemon(port, ver, "proxy daemon");
- } catch (e) {
-  logWarn("watchdog pre-respawn probe failed", { error: String(e) });
+  const opened = recordRecoveryFailure(now);
+  if (opened) {
+   void ensureInProcessFallback();
+   return;
+  }
+  const delay = computeRecoveryBackoffMs(backoffAttempt - 1);
+  logWarn(`watchdog recovery (${why}) — backing off ${Math.round(delay)}ms before respawn`);
+  stopHeartbeatInternal();
+  heartbeatPort = 0;
+  await new Promise<void>((r) => setTimeout(r, delay));
+  try {
+   const health = await getDaemonHealth(port);
+   if (health && (health.activeRequests ?? 0) > 0) {
+    trackBusyEdge(health.activeRequests ?? 0, health.lastBytesAt ?? 0, Date.now());
+    if (!isStuckBusy(busySince, health.lastBytesAt ?? 0, Date.now())) {
+     logInfo(`watchdog recovery deferred — daemon busy (${health.activeRequests} active, waiting for 5min-stuck + 60s-quiet)`);
+     await attachTo(port);
+     return;
+    }
+   }
+   const ver = health?.version ?? PKG_VERSION;
+   await killStaleDaemon(port, ver, "proxy daemon");
+  } catch (e) {
+   logWarn("watchdog pre-respawn probe failed", { error: String(e) });
+  }
+  // Release before delegating: ensureDaemon owns the flag from here (it
+  // early-returns while ensuring is true). The handoff is synchronous up
+  // to ensureDaemon's own ensuring=true, so no tick slips between.
+  ensuring = false;
+  await ensureDaemon();
+ } finally {
+  ensuring = false;
  }
- await ensureDaemon();
 }
 
 /**

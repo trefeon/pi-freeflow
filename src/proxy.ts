@@ -1165,6 +1165,15 @@ export function startProxy(
       log("info", `relay bypass for non-catalog model ${String(parsedBody?.model ?? "?")} — routing direct upstream`, { model: parsedBody?.model }, reqId);
      }
      if (shouldUseRelay) {
+      // Dead-client guard: 'close' fires when the client goes away, the
+      // relay fetch aborts, and the catch below cannot tell a client abort
+      // from a timeout abort. Without this flag a dead client gets a fresh
+      // orphan direct fetch; with it the turn ends quietly.
+      let relayClientGone = false;
+      let relayResponse: Response | null = null;
+      const markRelayClientGone = () => { relayClientGone = true; };
+      res.once("close", markRelayClientGone);
+      req.once("error", markRelayClientGone);
       const fullUrl = `${UPSTREAM_OPENCODE}${req.url ?? "/"}`;
       const activeHost = relayState.url
        ? new URL(relayState.url).host
@@ -1240,7 +1249,10 @@ export function startProxy(
           UPSTREAM_HEADER_TIMEOUT_MS,
          );
          const abortRelayOnClientGone = () => {
-          if (!res.writableEnded) relayController.abort();
+          if (!res.writableEnded) {
+           relayClientGone = true;
+           relayController.abort();
+          }
          };
          res.once("close", abortRelayOnClientGone);
          req.once("error", abortRelayOnClientGone);
@@ -1271,6 +1283,7 @@ export function startProxy(
         };
 
         let response = await sendViaRelay(bodyForUpstream);
+        relayResponse = response;
         // Retry must stay available on every responses request: even a
         // proactively stripped body can still carry a blob the current
         // instance cannot read.
@@ -1282,6 +1295,7 @@ export function startProxy(
           reqId,
           conversationKey,
          );
+         relayResponse = response;
         }
         // Record the backend that actually served this turn. Reading
         // the sticky active relay here would be wrong now that
@@ -1359,6 +1373,18 @@ export function startProxy(
         reqId,
        );
        if (res.headersSent) return; // cannot recover mid-stream
+       // The client is already gone (disconnect aborted the relay fetch):
+       // a fresh direct fetch would be an orphan — nobody is listening.
+       // Timeouts still fall through to the live direct path below.
+       if (relayClientGone || res.destroyed || res.writableEnded) {
+        try { await relayResponse?.body?.cancel(); } catch { }
+        res.off("close", markRelayClientGone);
+        req.off("error", markRelayClientGone);
+        log("debug", "client gone during relay fetch, skipping direct fallback", { error: String(e) }, reqId);
+        return;
+       }
+       res.off("close", markRelayClientGone);
+       req.off("error", markRelayClientGone);
       }
      }
 

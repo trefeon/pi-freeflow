@@ -4,6 +4,7 @@
 
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
+import { UPSTREAM_HEADER_TIMEOUT_MS } from "./config.ts";
 import { isDebugEnabled, log } from "./logger.ts";
 import {
 	getActiveRelayState,
@@ -170,17 +171,24 @@ export async function relayFetch(
 				headers.set("x-relay-auth", entry.auth);
 			}
 
-			const signal = opts.signal || AbortSignal.timeout(300_000);
+			// Per-attempt budget: each relay gets its own header-timeout window,
+			// combined with the caller's signal so either can fire. A hung relay
+			// then trips only its own timeout (roll) instead of vetoing the pool;
+			// a genuine client cancel (caller signal aborted) still propagates.
+			const attemptTimeout = AbortSignal.timeout(UPSTREAM_HEADER_TIMEOUT_MS);
+			const signal = opts.signal ? AbortSignal.any([opts.signal, attemptTimeout]) : attemptTimeout;
 			const res = await fetch(targetUrl, { ...opts, headers, signal } as unknown as RequestInit);
 			const elapsed = ((Date.now() - attemptStart) / 1000).toFixed(1);
-			// Vercel 504 Gateway Timeout on heavy prompts (>50KB or >25s):
-			// Fast fallback directly to upstream instead of cycling through multiple 25s timeouts.
+			// Relay 504 Gateway Timeout on heavy prompts: the response already arrived
+			// (no 25s wait to repeat), so roll to the next relay instead of falling
+			// straight back to direct. The pool is self-hosted, not Vercel-edge, so a
+			// sibling relay is worth trying before the direct fallback.
 			if (res.status === 504) {
 				markRelayFailure(targetUrl, 504, "Gateway Timeout (25s exceeded)");
 				res.body?.cancel().catch(() => {});
 				log(
 					"warn",
-					`relay ${targetUrl} hit HTTP 504 Gateway Timeout in ${elapsed}s (prompt evaluation exceeded Vercel 25s limit) — fast fallback to direct upstream`,
+					`relay ${targetUrl} hit HTTP 504 Gateway Timeout in ${elapsed}s (prompt evaluation exceeded relay limit) — rolling to next relay`,
 					{ upstream: url, sizeKB: bodySizeKB },
 					rid,
 				);
@@ -189,10 +197,10 @@ export async function relayFetch(
 					lastRollNotify = now;
 					const ui = getStatusUi();
 					if (ui?.notify) {
-						ui.notify(`relay ${shortRelayLabel(targetUrl)} hit HTTP 504 — falling back to direct`, "warning");
+						ui.notify(`relay ${shortRelayLabel(targetUrl)} hit HTTP 504 — rolled to next relay`, "warning");
 					}
 				}
-				break;
+				continue;
 			}
 			// Relay payload cap hit (413: request exceeds host payload limit):
 			// Not a relay health signal, so no failure marking — try the next
@@ -354,12 +362,18 @@ export async function relayFetch(
 		} catch (err) {
 			// Client abort: do not mark the relay failed — the client cancelled the
 			// request, the relay itself is not at fault. Propagate immediately.
-			if ((err as Error)?.name === "AbortError") {
+			// Only the *caller's* signal counts here: each attempt also carries its
+			// own header-timeout budget (combined above), whose AbortError means a
+			// hung relay and must mark + roll instead of vetoing the pool.
+			if ((err as Error)?.name === "AbortError" && opts.signal?.aborted) {
 				throw err;
 			}
 			const elapsed = ((Date.now() - attemptStart) / 1000).toFixed(1);
 			lastError = err;
-			const errMsg = (err as Error)?.message || String(err);
+			const errMsg =
+				(err as Error)?.name === "AbortError"
+					? `relay header timeout (${Math.round(UPSTREAM_HEADER_TIMEOUT_MS / 1000)}s exceeded)`
+					: (err as Error)?.message || String(err);
 			markRelayFailure(targetUrl, 0, errMsg);
 			log(
 				"warn",

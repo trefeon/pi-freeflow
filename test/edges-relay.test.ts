@@ -253,3 +253,66 @@ test("edges-relay: isRetriableStatus 52x band regression lock", () => {
 			"https://healthy-relay.vercel.app",
 		]);
 	});
+
+// ── (8) 504 rolls to next relay instead of breaking to direct ──
+
+test("edges-relay: 504 rolls to next relay, marks failure, no direct call", async (t) => {
+	const r1 = "https://relay1.example.com";
+	const r2 = "https://relay2.example.com";
+	setActiveRelayState(
+		makeRelayState({
+			enabled: true,
+			url: r1,
+			relays: [{ url: r1 }, { url: r2 }],
+		}),
+		false,
+	);
+	resetAllRelayHealth();
+
+	const calls: string[] = [];
+	t.mock.method(globalThis, "fetch", async (url: string) => {
+		calls.push(url);
+		if (url === r1) return new Response("gateway timeout", { status: 504 });
+		return new Response("ok", { status: 200 });
+	});
+
+	const res = await relayFetch(UPSTREAM_URL, { method: "POST" }, "edge-504");
+
+	assert.equal(res.status, 200);
+	assert.deepEqual(calls, [r1, r2], "504 must roll to the next relay, not break to direct");
+	assert.notEqual(getRelayHealth(r1), undefined, "504 must mark the relay failed");
+});
+
+// ── (9) per-attempt timeout AbortError rolls; caller abort still propagates (see test 3) ──
+
+test("edges-relay: attempt-timeout AbortError rolls to next relay and marks failure", async (t) => {
+	const r1 = "https://relay1.example.com";
+	const r2 = "https://relay2.example.com";
+	setActiveRelayState(
+		makeRelayState({
+			enabled: true,
+			url: r1,
+			relays: [{ url: r1 }, { url: r2 }],
+		}),
+		false,
+	);
+	resetAllRelayHealth();
+
+	const calls: string[] = [];
+	const signals: Array<AbortSignal | null | undefined> = [];
+	t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+		calls.push(url);
+		signals.push(init?.signal as AbortSignal | undefined);
+		if (url === r1) throw new DOMException("The operation was aborted.", "AbortError");
+		return new Response("ok", { status: 200 });
+	});
+
+	// No caller signal: the AbortError can only come from the per-attempt budget.
+	const res = await relayFetch(UPSTREAM_URL, { method: "POST" }, "edge-timeout");
+
+	assert.equal(res.status, 200);
+	assert.deepEqual(calls, [r1, r2], "hung relay must roll, not veto the pool");
+	assert.notEqual(getRelayHealth(r1), undefined, "timed-out relay must be marked failed");
+	assert.ok(signals[0] && !signals[0].aborted, "attempt must carry a live signal");
+	assert.ok(signals[0] !== signals[1], "each attempt must get its own signal");
+});
