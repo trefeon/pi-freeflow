@@ -7,10 +7,12 @@ import {
 	sseToChatCompletionJson,
 	sseToMessagesJson,
 	sseToResponsesJson,
+	toolNameOf,
 } from "../src/opencode-fingerprint.ts";
 import {
 	ALL_HOST_TOOL_NAMES,
 	COMPAT_TOOL_DESCRIPTION,
+	OMP_CUSTOM_TOOL_NAMES,
 	OMP_HIDDEN_TOOL_NAMES,
 	OMP_TOOL_NAMES,
 	OPENCODE_FINGERPRINT_TOOLS,
@@ -73,6 +75,7 @@ test("inventories: Pi exposes 8 tools, OMP 28 built-ins plus 3 hidden", () => {
 	assert.equal(PI_TOOL_NAMES.length, 8);
 	assert.equal(OMP_TOOL_NAMES.length, 28);
 	assert.equal(OMP_HIDDEN_TOOL_NAMES.length, 3);
+	assert.deepEqual([...OMP_CUSTOM_TOOL_NAMES], ["generate_image", "tts"]);
 	assert.deepEqual([...OPENCODE_FINGERPRINT_TOOLS], ["bash", "glob", "grep", "read", "edit", "write"]);
 	for (const shared of ["read", "bash", "edit", "write", "grep"]) {
 		assert.ok((PI_TOOL_NAMES as readonly string[]).includes(shared));
@@ -87,6 +90,11 @@ test("inventories: Pi exposes 8 tools, OMP 28 built-ins plus 3 hidden", () => {
 	for (const ompOnly of ["ast_grep", "lsp", "todo", "task", "web_search", "security_scan", "browser", "computer"]) {
 		assert.ok((OMP_TOOL_NAMES as readonly string[]).includes(ompOnly));
 		assert.ok(ALL_HOST_TOOL_NAMES.has(ompOnly));
+	}
+	// Settings-gated custom tools: not built-ins, but model-callable when enabled
+	for (const custom of [...OMP_CUSTOM_TOOL_NAMES]) {
+		assert.ok(!(OMP_TOOL_NAMES as readonly string[]).includes(custom), `${custom} is not a built-in`);
+		assert.ok(ALL_HOST_TOOL_NAMES.has(custom), `${custom} rides the host inventory`);
 	}
 });
 
@@ -369,6 +377,8 @@ const MATRIX_TOOLS = [
 	"manage_skill",
 	"ast_grep",
 	"ast_edit",
+	"generate_image",
+	"tts",
 ] as const;
 function matrixTool(style: "chat" | "responses" | "anthropic", name: string): Record<string, unknown> {
 	const params = { type: "object", properties: { [name]: { type: "string" } } };
@@ -488,14 +498,15 @@ test("translateToolsForPath: hidden plus full host sets survive every path", () 
 		for (const name of hidden) assert.ok(out.some((t) => upstreamNameOf(t) === name), `${path}: keeps hidden ${name}`);
 	}
 	for (const path of PATHS) {
-		const combined = [...OMP_TOOL_NAMES, ...OMP_HIDDEN_TOOL_NAMES, ...PI_TOOL_NAMES].map((name) => ({ type: "function", name, description: `${name} tool`, parameters: { type: "object" } }));
+		const combined = [...OMP_TOOL_NAMES, ...OMP_HIDDEN_TOOL_NAMES, ...OMP_CUSTOM_TOOL_NAMES, ...PI_TOOL_NAMES].map((name) => ({ type: "function", name, description: `${name} tool`, parameters: { type: "object" } }));
 		const out = translateToolsForPath(combined, path);
-		assert.equal(out.length, 33, `${path}: 34 caller names collapse find+glob to 33 upstream`);
+		assert.equal(out.length, 35, `${path}: 41 caller names collapse shared dupes plus find+glob to 35 upstream`);
 		const names = out.map(upstreamNameOf);
 		assert.ok(!names.includes("find"), `${path}: find never sent upstream`);
 		assert.ok(names.includes("glob"), `${path}: glob present`);
 		assert.ok(names.includes("ls") && names.includes("powershell"), `${path}: Pi ls/powershell verbatim`);
 		assert.ok(names.includes("browser") && names.includes("computer"), `${path}: OMP browser/computer present`);
+		assert.ok(names.includes("generate_image") && names.includes("tts"), `${path}: OMP custom tools survive`);
 	}
 });
 
@@ -564,7 +575,7 @@ test("contract: full Pi inventory round-trips verbatim on all three paths", () =
 });
 
 test("contract: full OMP inventory round-trips verbatim, zero injected", () => {
-	const all = [...OMP_TOOL_NAMES, ...OMP_HIDDEN_TOOL_NAMES];
+	const all = [...OMP_TOOL_NAMES, ...OMP_HIDDEN_TOOL_NAMES, ...OMP_CUSTOM_TOOL_NAMES];
 	for (const path of PATHS) {
 		const caller = all.map((n) => richCallerTool(n, "omp"));
 		const translated = translateToolsForPath(caller, path);
@@ -704,4 +715,115 @@ test("contract: cline body translation reshapes tools with zero fingerprint", ()
 	assert.equal((out.tools as unknown[]).length, 2, "cline adds zero fingerprint tools");
 	assert.ok(!("stream" in out), "cline translation never imposes a stream policy");
 	assert.equal(out.tool_choice, "auto", "cline carries tool_choice verbatim");
+});
+test("contract: OMP gated custom tools are caller tools end-to-end, never cloaked", () => {
+	// Row 3: generate_image + tts ride as ordinary caller tools. OMP-like caller
+	// (todo marker + glob-without-find) on the responses path: the pair must
+	// survive enforce unrenamed, land in neither injected list, and model calls
+	// to them must survive the downstream cloak like any caller call.
+	const imgParams = { type: "object", properties: { subject: { type: "string" } }, required: ["subject"] };
+	const ttsParams = { type: "object", properties: { text: { type: "string" } }, required: ["text"] };
+	const imgArgs = '{"subject":"a red boat"}';
+	const ttsArgs = '{"text":"hello there"}';
+	const body: Record<string, unknown> = {
+		model: "zen-reasoner-free",
+		stream: false,
+		tools: [
+			{ type: "function", function: { name: "todo", description: "plan" } },
+			{ type: "function", function: { name: "glob", description: "g" } },
+			{ type: "function", function: { name: "generate_image", description: "Generate or edit an image", parameters: imgParams }, strict: false },
+			{ type: "function", function: { name: "tts", description: "Synthesize speech", parameters: ttsParams }, strict: false },
+		],
+	};
+	const r = enforceOpencodeFingerprint(body, "/v1/responses");
+	assert.equal(r.callerHadTools, true);
+	assert.deepEqual(r.injected, ["edit"], "only the truly-missing edit cloaks; customs never do");
+	assert.deepEqual(r.injectedReal, ["bash", "grep", "read", "write"], "customs never placeholder-injected either");
+	const tools = body.tools as Array<Record<string, unknown>>;
+	assert.equal(tools.length, 9, "4 caller + 5 missing fingerprint tools, zero dropped");
+	for (const n of ["generate_image", "tts"]) {
+		const found = tools.find((t) => toolNameOf(t) === n);
+		assert.ok(found, `${n} survives enforce unrenamed`);
+		assert.equal(found?.strict, false, `${n} strict:false verbatim through enforce`);
+		assert.equal(found?.type, "function", `${n} lands in responses shape`);
+	}
+	// Downstream: upstream answers with calls to both customs plus an injected
+	// placeholder (edit, must strip) and an injected-real (bash, executable,
+	// must survive like any caller call).
+	const output = [
+		{ type: "function_call", id: "fc_img_1", call_id: "call_img_1", name: "generate_image", arguments: imgArgs },
+		{ type: "function_call", id: "fc_tts_1", call_id: "call_tts_1", name: "tts", arguments: ttsArgs },
+		{ type: "function_call", id: "fc_bash_1", call_id: "call_bash_1", name: "bash", arguments: '{"command":"ls"}' },
+		{ type: "function_call", id: "fc_edit_1", call_id: "call_edit_1", name: "edit", arguments: '{"edits":[]}' },
+	];
+	const respSse = [
+		"event: response.completed",
+		`data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_c", object: "response", status: "completed", output } })}`,
+	].join("\n");
+	const resp = sseToResponsesJson(respSse, r.callerHadTools, r.caseRestore, r.findGlob, r.injected) as {
+		output: Array<{ type: string; id?: string; call_id?: string; name?: string; arguments?: string }>;
+	};
+	const calls = resp.output.filter((o) => o.type === "function_call");
+	assert.deepEqual(calls.map((c) => c.name).sort(), ["bash", "generate_image", "tts"], "custom + injected-real calls persist, injected edit stripped");
+	assert.ok(calls.some((c) => c.name === "generate_image" && c.id === "fc_img_1" && c.call_id === "call_img_1" && c.arguments === imgArgs), "generate_image id/args verbatim");
+	assert.ok(calls.some((c) => c.name === "tts" && c.id === "fc_tts_1" && c.arguments === ttsArgs), "tts id/args verbatim");
+	assert.ok(!calls.some((c) => c.name === "edit"), "injected edit stripped");
+	// Same stream through the universal router.
+	const back = JSON.parse(convertSseToJson(respSse, "/v1/responses", r.callerHadTools, r.caseRestore, r.findGlob, r.injected)) as {
+		output: Array<{ type: string; name?: string }>;
+	};
+	assert.deepEqual(back.output.filter((o) => o.type === "function_call").map((c) => c.name).sort(), ["bash", "generate_image", "tts"], "convertSseToJson routes responses identically");
+	// Chat-path mirror: a tool_calls entry for generate_image survives, edit strips.
+	const chatSse = [
+		`data: ${JSON.stringify({ id: "c1", choices: [{ index: 0, delta: { tool_calls: [
+			{ index: 0, id: "call_img_c", type: "function", function: { name: "generate_image", arguments: imgArgs } },
+			{ index: 1, id: "call_edit_c", type: "function", function: { name: "edit", arguments: '{"edits":[]}' } },
+		] } }] })}`,
+		`data: ${JSON.stringify({ id: "c1", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}`,
+		"data: [DONE]",
+	].join("\n\n");
+	const chat = JSON.parse(convertSseToJson(chatSse, "/v1/chat/completions", r.callerHadTools, r.caseRestore, r.findGlob, r.injected)) as {
+		choices: Array<{ message: { tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> } }>; 
+	};
+	const chatCalls = chat.choices[0].message.tool_calls ?? [];
+	assert.deepEqual(chatCalls.map((c) => c.function.name), ["generate_image"], "chat cloak keeps the custom call, strips injected edit");
+	assert.equal(chatCalls[0].id, "call_img_c", "chat custom call id preserved");
+	assert.equal(chatCalls[0].function.arguments, imgArgs, "chat custom args verbatim");
+});
+
+test("contract: prompt_cache_key rides the Zen responses path untouched, never a compat flag", () => {
+	// Verdict (research row 20): DO NOT emit supportsPromptCacheKey.
+	// - Pi host (reference/pi packages/ai openai-completions.ts) keys chat-path
+	//   prompt_cache_key off baseUrl api.openai.com / supportsLongCacheRetention,
+	//   never off supportsPromptCacheKey: the symbol means nothing to Pi.
+	// - OMP host sends it on responses UNGATED (openai-responses.ts always sets
+	//   prompt_cache_key from the session) so no flag is needed where the key is
+	//   load-bearing: caller-bound blob memory, relay affinity, gate failover.
+	// - Emitting the flag WOULD change OMP chat-path wire behavior (a new field
+	//   forwarded verbatim upstream) with no live proof Zen/Kilo chat tolerates
+	//   it; the chat-path consumer (sessionKeyOf) already falls back to a
+	//   content hash. Status quo plus this passthrough lock is the safe contract.
+	// The sole strip (Cline reshape, proxy.ts) is correct and out of scope here:
+	// Cline has no blob memory, so the key must not ride a translated chat body.
+	const key = "sess_conv_abc123";
+	const body: Record<string, unknown> = {
+		model: "zen-reasoner-free",
+		stream: false,
+		prompt_cache_key: key,
+		input: [{ role: "user", content: "hi" }],
+		tools: [{ type: "function", function: { name: "todo", description: "plan" } }],
+	};
+	const r = enforceOpencodeFingerprint(body, "/v1/responses");
+	assert.equal(body.prompt_cache_key, key, "responses enforce never strips the conversation key");
+	assert.equal(body.stream, true, "fingerprint stream force still applies alongside the key");
+	assert.equal(r.callerHadTools, true);
+	// Chat-path enforce (non-Cline Zen) carries it too: no normalization drops it.
+	const chatBody: Record<string, unknown> = {
+		model: "zen-reasoner-free",
+		prompt_cache_key: key,
+		messages: [{ role: "user", content: "hi" }],
+		tools: [{ type: "function", function: { name: "todo", description: "plan" } }],
+	};
+	enforceOpencodeFingerprint(chatBody, "/v1/chat/completions");
+	assert.equal(chatBody.prompt_cache_key, key, "chat enforce never strips the conversation key");
 });

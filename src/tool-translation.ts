@@ -88,11 +88,15 @@ export const OMP_TOOL_NAMES = [
 /** OMP hidden tools: HIDDEN_TOOL_NAMES in the same OMP module. */
 export const OMP_HIDDEN_TOOL_NAMES = ["yield", "goal", "think"] as const;
 
+/** OMP settings-gated custom tools: appended to customTools in sdk.ts (generate_image gated on settings generate_image.enabled, tts on speechgen.enabled). Not in BUILTIN_TOOL_NAMES; model-callable when enabled. */
+export const OMP_CUSTOM_TOOL_NAMES = ["generate_image", "tts"] as const;
+
 /** Every tool name either host can send (MCP `mcp__*` and xd:// device names pass through as-is). */
 export const ALL_HOST_TOOL_NAMES: ReadonlySet<string> = new Set([
  ...PI_TOOL_NAMES,
  ...OMP_TOOL_NAMES,
  ...OMP_HIDDEN_TOOL_NAMES,
+ ...OMP_CUSTOM_TOOL_NAMES,
 ]);
 
 /** Placeholder description for injected compatibility tools: must never be invoked. */

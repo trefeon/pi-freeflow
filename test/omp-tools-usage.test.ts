@@ -16,6 +16,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+	OMP_CUSTOM_TOOL_NAMES,
 	buildFindGlobRestore,
 	restoreToolChoiceForCaller,
 	restoreToolNameForCaller,
@@ -409,4 +410,85 @@ test("omp usage: tool_choice string + named variants round-trip, never imposed",
 		"chat named variant restored verbatim",
 	);
 	assert.equal(restoreToolChoiceForCaller("auto", globOnly), "auto", "string choice never rewritten");
+});
+// Settings-gated OMP custom tools (sdk.ts: generate_image rides
+// generate_image.enabled, tts rides speechgen.enabled). CustomToolAdapter wire
+// form: chat-shaped function tools with strict:false on both (image-gen.ts and
+// tts.ts declare strict:false); params below mirror the real schemas.
+const CUSTOM_FIXTURES: Fixture[] = [
+	{
+		name: "generate_image",
+		description: "Generate or edit an image from a text description",
+		parameters: O({
+			subject: S("main subject of the image"),
+			"action?": S("what the subject is doing"),
+			"scene?": S("location or environment"),
+			"aspect_ratio?": S("requested aspect ratio"),
+		}, ["subject"]),
+		strict: false,
+	},
+	{
+		name: "tts",
+		description: "Synthesize speech audio from text",
+		parameters: O({
+			text: S("text to speak"),
+			"voice_id?": S("voice override; omit for the default voice"),
+		}, ["text"]),
+		strict: false,
+	},
+];
+
+for (const fx of CUSTOM_FIXTURES) {
+	test(`omp usage: custom ${fx.name} survives every shape x path, strict:false verbatim`, () => {
+		assert.ok((OMP_CUSTOM_TOOL_NAMES as readonly string[]).includes(fx.name), `${fx.name} is a declared custom tool`);
+		for (const style of STYLES) {
+			for (const path of PATHS) {
+				const input = inputFor(style, fx);
+				const [out] = translateToolsForPath([input], path);
+				const where = `${style} -> ${path} ${fx.name}`;
+				assert.ok(out, `${where}: not dropped`);
+				assert.equal(upstreamNameOf(out), fx.name, `${where}: name verbatim, never renamed/coerced`);
+				assert.equal(upstreamDescOf(out), fx.description, `${where}: description verbatim`);
+				assert.deepEqual(upstreamParamsOf(out), fx.parameters, `${where}: params verbatim`);
+				assert.equal(out.strict, false, `${where}: strict:false verbatim, never flipped or dropped`);
+				assert.equal(out.x_omp_usage, `${fx.name}-marker`, `${where}: extra field intact`);
+				assert.ok(
+					!JSON.stringify(upstreamParamsOf(out)).includes("additionalProperties"),
+					`${where}: never injects additionalProperties`,
+				);
+				if (path.endsWith("/responses")) {
+					assert.equal(out.type, "function", `${where}: responses shape`);
+					assert.equal(out.name, fx.name, `${where}: flat responses name`);
+				} else if (path.endsWith("/messages")) {
+					assert.ok(!("type" in out), `${where}: anthropic shape carries no type wrapper`);
+					assert.deepEqual(out.input_schema, fx.parameters, `${where}: anthropic input_schema verbatim`);
+				} else {
+					assert.equal(out.type, "function", `${where}: chat shape`);
+					const fn = out.function as Record<string, unknown>;
+					assert.equal(fn.name, fx.name, `${where}: chat function name verbatim`);
+				}
+				if (style === styleForPath(path)) {
+					assert.strictEqual(out, input, `${where}: same shape passes through verbatim (identical reference)`);
+				}
+			}
+		}
+	});
+}
+
+test("omp usage: custom pair rides with the full 28-tool inventory, zero dropped", () => {
+	assert.deepEqual([...OMP_CUSTOM_TOOL_NAMES], ["generate_image", "tts"], "custom inventory is exactly the gated pair");
+	for (const path of PATHS) {
+		const out = translateToolsForPath(
+			[...OMP_FIXTURES, ...CUSTOM_FIXTURES].map((fx) => inputFor("chat", fx)),
+			path,
+		);
+		assert.equal(out.length, 30, `${path}: 28 built-ins + 2 customs, zero dropped`);
+		for (const fx of CUSTOM_FIXTURES) {
+			const found = out.find((t) => upstreamNameOf(t) === fx.name);
+			assert.ok(found, `${path}: keeps ${fx.name}`);
+			assert.equal(found?.strict, false, `${path}: ${fx.name} strict:false survives the full set`);
+		}
+		const again = translateToolsForPath(out, path);
+		assert.equal(again.length, 30, `${path}: re-translate idempotent, adds zero`);
+	}
 });

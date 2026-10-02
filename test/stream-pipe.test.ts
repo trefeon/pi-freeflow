@@ -12,9 +12,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { PassThrough } from "node:stream";
-import type * as http from "node:http";
+import * as http from "node:http";
 
-import { pipeUpstreamStream } from "../src/stream-pipe.ts";
+import {
+	_resetSseStatsForTest,
+	getSseStats,
+	pipeUpstreamStream,
+} from "../src/stream-pipe.ts";
 import {
 	getRelayHealth,
 	isRelayHealthy,
@@ -432,3 +436,339 @@ test("backpressure: upstream pauses when res.write returns false and resumes on 
 	await once(stream, "close");
 	assert.equal(isRelayHealthy(RELAY_URL), true);
 });
+
+// ── Real-socket client-abort discrimination ───────────────────────────────
+// The FakeResponse tests above drive "aborted" by hand, so they cannot prove
+// the production detection path: a real kernel socket teardown surfacing as
+// req/res "close" with no explicit signal. These tests run a stub upstream
+// SSE server plus a minimal proxy that pipes through pipeUpstreamStream over
+// REAL loopback sockets, then destroy the CLIENT socket and assert the relay
+// is not penalized. An upstream-side abort is the control: it MUST penalize.
+
+function createLoopbackSignal(): { promise: Promise<void>; resolve: () => void } {
+	let resolve!: () => void;
+	const promise = new Promise<void>((r) => {
+		resolve = r;
+	});
+	return { promise, resolve };
+}
+
+/**
+ * Await a harness signal with a watchdog that only fires when the signal
+ * never arrives (suite backstop, never pacing): the timer clears itself the
+ * moment the signal settles, so passing runs pay no delay.
+ */
+async function awaitLoopback(signal: Promise<void>, what: string, ms = 5000): Promise<void> {
+	const watchdog = new Promise<never>((_resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms);
+		void signal.then(
+			() => clearTimeout(timer),
+			() => clearTimeout(timer),
+		);
+	});
+	await Promise.race([signal, watchdog]);
+}
+
+function listenLoopback(server: http.Server): Promise<number> {
+	return new Promise<number>((resolve, reject) => {
+		server.listen(0, "127.0.0.1", () => {
+			const addr = server.address();
+			if (addr === null || typeof addr === "string") {
+				reject(new Error("loopback listen failed: no port assigned"));
+				return;
+			}
+			resolve(addr.port);
+		});
+	});
+}
+
+function closeLoopback(server: http.Server): Promise<void> {
+	return new Promise<void>((resolve) => {
+		server.close(() => resolve());
+	});
+}
+
+interface LoopbackStreamProxy {
+	proxyPort: number;
+	/** Resolves after the pipe's own upstream "close" listener has run. */
+	upstreamClosed: Promise<void>;
+	/** Resolves once the server observes the client socket go away. */
+	clientGone: Promise<void>;
+	close: () => Promise<void>;
+}
+
+/**
+ * Minimal production-shaped proxy: waits for upstream headers, sends SSE
+ * headers, then hands the live upstream socket to pipeUpstreamStream.
+ */
+async function startLoopbackStreamProxy(
+	relayUrl: string,
+	upstreamPort: number,
+): Promise<LoopbackStreamProxy> {
+	const upstreamClosed = createLoopbackSignal();
+	const clientGone = createLoopbackSignal();
+	const state: LoopbackStreamProxy = {
+		proxyPort: 0,
+		upstreamClosed: upstreamClosed.promise,
+		clientGone: clientGone.promise,
+		close: async () => { },
+	};
+	const proxy = http.createServer((clientReq, clientRes) => {
+		const upReq = http.get(
+			{ host: "127.0.0.1", port: upstreamPort, path: "/upstream" },
+			(upRes) => {
+				clientRes.writeHead(200, {
+					"content-type": "text/event-stream",
+					"cache-control": "no-cache",
+					connection: "keep-alive",
+				});
+				pipeUpstreamStream(upRes, clientRes, clientReq, "loopback", relayUrl);
+				// Attached after the pipe's own "close" listener, so this
+				// resolves only after its relay-health decision has run.
+				upRes.on("close", () => {
+					upstreamClosed.resolve();
+				});
+			},
+		);
+		upReq.on("error", () => {
+			try {
+				if (!clientRes.headersSent) {
+					clientRes.writeHead(502, { "content-type": "application/json" });
+				}
+			} catch {
+				// Client socket already gone; nothing to report to.
+			}
+			try {
+				if (!clientRes.writableEnded) clientRes.end("{}");
+			} catch {
+				// Client socket already gone; nothing to report to.
+			}
+		});
+		clientReq.on("close", () => {
+			clientGone.resolve();
+			// Client vanished before upstream answered: cancel the pending
+			// fetch so no socket leaks past the test.
+			if (!upReq.destroyed) upReq.destroy();
+		});
+		clientRes.on("close", () => {
+			clientGone.resolve();
+		});
+	});
+	state.proxyPort = await listenLoopback(proxy);
+	state.close = () => closeLoopback(proxy);
+	return state;
+}
+
+/** Read one proxied stream to its natural end over a real client socket. */
+function getLoopbackBody(port: number, path: string): Promise<string> {
+	return new Promise<string>((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		const req = http.get({ host: "127.0.0.1", port, path }, (res) => {
+			res.on("data", (c: Buffer) => chunks.push(c));
+			res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+			res.on("error", reject);
+		});
+		req.on("error", reject);
+	});
+}
+
+test(
+	"loopback: clean full stream records success and keeps relay healthy",
+	{ timeout: 10000 },
+	async () => {
+		resetAllRelayHealth();
+		_resetSseStatsForTest();
+		const frames = [
+			'data: {"delta":"one"}\n\n',
+			'data: {"delta":"two"}\n\n',
+			'data: {"delta":"three"}\n\n',
+		];
+		const upstream = http.createServer((_req, res) => {
+			res.on("error", () => { });
+			res.writeHead(200, { "content-type": "text/event-stream" });
+			for (const frame of frames) res.write(frame);
+			res.end("data: [DONE]\n\n");
+		});
+		const upstreamPort = await listenLoopback(upstream);
+		const proxy = await startLoopbackStreamProxy(RELAY_URL, upstreamPort);
+		try {
+			const statsBefore = getSseStats();
+			const body = await getLoopbackBody(proxy.proxyPort, "/v1/chat/completions");
+			await awaitLoopback(proxy.upstreamClosed, "proxy-side upstream close");
+			for (const frame of frames) {
+				assert.ok(body.includes(frame.trim()), `client must receive ${frame.trim()}`);
+			}
+			assert.equal(count(body, "[DONE]"), 1, "exactly one terminal, no synthetic duplicate");
+			assert.equal(isRelayHealthy(RELAY_URL), true);
+			assert.equal(getRelayHealth(RELAY_URL), undefined);
+			const statsAfter = getSseStats();
+			assert.equal(statsAfter.total, statsBefore.total + 1, "clean stream records one watchdog outcome");
+			assert.equal(statsAfter.failures, statsBefore.failures, "no failure recorded for a clean stream");
+		} finally {
+			await proxy.close();
+			await closeLoopback(upstream);
+		}
+	},
+);
+
+test(
+	"loopback: client destroy before first byte leaves relay healthy",
+	{ timeout: 10000 },
+	async () => {
+		resetAllRelayHealth();
+		_resetSseStatsForTest();
+		const statsBefore = getSseStats();
+		const upstreamDone = createLoopbackSignal();
+		const upstream = http.createServer((req, res) => {
+			res.on("error", () => { });
+			// Real-timer exception: the first byte must land after the client
+			// is already gone, and only the platform clock separates "before"
+			// from "after" across two live sockets — fake time cannot drive
+			// socket I/O, and every assertion below stays event-driven.
+			const timer = setTimeout(() => {
+				if (!res.destroyed) {
+					res.writeHead(200, { "content-type": "text/event-stream" });
+					res.end("data: late\n\ndata: [DONE]\n\n");
+				}
+			}, 200);
+			req.on("close", () => {
+				clearTimeout(timer);
+				upstreamDone.resolve();
+			});
+		});
+		const upstreamPort = await listenLoopback(upstream);
+		const proxy = await startLoopbackStreamProxy(RELAY_URL, upstreamPort);
+		try {
+			let receivedBytes = 0;
+			const clientClosed = createLoopbackSignal();
+			const req = http.get(
+				{ host: "127.0.0.1", port: proxy.proxyPort, path: "/v1/chat/completions" },
+				(res) => {
+					res.on("data", (c: Buffer) => {
+						receivedBytes += c.length;
+					});
+					res.on("error", () => { });
+				},
+			);
+			req.on("error", () => { });
+			req.on("close", () => clientClosed.resolve());
+			// Real-timer exception: sequencing a teardown across live sockets
+			// needs a real beat so the kernel handshake lands first; 50ms is
+			// far ahead of the upstream's 200ms first byte by construction.
+			setTimeout(() => req.destroy(), 50);
+			await awaitLoopback(clientClosed.promise, "client socket close");
+			assert.equal(receivedBytes, 0, "client must be gone before the first upstream byte");
+			// Both teardowns observed: the proxy saw the client go and the
+			// upstream saw the proxy go, so no relay-health decision is still
+			// in flight — assert directly instead of sleeping a guessed span.
+			await awaitLoopback(proxy.clientGone, "proxy-side client teardown");
+			await awaitLoopback(upstreamDone.promise, "upstream-side teardown");
+			assert.equal(isRelayHealthy(RELAY_URL), true, "pre-first-byte abort must not cool the relay down");
+			assert.equal(getRelayHealth(RELAY_URL), undefined, "no failure record for a pre-first-byte abort");
+			assert.equal(getSseStats().total, statsBefore.total, "pre-first-byte abort records no watchdog outcome");
+		} finally {
+			await proxy.close();
+			await closeLoopback(upstream);
+		}
+	},
+);
+
+test(
+	"loopback: client destroy mid-stream after N chunks leaves relay healthy",
+	{ timeout: 10000 },
+	async () => {
+		resetAllRelayHealth();
+		_resetSseStatsForTest();
+		const statsBefore = getSseStats();
+		const upstream = http.createServer((_req, res) => {
+			res.on("error", () => { });
+			res.writeHead(200, { "content-type": "text/event-stream" });
+			let n = 0;
+			// Real-timer exception: the client aborts between live chunk
+			// arrivals, and only the platform clock can interleave two event
+			// loops mid-stream — the abort trigger and every assertion below
+			// stay event-driven, so the interval length is never asserted on.
+			const timer = setInterval(() => {
+				if (res.destroyed) {
+					clearInterval(timer);
+					return;
+				}
+				n++;
+				if (n <= 10) {
+					res.write(`data: {"seq":${n}}\n\n`);
+				} else {
+					clearInterval(timer);
+					res.end("data: [DONE]\n\n");
+				}
+			}, 15);
+		});
+		const upstreamPort = await listenLoopback(upstream);
+		const proxy = await startLoopbackStreamProxy(RELAY_URL, upstreamPort);
+		try {
+			let receivedChunks = 0;
+			const clientClosed = createLoopbackSignal();
+			const req = http.get(
+				{ host: "127.0.0.1", port: proxy.proxyPort, path: "/v1/chat/completions" },
+				(res) => {
+					res.on("data", () => {
+						receivedChunks++;
+						if (receivedChunks === 2) req.destroy();
+					});
+					res.on("error", () => { });
+				},
+			);
+			req.on("error", () => { });
+			req.on("close", () => clientClosed.resolve());
+			await awaitLoopback(clientClosed.promise, "client socket close after 2 chunks");
+			assert.ok(receivedChunks >= 2, "client must have seen stream data before aborting");
+			// The harness resolves after the pipe's own close listener, so the
+			// relay-health decision below is already final — no sleep needed.
+			await awaitLoopback(proxy.upstreamClosed, "proxy-side upstream close");
+			assert.equal(isRelayHealthy(RELAY_URL), true, "mid-stream client abort must not cool the relay down");
+			assert.equal(getRelayHealth(RELAY_URL), undefined, "no failure record for a mid-stream client abort");
+			assert.equal(getSseStats().total, statsBefore.total, "mid-stream abort records no watchdog outcome");
+		} finally {
+			await proxy.close();
+			await closeLoopback(upstream);
+		}
+	},
+);
+
+test(
+	"loopback: upstream abort mid-stream marks relay failed (control)",
+	{ timeout: 10000 },
+	async () => {
+		resetAllRelayHealth();
+		_resetSseStatsForTest();
+		const statsBefore = getSseStats();
+		const upstream = http.createServer((_req, res) => {
+			res.on("error", () => { });
+			res.writeHead(200, { "content-type": "text/event-stream" });
+			res.write('data: {"seq":1}\n\n');
+			// Event-driven abort: the socket dies after both frames reach the
+			// kernel, so no wall-clock guess decides what "mid-stream" means.
+			setImmediate(() => {
+				if (!res.destroyed) res.write('data: {"seq":2}\n\n');
+				setImmediate(() => res.destroy());
+			});
+		});
+		const upstreamPort = await listenLoopback(upstream);
+		const proxy = await startLoopbackStreamProxy(RELAY_URL, upstreamPort);
+		try {
+			const body = await getLoopbackBody(proxy.proxyPort, "/v1/chat/completions");
+			// The harness resolves after the pipe's own close listener, so the
+			// penalty below is already recorded — assert it directly, no polling.
+			await awaitLoopback(proxy.upstreamClosed, "proxy-side upstream close");
+			assert.ok(body.includes('"seq":1') && body.includes('"seq":2'), "client must receive the pre-abort frames");
+			assert.equal(count(body, "[DONE]"), 1, "truncated host stream still gets one synthetic terminal");
+			assert.equal(isRelayHealthy(RELAY_URL), false, "a genuine upstream abort must cool the relay down");
+			assert.equal(getRelayHealth(RELAY_URL)?.lastStatus, 0, "failure record keeps the socket-error status");
+			const statsAfter = getSseStats();
+			assert.equal(statsAfter.total, statsBefore.total + 1, "upstream abort records one watchdog outcome");
+			assert.equal(statsAfter.failures, statsBefore.failures + 1, "upstream abort records a watchdog failure");
+		} finally {
+			await proxy.close();
+			await closeLoopback(upstream);
+		}
+	},
+);

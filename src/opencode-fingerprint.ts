@@ -341,6 +341,16 @@ export function enforceOpencodeFingerprint(
  // Zen responses shape conformance first (Chat leftovers, tool_choice none,
  // spark effort clamp, store default): Kilo/Cline bodies never reach here.
  if (pathname.endsWith("/responses")) normalizeResponsesBody(body);
+ // Chat path mirrors the responses drop: Zen free tier accepts only auto, so a
+ // caller "none" (string or { type: "none" }) would 400 upstream. Messages
+ // path keeps its own choice semantics.
+ if (!pathname.endsWith("/responses") && !pathname.endsWith("/messages")) {
+  const noneChoice = body.tool_choice;
+  if (typeof noneChoice === "string" ? noneChoice.toLowerCase() === "none" : (
+   noneChoice !== null && typeof noneChoice === "object" && !Array.isArray(noneChoice)
+   && (noneChoice as Record<string, unknown>).type === "none"
+  )) delete body.tool_choice;
+ }
  // Upstream Zen free tier mandates stream: true for all free requests
  body.stream = true;
 
@@ -390,7 +400,8 @@ export function enforceOpencodeFingerprint(
 
  // Note: Upstream OpenCode Zen explicitly rejects any tool_choice other than "auto"
  // with HTTP 400 (only "auto" is supported). tool_choice is auto-or-absent here:
- // normalizeResponsesBody drops "none" upstream, and we never impose a choice.
+ // normalizeResponsesBody drops "none" on the responses path, the chat branch above
+ // drops it on the chat path, and we never impose a choice.
  // Empty-placeholder callers stay silent via the COMPAT description and the
  // output-aggregator; real OMP definitions execute normally.
 

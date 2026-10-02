@@ -435,6 +435,99 @@ test("enforceOpencodeFingerprint: responses path normalizes before fingerprint",
 	enforceOpencodeFingerprint(chat, "/v1/chat/completions");
 	assert.ok(Array.isArray(chat.messages), "chat path keeps messages");
 	assert.equal(chat.temperature, 0.5, "chat path keeps temperature");
-	assert.equal(chat.tool_choice, "none", "chat path keeps caller choice");
+	assert.ok(!("tool_choice" in chat), "chat none dropped, never 400");
 	assert.ok(!("store" in chat), "store stays responses-only");
+});
+
+test("normalizeResponsesBody: flat reasoning effort max|ultra clamp to xhigh", () => {
+	const body: Record<string, unknown> = {
+		model: "muse-spark-1.3-contributor-free",
+		input: "hi",
+		reasoning_effort: "max",
+		reasoningEffort: "ultra",
+	};
+	normalizeResponsesBody(body);
+	assert.equal(body.reasoning_effort, "xhigh");
+	assert.equal(body.reasoningEffort, "xhigh");
+	const upper: Record<string, unknown> = {
+		model: "muse-spark-1.3-contributor-free",
+		input: "hi",
+		reasoning_effort: "MAX",
+		reasoningEffort: "Ultra",
+	};
+	normalizeResponsesBody(upper);
+	assert.equal(upper.reasoning_effort, "xhigh", "clamp is case-insensitive");
+	assert.equal(upper.reasoningEffort, "xhigh", "clamp is case-insensitive");
+	for (const level of ["off", "low", "medium", "high", "xhigh"]) {
+		const kept: Record<string, unknown> = {
+			model: "muse-spark-1.3-contributor-free",
+			input: "hi",
+			reasoning_effort: level,
+			reasoningEffort: level,
+		};
+		normalizeResponsesBody(kept);
+		assert.equal(kept.reasoning_effort, level, `${level} untouched`);
+		assert.equal(kept.reasoningEffort, level, `${level} untouched`);
+	}
+	const other: Record<string, unknown> = {
+		model: "big-pickle",
+		input: "hi",
+		reasoning_effort: "max",
+		reasoningEffort: "ultra",
+	};
+	normalizeResponsesBody(other);
+	assert.equal(other.reasoning_effort, "max", "non-spark flat effort never clamped");
+	assert.equal(other.reasoningEffort, "ultra", "non-spark flat effort never clamped");
+});
+
+test("enforceOpencodeFingerprint: responses path clamps flat effort end to end", () => {
+	const body: Record<string, unknown> = {
+		model: "muse-spark-1.3-contributor-free",
+		input: "hi",
+		reasoning_effort: "max",
+		reasoningEffort: "ultra",
+		stream: false,
+	};
+	enforceOpencodeFingerprint(body, "/v1/responses");
+	assert.equal(body.reasoning_effort, "xhigh");
+	assert.equal(body.reasoningEffort, "xhigh");
+	const other: Record<string, unknown> = {
+		model: "big-pickle",
+		input: "hi",
+		reasoning_effort: "max",
+		reasoningEffort: "ultra",
+		stream: false,
+	};
+	enforceOpencodeFingerprint(other, "/v1/responses");
+	assert.equal(other.reasoning_effort, "max", "non-spark untouched end to end");
+	assert.equal(other.reasoningEffort, "ultra", "non-spark untouched end to end");
+});
+
+test("enforceOpencodeFingerprint: chat path drops tool_choice none, keeps auto-or-absent", () => {
+	for (const none of ["none", "None", { type: "none" }]) {
+		const body: Record<string, unknown> = {
+			model: "muse-spark-1.3-contributor-free",
+			messages: [{ role: "user", content: "hi" }],
+			tool_choice: none,
+			stream: false,
+		};
+		enforceOpencodeFingerprint(body, "/v1/chat/completions");
+		assert.ok(!("tool_choice" in body), `none dropped, never 400: ${JSON.stringify(none)}`);
+		assert.equal(body.stream, true, "stream still forced");
+	}
+	const auto: Record<string, unknown> = {
+		model: "muse-spark-1.3-contributor-free",
+		messages: [{ role: "user", content: "hi" }],
+		tool_choice: "auto",
+		stream: false,
+	};
+	enforceOpencodeFingerprint(auto, "/v1/chat/completions");
+	assert.equal(auto.tool_choice, "auto", "auto still rides");
+	const absent: Record<string, unknown> = {
+		model: "muse-spark-1.3-contributor-free",
+		messages: [{ role: "user", content: "hi" }],
+		stream: false,
+	};
+	enforceOpencodeFingerprint(absent, "/v1/chat/completions");
+	assert.ok(!("tool_choice" in absent), "no choice imposed");
 });

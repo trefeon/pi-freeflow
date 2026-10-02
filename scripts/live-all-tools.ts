@@ -5,10 +5,9 @@
  * real OpenCode Zen upstream (no 403 FreeTierError, no 400 shape rejection):
  *
  * Phase A (offline, no network): build caller tools for ALL host names
- * (OMP 28 + browser/computer + 3 hidden, Pi 8, MCP/custom/xd samples) in each
- * wire shape, run translateToolsForPath + enforceOpencodeFingerprint, assert
- * zero drops, sextet injected once each, stream:true, store=false on
- * /responses only, no additionalProperties injection.
+ * (OMP 28 incl. browser/computer + 3 hidden + 2 settings-gated custom, Pi 8,
+ * MCP/custom/xd samples) in each wire shape, run translateToolsForPath + enforceOpencodeFingerprint, assert
+ * zero drops, sextet injected once each, stream:true, store=false on /responses only, no additionalProperties injection.
  *
  * Phase B (live): start the real proxy in direct mode (relay pool isolated to
  * empty + restored afterwards, main AND .bak), send ONE request per endpoint
