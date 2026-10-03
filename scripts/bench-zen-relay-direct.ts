@@ -75,6 +75,9 @@ interface BenchRow {
  attempt: number;
  wantPath: WantPath;
  ttfbMs: number;
+ ttftRawMs: number;
+ firstReasonMs: number;
+ burstFlush: boolean;
  sustainedTokS: number;
  totalOutChars: number;
  totalReasonChars: number;
@@ -299,6 +302,9 @@ async function runAttempt(
   attempt: item.attemptInPath,
   wantPath: item.wantPath,
   ttfbMs: -1,
+  ttftRawMs: -1,
+  firstReasonMs: -1,
+  burstFlush: false,
   sustainedTokS: 0,
   totalOutChars: 0,
   totalReasonChars: 0,
@@ -315,22 +321,33 @@ async function runAttempt(
  const controller = new AbortController();
  const timeoutId = setTimeout(() => controller.abort(new Error("attempt-timeout")), ATTEMPT_TIMEOUT_MS);
  const sendAt = Date.now();
+ let firstByteAt: number | null = null;
+ let firstReasonAt: number | null = null;
  let firstAnswerAt: number | null = null;
  let terminalAt: number | null = null;
  let terminalSeen = false;
+ let answerEvents = 0;
+ let firstFlushChars = 0;
  const markAnswer = (n: number): void => {
   if (firstAnswerAt === null) firstAnswerAt = Date.now();
+  answerEvents++;
+  if (answerEvents === 1) firstFlushChars = n;
   row.totalOutChars += n;
+ };
+ const markReason = (n: number): void => {
+  if (firstReasonAt === null) firstReasonAt = Date.now();
+  row.totalReasonChars += n;
  };
 
  /** Handle one parsed SSE data payload. Mutates row/terminal state. */
  const handlePayload = (json: unknown, block: string, eventName: string | null): void => {
   if (!json || typeof json !== "object") return;
+  if (firstByteAt === null) firstByteAt = Date.now();
   if (endpoint === "/v1/responses") {
    const t = strField(json, "type") ?? eventName ?? "";
    if (t.includes("reasoning") || t.includes("thinking")) {
     const txt = responsesAnswerText(json);
-    if (txt !== null) row.totalReasonChars += txt.length;
+    if (txt !== null) markReason(txt.length);
     return;
    }
    if (t.includes("completed") || t.includes("response.done") || t.includes("incomplete") || t.includes("failed")) {
@@ -350,7 +367,7 @@ async function runAttempt(
    const txt = responsesAnswerText(json);
    if (txt !== null) {
     if (sniffThinking(block) && t !== "response.output_text.delta") {
-     row.totalReasonChars += txt.length;
+     markReason(txt.length);
     } else {
      markAnswer(txt.length);
     }
@@ -360,7 +377,7 @@ async function runAttempt(
    // Reasoning-only deltas carry content:"" during thinking; only
    // non-empty content is ANSWER (TTFB source).
    if (content !== null && content.length > 0) markAnswer(content.length);
-   if (reasoning !== null) row.totalReasonChars += reasoning.length;
+   if (reasoning !== null) markReason(reasoning.length);
   }
  };
 
@@ -457,10 +474,14 @@ async function runAttempt(
   clearTimeout(timeoutId);
  }
  if (terminalAt === null) terminalAt = Date.now();
+ row.ttftRawMs = firstByteAt !== null ? firstByteAt - sendAt : -1;
+ row.firstReasonMs = firstReasonAt !== null ? firstReasonAt - sendAt : -1;
  if (firstAnswerAt !== null) {
   row.ttfbMs = firstAnswerAt - sendAt;
-  const durS = (terminalAt - firstAnswerAt) / 1000;
-  row.sustainedTokS = durS > 0 ? row.totalOutChars / 4 / durS : 0;
+  const rawDurS = (terminalAt - firstAnswerAt) / 1000;
+  const durS = Math.max(rawDurS, 1.0);
+  row.burstFlush = answerEvents <= 2 || (row.totalOutChars > 0 && firstFlushChars / row.totalOutChars > 0.8);
+  row.sustainedTokS = row.totalOutChars / 4 / durS;
  } else {
   notes.push("no-answer-delta");
  }
@@ -546,13 +567,14 @@ async function main(): Promise<void> {
   cells.get(k)!.push(r);
  }
  console.log("\n=== PER-CELL x PATH MEDIANS (within-cell comparison only) ===");
- console.log("model | effort (wire) | path | n/nOk | median TTFBms | median tok/s | stdev tok/s | median outCh | median reasonCh");
+ console.log("model | effort (wire) | path | n/nOk/nRate | median TTFAms | median tok/s (non-burst) | stdev tok/s | median outCh | median reasonCh");
  for (const [k, rs] of cells) {
   const ok = rs.filter((r) => r.ttfbMs >= 0);
-  const line = `${rs[0].model} | ${rs[0].effort} (${rs[0].effortSent}) | ${rs[0].wantPath} | ${rs.length}/${ok.length}` +
+  const rate = ok.filter((r) => !r.burstFlush);
+  const line = `${rs[0].model} | ${rs[0].effort} (${rs[0].effortSent}) | ${rs[0].wantPath} | ${rs.length}/${ok.length}/${rate.length}` +
    ` | ${median(ok.map((r) => r.ttfbMs)).toFixed(0)}` +
-   ` | ${median(ok.map((r) => r.sustainedTokS)).toFixed(2)}` +
-   ` | ${stdev(ok.map((r) => r.sustainedTokS)).toFixed(2)}` +
+   ` | ${median(rate.map((r) => r.sustainedTokS)).toFixed(2)}` +
+   ` | ${stdev(rate.map((r) => r.sustainedTokS)).toFixed(2)}` +
    ` | ${median(ok.map((r) => r.totalOutChars)).toFixed(0)}` +
    ` | ${median(ok.map((r) => r.totalReasonChars)).toFixed(0)}`;
   console.log(line);
