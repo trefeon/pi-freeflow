@@ -1572,6 +1572,10 @@ export function startProxy(
       if (ka) outHeaders["keep-alive"] = ka;
 
       if (isStream && upstreamRes.body) {
+       // Force anti-buffer headers on the streaming leg: upstream rarely sends
+       // them, and without them a downstream hop may buffer SSE chunks.
+       outHeaders["cache-control"] = outHeaders["cache-control"] ?? "no-cache, no-transform";
+       outHeaders["x-accel-buffering"] = "no";
        res.writeHead(upstreamRes.status, outHeaders);
        pipeUpstreamStream(
         Readable.fromWeb(upstreamRes.body as unknown as WebReadableStream),
