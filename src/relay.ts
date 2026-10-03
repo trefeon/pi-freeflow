@@ -27,9 +27,12 @@ const ROLL_NOTIFY_MS = 5 * 60 * 1_000;
 /********************************************************
  * Warm client-to-relay dispatcher: one shared undici Agent
  * with long keep-alive so repeat relay attempts reuse
- * connections instead of paying a fresh TLS handshake
+ * CONNECT/TLS across hot turns instead of paying a fresh handshake
  * per attempt. Relay leg only - the direct-to-upstream
- * fallback keeps the built-in global dispatcher.
+ * fallback keeps the built-in global dispatcher. headersTimeout
+ * reaps wedged tunnels, bodyTimeout 0 disables per-chunk kill
+ * (the 300s total backstop still bounds a turn), connections 50
+ * caps burst spray.
  *
  * Compat: an npm undici Agent is rejected as a `dispatcher`
  * by an older-major global fetch bundled in Node
@@ -45,7 +48,7 @@ export const canUseRelayDispatcher =
 	Number((process.versions.undici ?? "0").split(".")[0]) >= 7;
 function getRelayAgent(): Agent {
 	if (!relayAgent) {
-		relayAgent = new Agent({ keepAliveTimeout: 30_000, connectTimeout: 10_000 });
+		relayAgent = new Agent({ keepAliveTimeout: 60_000, connectTimeout: 10_000, headersTimeout: 60_000, bodyTimeout: 0, connections: 50 });
 	}
 	return relayAgent;
 }
