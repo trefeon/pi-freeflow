@@ -328,7 +328,7 @@ async function main(): Promise<void> {
 	const args = process.argv.slice(2);
 	const quick = args.includes("--quick");
 	const outIdx = args.indexOf("--out");
-	const outPath = outIdx >= 0 && args[outIdx + 1] ? args[outIdx + 1] : "scripts/bench-toks.results.json";
+	const outPath = outIdx >= 0 && args[outIdx + 1] ? args[outIdx + 1] : "scripts/bench-results/bench-toks." + new Date().toISOString().slice(0, 10) + ".json";
 
 	const plan = quick
 		? [...new Map(FULL_PLAN.map((p) => [`${p.model}|${p.effortLabel}`, p])).values()]
@@ -384,6 +384,7 @@ async function main(): Promise<void> {
 		void k;
 	}
 
+	fs.mkdirSync(outPath.split("/").slice(0, -1).join("/"), { recursive: true });
 	fs.writeFileSync(outPath, JSON.stringify({ meta: { prompt: PROMPT, maxTokens: MAX_TOKENS, cooldownMs: COOLDOWN_MS, cooldown429Ms: COOLDOWN_429_MS, at: new Date().toISOString() }, rows }, null, 2));
 	console.log(`\nraw rows → ${outPath}`);
 	process.exit(0);
