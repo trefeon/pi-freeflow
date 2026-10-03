@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.31.0
+
+### Minor Changes
+
+- de0a0fe: Two new free models on OpenCode Zen, picked the same way as the rest (`/model` → `freeflow` → pick):
+
+  - **Fledge Alpha Free** (`fledge-alpha-free`, short name `fledge-alpha`) — 1M context, answers with vision.
+  - **Ling 3.1 Flash Free** (`ling-3.1-flash-free`, short name `ling-3.1-flash`) — 262K context, text answers.
+
+### Patch Changes
+
+- 48eec6d: Remove two free models that had stopped serving upstream, so they no longer appear in the model list:
+
+  - **Ling 3.0 Flash Fin** on OpenCode (`ling-3.0-flash-fin-free`) — upstream answers `400 Endpoint is unavailable`.
+  - **Ling 3.0 Flash Fin** on KiloCode (`inclusionai/ling-3.0-flash-fin:free`) — upstream answers `404 does not exist`.
+
+  Both are excluded permanently, so a stale on-disk catalog or a later catalog refresh cannot bring them back. The short name `ling-3.0-flash-fin` no longer resolves; `ling-3.0-flash-sante` is unaffected and still works.
+
 ## 1.30.0
 
 ### Minor Changes
