@@ -63,7 +63,7 @@ export const PORT = resolvePort();
 // OPENCODE_VERSION_FLOOR pins the minimum; OPENCODE_VERSION_FALLBACK is the
 // last-known-good npm version used when the live lookup is stale/offline.
 export const OPENCODE_VERSION_FLOOR = "1.17.0";
-export const OPENCODE_VERSION_FALLBACK = "1.18.31";
+export const OPENCODE_VERSION_FALLBACK = "1.18.34";
 /** Live npm lookup TTL: 6h — within one window the cached UA is reused. */
 export const OPENCODE_VERSION_TTL_MS = 6 * 60 * 60 * 1_000;
 /** Env override: exact `opencode/<version>` UA (or bare version) for tests/pins. */
@@ -238,11 +238,14 @@ export function createOpenCodeRequestId(): string {
 export const OPENCODE_SESSION = createOpenCodeSessionId();
 
 export function opencodeHeaders(): Record<string, string> {
+ const sessionId = OPENCODE_SESSION;
  return {
   "User-Agent": getOpenCodeUserAgent(),
   "x-opencode-client": OPENCODE_CLIENT,
   "x-opencode-project": OPENCODE_PROJECT,
-  "x-opencode-session": OPENCODE_SESSION,
+  "x-opencode-session": sessionId,
+  "x-opencode-session-id": sessionId,
+  "x-session-affinity": sessionId,
   "x-opencode-request": createOpenCodeRequestId(),
  };
 }

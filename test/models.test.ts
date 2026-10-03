@@ -59,6 +59,7 @@ test("1M context window models are properly configured", () => {
   "z-ai/glm-5.3-flash",
   "mimo-v2.5-free",
   "mimo-v2.6-flash-free",
+	"fledge-alpha-free",
   "space-bunny-free",
   "longcat-2.5-preview-free",
   "nemotron-3.5-lightning-free",
@@ -216,6 +217,9 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "nemotron-3-ultra-free": { ctx: 1_000_000, max: 128_000, reasoning: true },
   "nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 262_144, reasoning: true },
   "big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
+  // Added 2026-10-03 (live: Zen docs endpoint table + keyless chat 200 via proxy; models.dev ctx/out)
+  "fledge-alpha-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
+  "ling-3.1-flash-free": { ctx: 262_144, max: 32_768, reasoning: true },
   // KiloCode Gateway
   "dots-studio/dots-3-note-preview:free": { ctx: 512_000, max: 512_000, reasoning: true },
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": { ctx: 256_000, max: 131_072, reasoning: true },

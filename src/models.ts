@@ -169,6 +169,40 @@ export const OPENCODE_MODELS: ModelDef[] = [
    max: "max",
   },
  },
+ {
+  id: "fledge-alpha-free",
+  name: "Fledge Alpha Free [OpenCode]",
+  reasoning: true,
+  contextWindow: 1_048_576,
+  maxTokens: 131_072,
+  input: ["text", "image"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: null,
+   low: "low",
+   medium: null,
+   high: "high",
+   xhigh: null,
+   max: "max",
+  },
+ },
+ {
+  id: "ling-3.1-flash-free",
+  name: "Ling 3.1 Flash Free [OpenCode]",
+  reasoning: true,
+  contextWindow: 262_144,
+  maxTokens: 32_768,
+  input: ["text"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: "minimal",
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: "max",
+  },
+ },
 ];
 
 /**
@@ -489,6 +523,8 @@ export const MODEL_ALIASES: Record<string, string> = {
  "space-bunny": "space-bunny-free",
  "longcat-2.5-preview": "longcat-2.5-preview-free",
  "longcat": "longcat-2.5-preview-free",
+ "fledge-alpha": "fledge-alpha-free",
+ "ling-3.1-flash": "ling-3.1-flash-free",
  "qwen3.8-27b": "qwen/qwen3.8-27b:free",
  // provider-prefixed short aliases (slash-normalized)
  "laguna-s-2.1:free": "poolside/laguna-s-2.1:free",

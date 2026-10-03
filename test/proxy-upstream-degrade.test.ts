@@ -24,7 +24,11 @@ import {
  rememberGateRejection,
  withFreeTierHint,
 } from "../src/upstream-health.ts";
-import { prepareResponsesFailoverBody } from "../src/responses.ts";
+import {
+ KILO_FAILOVER_MAX_OUTPUT_TOKENS,
+ prepareChatFailoverBody,
+ prepareResponsesFailoverBody,
+} from "../src/responses.ts";
 import { isRetriableStatus } from "../src/relay.ts";
 import {
  getActiveRelayState,
@@ -267,11 +271,17 @@ test("degrade: refused sessions fail over on retry, even proven or multi-turn", 
  _resetUpstreamHealthForTest();
 });
 
-test("degrade: responses failover bodies drop Zen-bound state", () => {
+test("degrade: responses failover bodies drop Zen-bound state and clamp output tokens", () => {
  const fresh = newResponses();
+ fresh.prompt_cache_key = "zen-cache-key-123";
+ fresh.include = ["reasoning.encrypted_content", "other_field"];
+ fresh.max_output_tokens = 131_072;
  prepareResponsesFailoverBody(fresh);
  assert.equal(fresh.model, RESPONSES_MODEL);
  assert.ok(!("previous_response_id" in fresh));
+ assert.ok(!("prompt_cache_key" in fresh));
+ assert.deepEqual(fresh.include, ["other_field"]);
+ assert.equal(fresh.max_output_tokens, KILO_FAILOVER_MAX_OUTPUT_TOKENS);
 
  const resumed = newResponses();
  resumed.previous_response_id = "resp_zen_123";
@@ -285,6 +295,13 @@ test("degrade: responses failover bodies drop Zen-bound state", () => {
  const [first, second] = resumed.input;
  assert.ok(typeof first === "object" && first !== null && "type" in first && first.type === "message");
  assert.ok(typeof second === "object" && second !== null && !("encrypted_content" in second));
+
+ const chat = newChat();
+ chat.prompt_cache_key = "zen-chat-cache";
+ chat.max_tokens = 131_072;
+ prepareChatFailoverBody(chat);
+ assert.ok(!("prompt_cache_key" in chat));
+ assert.equal(chat.max_tokens, KILO_FAILOVER_MAX_OUTPUT_TOKENS);
 });
 
 test("degrade: non-gate failures never trip the zen gate", () => {
@@ -329,8 +346,8 @@ test("degrade e2e: gate x2 then new chat served as Kilo, proven stays on zen", a
   _resetUpstreamHealthForTest();
   _resetFreeTierHintForTest();
 
-  const { server, port } = await startProxy(TEST_PORT);
-  const effectivePort = port ?? TEST_PORT;
+  const { server, port } = await startProxy(19293);
+  const effectivePort = port ?? 19293;
   const localPrefix = `http://127.0.0.1:${effectivePort}`;
   const realFetch = globalThis.fetch.bind(globalThis);
   try {
@@ -441,6 +458,68 @@ test("degrade e2e: gate x2 then new chat served as Kilo, proven stays on zen", a
    assert.equal(healed.status, 200, "resumed retry fails over after the refusal");
    const healedBody: Record<string, unknown> = await healed.json();
    assert.equal(healedBody.served_by, "kilo");
+  } finally {
+   _resetUpstreamHealthForTest();
+   _resetFreeTierHintForTest();
+   resetAllRelayHealth();
+   setActiveRelayState(priorState, false);
+   if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+ });
+});
+
+test("degrade e2e: kilo 400 bad request recovers by clamping tokens and falling back to 1M model", async (t) => {
+ await withIsolatedRelayFiles(async () => {
+  const priorState = getActiveRelayState();
+  setActiveRelayState({ enabled: true, url: "", relays: [] }, false);
+  resetAllRelayHealth();
+  _resetUpstreamHealthForTest();
+  _resetFreeTierHintForTest();
+
+  recordUpstreamFailure("zen", 403, GATE_BODY);
+  recordUpstreamFailure("zen", 403, GATE_BODY);
+
+  const { server, port } = await startProxy(TEST_PORT);
+  const effectivePort = port ?? TEST_PORT;
+  const localPrefix = `http://127.0.0.1:${effectivePort}`;
+  const realFetch = globalThis.fetch.bind(globalThis);
+  let kiloAttempts = 0;
+  try {
+   t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: unknown, init?: RequestInit) => {
+     const u = String(url);
+     if (u.startsWith(localPrefix)) return realFetch(u, init);
+     const sent = requestText(init?.body);
+     if (u.includes("api.kilo.ai")) {
+      kiloAttempts += 1;
+      const sentBody: { model?: unknown; max_output_tokens?: unknown } = JSON.parse(sent);
+      if (kiloAttempts === 1 && typeof sentBody.max_output_tokens === "number" && sentBody.max_output_tokens > 4096) {
+       return jsonResponse(400, JSON.stringify({ error: { message: "Provider returned error", code: 400 } }));
+      }
+      return jsonResponse(200, JSON.stringify({ served_by: "kilo", model: String(sentBody.model) }));
+     }
+     return jsonResponse(403, GATE_BODY);
+    },
+   );
+
+   const postResponses = (body: string): Promise<Response> =>
+    fetch(`${localPrefix}/v1/responses`, {
+     method: "POST",
+     headers: { "content-type": "application/json" },
+     body,
+    });
+
+   const largePrompt = responsesBody(RESPONSES_MODEL, "large prompt text");
+   const parsed = JSON.parse(largePrompt);
+   parsed.max_output_tokens = 131_072;
+   rememberGateRejection(parsed, "/zen/v1/responses", 403, GATE_BODY);
+   const res = await postResponses(JSON.stringify(parsed));
+   assert.equal(res.status, 200, "must recover and succeed with 200");
+   const body: Record<string, unknown> = await res.json();
+   assert.equal(body.served_by, "kilo");
+   assert.equal(kiloAttempts, 2, "must have retried once to recover from 400");
   } finally {
    _resetUpstreamHealthForTest();
    _resetFreeTierHintForTest();

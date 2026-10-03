@@ -27,7 +27,7 @@ export interface UpstreamHealthSnapshot {
 }
 
 export const GATE_ENTER_AFTER = 2;
-export const FALLBACK_KILO_MODEL = "dots-studio/dots-3-note-preview:free";
+export const FALLBACK_KILO_MODEL = "nvidia/nemotron-3.5-lightning:free";
 
 export type ZenRoute = "passthrough" | "failover" | "canary";
 
@@ -351,10 +351,15 @@ export function decideZenRoute(parsedBody: unknown, pathname: string): ZenRoute 
  return "failover";
 }
 
-/** First healthy Kilo model id, else the built-in Kilo fallback. */
-export function pickFailoverModel(): string {
+/** First healthy Kilo model id, preferring 1M context models, else the built-in Kilo fallback. */
+export function pickFailoverModel(requestedModel?: unknown): string {
  try {
-  const hit = getAliveCatalog().find(
+  const alive = getAliveCatalog();
+  const lightning = alive.find(
+   (m) => (m as { source?: string }).source === "kilo" && m.id === "nvidia/nemotron-3.5-lightning:free",
+  );
+  if (lightning && typeof lightning.id === "string") return lightning.id;
+  const hit = alive.find(
    (m) => (m as { source?: string }).source === "kilo" && typeof m.id === "string" && m.id.length > 0,
   );
   if (hit) return hit.id;

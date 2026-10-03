@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **33 free models** | 10 from OpenCode Zen, 18 from KiloCode Gateway, 5 from Cline, context windows up to 1M. Full list below. | **$0** |
+| **33 free models** | 11 from OpenCode Zen, 17 from KiloCode Gateway, 5 from Cline, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own Cloudflare Workers and Vercel Edge relays. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Every model has a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`. | **$0** |
@@ -185,13 +185,13 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 31 models, one command
+### 33 models, one command
 
 ```bash
 /model → freeflow → pick
 ```
 
-#### OpenCode Zen (10 models), Responses and Chat API
+#### OpenCode Zen (11 models), Responses and Chat API
 
 Good defaults for long coding sessions and agentic work.
 
@@ -206,8 +206,10 @@ Good defaults for long coding sessions and agentic work.
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 | `space-bunny-free` | Stealth preview (lab undisclosed) | **1M** (1.048.576) | **512K** (524.288) | `low … max` | ✅ |
 | `longcat-2.5-preview-free` | Meituan LongCat | **1M** (1.000.000) | **131K** (131.072) | `minimal … max` | ✅ |
+| `fledge-alpha-free` | Stealth preview (lab undisclosed) | **1M** (1.048.576) | **131K** (131.072) | `low / high / max` | ✅ |
+| `ling-3.1-flash-free` | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal … max` | ❌ |
 
-#### KiloCode Gateway (18 models), OpenRouter compatible
+#### KiloCode Gateway (17 models), OpenRouter compatible
 
 Keyless access. Short aliases work for every row (the full ID is in parentheses).
 
@@ -342,7 +344,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
 src/
 ├── index.ts          # extension entry, lifecycle hooks
-├── models.ts         # 31-model catalog definitions
+├── models.ts         # 33-model catalog definitions
 ├── catalog.ts        # model catalog cache (24h disk)
 ├── proxy.ts          # local proxy server (127.0.0.1:28180)
 ├── relay.ts          # relay fetch, rolling on retryable failures

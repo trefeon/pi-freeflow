@@ -16,7 +16,7 @@ import { registerClient, renewClient, touchActivity, unregisterClient } from "./
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
-import { getAliveCatalog } from "./catalog.ts";
+import { getAliveCatalog, isFreeCatalogId } from "./catalog.ts";
 import {
  ALLOWED_METHODS,
  ALLOWED_PATH_PATTERN,
@@ -56,6 +56,7 @@ import { relayFetch } from "./relay.ts";
 import { getActiveRelayState, orderedRelayCandidates } from "./relay-state.ts";
 import {
  issuerRelayFor,
+ prepareChatFailoverBody,
  prepareResponsesFailoverBody,
  rejectedReasoningCount,
  rejectedReasoningIdsCount,
@@ -390,7 +391,7 @@ export function isRelayEligibleModel(model: unknown): boolean {
  if (model.trim() === "") return true;
  const canonical = resolveCanonicalModelId(model.trim());
  if (isClineModel(canonical)) return false;
- return MODEL_MAP.has(canonical) || KILO_MODEL_IDS.has(canonical);
+ return MODEL_MAP.has(canonical) || KILO_MODEL_IDS.has(canonical) || isFreeCatalogId(canonical);
 }
 
 /**
@@ -1029,7 +1030,11 @@ export function startProxy(
    if (zenFailover.action === "failover" && parsedBody) {
     const from = String(parsedBody.model);
     parsedBody.model = zenFailover.model;
-    if (target.pathname.endsWith("/responses")) prepareResponsesFailoverBody(parsedBody);
+    if (target.pathname.endsWith("/responses")) {
+     prepareResponsesFailoverBody(parsedBody);
+    } else {
+     prepareChatFailoverBody(parsedBody);
+    }
     isKilo = true;
     log("info", `zen gated — session failed over ${from} -> ${zenFailover.model}`, { model: from, failover: zenFailover.model }, reqId);
    }
@@ -1116,6 +1121,46 @@ export function startProxy(
        },
        reqId,
       );
+      // Kilo 400 recovery: if upstream Kilo rejected the body with 400 (e.g.
+      // prompt + max_output_tokens exceeded model's operational context limit),
+      // retry once with clamped max tokens and fallback to a 1M model.
+      if (response.status === 400 && !res.writableEnded) {
+       const retryBody = { ...parsedBody };
+       let changed = false;
+       if (typeof retryBody.max_output_tokens === "number" && retryBody.max_output_tokens > 4096) {
+        retryBody.max_output_tokens = 4096;
+        changed = true;
+       }
+       if (typeof retryBody.max_tokens === "number" && retryBody.max_tokens > 4096) {
+        retryBody.max_tokens = 4096;
+        changed = true;
+       }
+       if (retryBody.model === "dots-studio/dots-3-note-preview:free") {
+        retryBody.model = "nvidia/nemotron-3.5-lightning:free";
+        changed = true;
+       }
+       if (changed) {
+        log("warn", `kilo 400 for model ${String(parsedBody.model)} — retrying with clamped tokens`, { model: parsedBody.model }, reqId);
+        try {
+         const retryRes = await relayFetch(
+          kiloUrl,
+          {
+           method: "POST",
+           headers: {
+            "Content-Type": "application/json",
+           },
+           body: JSON.stringify(retryBody),
+           signal: kiloController.signal,
+          },
+          reqId,
+         );
+         if (retryRes.ok) {
+          log("info", `kilo 400 recovery succeeded with model ${String(retryBody.model)}`, { model: retryBody.model }, reqId);
+          response = retryRes;
+         }
+        } catch { }
+       }
+      }
      } finally {
       clearTimeout(kiloTimeoutId);
       res.off("close", abortKiloOnClientGone);

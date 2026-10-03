@@ -236,8 +236,28 @@ export function stripUnresolvableReasoning(raw: Buffer): Buffer | null {
  * a no-op for them; resumed histories lose cached reasoning for one turn
  * instead of failing the whole request.
  */
+export const KILO_FAILOVER_MAX_OUTPUT_TOKENS = 16_384;
+
+/**
+ * Make a Zen responses body safe to serve from Kilo after failover: drop
+ * the server-side chain pointer Kilo cannot resolve, Zen-bound prompt cache
+ * keys and encrypted reasoning tokens, and clamp oversized max output tokens
+ * so large-context prompts don't blow through the failover model's generation limit.
+ */
 export function prepareResponsesFailoverBody(parsedBody: Record<string, unknown>): void {
  delete parsedBody.previous_response_id;
+ delete parsedBody.prompt_cache_key;
+ if (Array.isArray(parsedBody.include)) {
+  const filtered = (parsedBody.include as unknown[]).filter((x) => x !== "reasoning.encrypted_content" && x !== ENCRYPTED_CONTENT);
+  if (filtered.length === 0) {
+   delete parsedBody.include;
+  } else {
+   parsedBody.include = filtered;
+  }
+ }
+ if (typeof parsedBody.max_output_tokens === "number" && parsedBody.max_output_tokens > KILO_FAILOVER_MAX_OUTPUT_TOKENS) {
+  parsedBody.max_output_tokens = KILO_FAILOVER_MAX_OUTPUT_TOKENS;
+ }
  const input = parsedBody.input;
  if (!Array.isArray(input)) return;
  for (const item of input) {
@@ -245,6 +265,17 @@ export function prepareResponsesFailoverBody(parsedBody: Record<string, unknown>
   const record = item as Record<string, unknown>;
   if (typeof record[ENCRYPTED_CONTENT] !== "string") continue;
   delete record[ENCRYPTED_CONTENT];
+ }
+}
+
+/**
+ * Make a Zen chat completions body safe to serve from Kilo after failover:
+ * drop Zen-bound prompt cache keys and clamp oversized max tokens.
+ */
+export function prepareChatFailoverBody(parsedBody: Record<string, unknown>): void {
+ delete parsedBody.prompt_cache_key;
+ if (typeof parsedBody.max_tokens === "number" && parsedBody.max_tokens > KILO_FAILOVER_MAX_OUTPUT_TOKENS) {
+  parsedBody.max_tokens = KILO_FAILOVER_MAX_OUTPUT_TOKENS;
  }
 }
 

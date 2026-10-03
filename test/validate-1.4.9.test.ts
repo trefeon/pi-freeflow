@@ -14,12 +14,12 @@ function extractResolveRelayTarget(worker: string): string {
  return worker;
 }
 
-test("catalog 31 = 9 OpenCode + 17 Kilo + 5 Cline", () => {
- assert.equal(OPENCODE_MODELS.length, 9);
+test("catalog 33 = 11 OpenCode + 17 Kilo + 5 Cline", () => {
+ assert.equal(OPENCODE_MODELS.length, 11);
  assert.equal(KILO_MODELS.length, 17);
  assert.equal(CLINE_MODELS.length, 5);
- assert.equal(ALL_MODELS.length, 31);
- assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 31);
+ assert.equal(ALL_MODELS.length, 33);
+ assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 33);
 });
 
 test("aliases deduplicated and wrong removed", () => {
@@ -30,7 +30,7 @@ test("aliases deduplicated and wrong removed", () => {
  assert.equal(resolveCanonicalModelId("dots-3-note-preview"), "dots-studio/dots-3-note-preview:free");
  assert.equal(resolveCanonicalModelId("nemotron-3.5-lightning"), "nvidia/nemotron-3.5-lightning:free");
  assert.equal(isKiloModel("dots-3-note-preview"), true);
- assert.equal(Object.keys(MODEL_ALIASES).length, 21);
+ assert.equal(Object.keys(MODEL_ALIASES).length, 23);
 });
 
 test("log rotation 10MB x10", () => {

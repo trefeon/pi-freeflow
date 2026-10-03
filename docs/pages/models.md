@@ -22,7 +22,7 @@ pi-freeflow provides unified access to **33 curated free models** across three u
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: keyless — no `Authorization` header at all (the gateway rejects a placeholder credential with `401 INVALID_TOKEN`; 200 req/hr per IP)
-- **Models**: 18 models with OpenRouter-style thinking format
+- **Models**: 17 models with OpenRouter-style thinking format
 
 ### Cline (`/api/v1/chat/completions`)
 - **Endpoint**: `https://api.cline.bot/api/v1/chat/completions`
@@ -32,7 +32,7 @@ pi-freeflow provides unified access to **33 curated free models** across three u
 
 ## 33 Model Specifications
 
-### OpenCode Zen (10 models)
+### OpenCode Zen (11 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -45,8 +45,10 @@ pi-freeflow provides unified access to **33 curated free models** across three u
 | `big-pickle` | 200,000 | 32,000 | high, max | ❌ |
 | `space-bunny-free` | 1,048,576 | 524,288 | low..max | ✅ |
 | `longcat-2.5-preview-free` | 1,000,000 | 131,072 | minimal..max | ✅ |
+| `fledge-alpha-free` | 1,048,576 | 131,072 | low..max | ✅ |
+| `ling-3.1-flash-free` | 262,144 | 32,768 | minimal..max | ❌ |
 
-### KiloCode Gateway (18 models)
+### KiloCode Gateway (17 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -86,8 +88,8 @@ Cline free models come from a rotating per-account promo and need a browser logi
 
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :--- | :--- | :--- | :--- |
-| **OpenCode Zen** | 10 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat) | Keyless |
-| **KiloCode Gateway** | 18 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
+| **OpenCode Zen** | 11 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat) | Keyless |
+| **KiloCode Gateway** | 17 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
 | **Cline** | 5 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 
 ## Stealth previews
