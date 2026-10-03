@@ -523,8 +523,8 @@ async function main(): Promise<void> {
  const outPath = outIdx >= 0 && args[outIdx + 1]
   ? args[outIdx + 1]
   : quick
-   ? "scripts/bench-quick.json"
-   : "scripts/bench-zen-relay-direct.2026-10-03.json";
+   ? "scripts/bench-results/bench-quick.json"
+   : "scripts/bench-results/bench-zen-relay-direct." + new Date().toISOString().slice(0, 10) + ".json";
 
  const plan: PlanItem[] = smoke
   ? [
@@ -581,6 +581,7 @@ async function main(): Promise<void> {
   void k;
  }
 
+ fs.mkdirSync(outPath.split("/").slice(0, -1).join("/"), { recursive: true });
  fs.writeFileSync(outPath, JSON.stringify({ meta: { prompt: PROMPT, maxTokens: MAX_TOKENS, cooldownMs: COOLDOWN_MS, cooldown429Ms: COOLDOWN_429_MS, port, relayBaseline: { mode: baseline.mode, enabled: baseline.enabled, count: baseline.relays.length }, at: new Date().toISOString() }, rows }, null, 2));
  console.log(`\nraw rows → ${outPath}`);
  process.exit(0);

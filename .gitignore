@@ -83,3 +83,10 @@ Thumbs.db
 *.sublime-project
 *.sublime-workspace
 .history/
+bench-results/
+scripts/bench-results/
+*.check.mjs
+*.check.ts
+scripts/*.results.json
+scripts/bench-*.20*.json
+scripts/bench-quick.json
