@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.32.0
+
+### Minor Changes
+
+- Relay sessions now stick to their warm relay and release it after 20 minutes idle, so follow-up turns in one session reuse the fast path instead of paying a cold start.
+
 ## 1.31.0
 
 ### Minor Changes
