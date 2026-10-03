@@ -42,7 +42,7 @@
  * relay/served response header appears (captured verbatim into notes).
  *
  * Usage:
- *   node --experimental-strip-types scripts/bench-zen-relay-direct.ts [--smoke] [--out <path>]
+ *   node --experimental-strip-types scripts/bench-zen-relay-direct.ts [--smoke] [--quick] [--reps <n>] [--only <id-substring>] [--out <path>]
  *   --smoke runs 1 direct + 1 relay attempt on nemotron-3.5-lightning-free/high.
  *   --quick runs the full 14-cell matrix at 1 attempt/path (28 rows, TTFB+outcome signal, no ranking).
  */
@@ -56,7 +56,7 @@ const RESPONSES_MODELS: Record<string, true> = {
  "muse-spark-1.2-contributor-free": true,
  "muse-spark-1.3-contributor-free": true,
 };
-const PORT = 29362;
+const PORT = 29365;
 const PROMPT = "Write a TypeScript LRU cache with JSDoc, ~80 lines, no preamble.";
 const MAX_TOKENS = 16384;
 const COOLDOWN_MS = 10_000;
@@ -106,9 +106,10 @@ const CELLS: Cell[] = [
  { model: "ling-3.1-flash-free", effortLabel: "high", effortSent: "high", perPath: 2 },
 ];
 
-function buildPlan(perPathOverride?: number): PlanItem[] {
+function buildPlan(perPathOverride?: number, onlyFilter?: string): PlanItem[] {
  const plan: PlanItem[] = [];
- for (const c of CELLS) {
+ const cells = onlyFilter ? CELLS.filter((c) => `${c.model} ${c.effortLabel}`.includes(onlyFilter)) : CELLS;
+ for (const c of cells) {
   const perPath = perPathOverride ?? c.perPath;
   for (let i = 1; i <= perPath; i++) {
    plan.push({ ...c, wantPath: "direct", attemptInPath: i });
@@ -492,6 +493,12 @@ async function main(): Promise<void> {
  const smoke = args.includes("--smoke");
  const quick = args.includes("--quick");
  const outIdx = args.indexOf("--out");
+ const repsIdx = args.indexOf("--reps");
+ const reps = repsIdx >= 0 ? Number.parseInt(args[repsIdx + 1] ?? "", 10) : undefined;
+ if (repsIdx >= 0 && !Number.isInteger(reps)) throw new Error("--reps requires an integer value");
+ const onlyIdx = args.indexOf("--only");
+ const only = onlyIdx >= 0 ? args[onlyIdx + 1] : undefined;
+ if (onlyIdx >= 0 && !only) throw new Error("--only requires a substring value");
  const outPath = outIdx >= 0 && args[outIdx + 1]
   ? args[outIdx + 1]
   : quick
@@ -503,7 +510,7 @@ async function main(): Promise<void> {
    { model: "nemotron-3.5-lightning-free", effortLabel: "high", effortSent: "high", perPath: 1, wantPath: "direct", attemptInPath: 1 },
    { model: "nemotron-3.5-lightning-free", effortLabel: "high", effortSent: "high", perPath: 1, wantPath: "relay", attemptInPath: 1 },
   ]
-  : buildPlan(quick ? 1 : undefined);
+  : buildPlan(quick ? 1 : reps, only);
  console.log(`bench-zen-relay-direct: ${plan.length} attempt(s)${smoke ? " (smoke: 1 direct + 1 relay)" : quick ? " (quick: 14 cells x D/R x 1)" : " (full direct-vs-relay matrix)"}`);
 
  const { server, port } = await startProxy(PORT);
