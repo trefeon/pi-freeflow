@@ -794,6 +794,23 @@ export function ewmaBadge(health: RelayHealth | undefined): string {
 }
 
 /**
+ * Session-pin eligibility: a pinned issuer hoists to first only while it is a
+ * live pool member, healthy (no active cooldown), and not parked for a
+ * disabled deployment (402 park). Idle-stale pins never reach here — the
+ * issuer map releases them on access — so this stays a pure health/presence
+ * gate and ordering otherwise behaves exactly as today.
+ */
+export function isSessionPinEligible(pin: string, ordered: string[]): boolean {
+	const clean = (pin ?? "").trim();
+	if (!clean) return false;
+	if (!ordered.includes(clean)) return false;
+	if (!isRelayHealthy(clean)) return false;
+	const health = getRelayHealth(clean);
+	if (health?.lastStatus === 402 && Date.now() < health.cooldownUntil) return false;
+	return true;
+}
+
+/**
  * Candidate relay order for one request.
  *
  * A `preferred` relay (the reasoning issuer for this conversation) is hoisted
@@ -816,7 +833,7 @@ export function orderedRelayCandidates(preferredRelay?: string, spreadKey?: stri
 	if (preferred) {
 		const index = ordered.indexOf(preferred);
 		if (index <= 0) return ordered;
-		if (!isRelayHealthy(preferred)) return ordered;
+		if (!isSessionPinEligible(preferred, ordered)) return ordered;
 		return [ordered[index], ...ordered.slice(0, index), ...ordered.slice(index + 1)];
 	}
 	if (activeRelayState.mode !== "spread") return ordered;

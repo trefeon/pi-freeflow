@@ -21,7 +21,10 @@
  * the conversation keeps its recent reasoning.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { resolveSessionPinPath } from "./config.ts";
 
 /** Upstream rejection for a reasoning blob issued to a different caller. */
 const CALLER_MISMATCH_PATTERN =
@@ -50,9 +53,14 @@ const HASH_LENGTH = 32;
 const ISSUER_TTL_MS = 12 * 60 * 60 * 1_000;
 /** Conversations with issuer affinity tracked before the oldest is dropped. */
 const MAX_TRACKED_ISSUERS = 1_024;
+/** Idle window a session pin holds its warm relay: turns inside the window stay
+ * on the issuing relay (the upstream prefix cache makes turn-2 fast); past it
+ * the pin releases and ordering falls back to the standing health order.
+ * Middle of the 10-30min user range; deliberately not a config key. */
+const SESSION_PIN_IDLE_MS = 20 * 60 * 1_000;
 
 /** Conversation -> the relay (or direct path) that served its last success. */
-const issuerByConversation = new Map<string, { relay: string | null; expiresAt: number }>();
+const issuerByConversation = new Map<string, { relay: string | null; expiresAt: number; lastServedAt: number }>();
 
 interface RejectedReasoning {
  hashes: Set<string>;
@@ -101,6 +109,7 @@ export function responsesConversationKey(body: unknown): string | null {
  * backend from any relay.
  */
 export function rememberIssuerRelay(conversationKey: string, relay: string | null): void {
+ ensureSessionPinsLoaded();
  pruneReasoningState();
  if (
   !issuerByConversation.has(conversationKey) &&
@@ -112,7 +121,9 @@ export function rememberIssuerRelay(conversationKey: string, relay: string | nul
  issuerByConversation.set(conversationKey, {
   relay,
   expiresAt: Date.now() + ISSUER_TTL_MS,
+  lastServedAt: Date.now(),
  });
+ persistSessionPins();
 }
 
 /**
@@ -121,9 +132,17 @@ export function rememberIssuerRelay(conversationKey: string, relay: string | nul
  * record expired), in which case nothing can be replayed incompatibly.
  */
 export function issuerRelayFor(conversationKey: string): string | null | undefined {
+ ensureSessionPinsLoaded();
  const entry = issuerByConversation.get(conversationKey);
  if (!entry) return undefined;
- if (entry.expiresAt <= Date.now()) {
+ const now = Date.now();
+ if (entry.expiresAt <= now) {
+  issuerByConversation.delete(conversationKey);
+  return undefined;
+ }
+ if (now - entry.lastServedAt >= SESSION_PIN_IDLE_MS) {
+  // Idle past the pin window: release the warm relay so ordering falls back
+  // to the standing health order. Lazy on access — no timer in the hot path.
   issuerByConversation.delete(conversationKey);
   return undefined;
  }
@@ -444,7 +463,7 @@ function pruneReasoningState(): void {
   if (entry.expiresAt <= now) rejectedIdsByConversation.delete(key);
  }
  for (const [key, entry] of issuerByConversation) {
-  if (entry.expiresAt <= now) issuerByConversation.delete(key);
+  if (entry.expiresAt <= now || now - entry.lastServedAt >= SESSION_PIN_IDLE_MS) issuerByConversation.delete(key);
  }
 }
 
@@ -453,4 +472,76 @@ export function _resetReasoningStateForTest(): void {
  rejectedByConversation.clear();
  rejectedIdsByConversation.clear();
  issuerByConversation.clear();
+ sessionPinsLoaded = false;
+ lastPinSaveAt = 0;
+}
+
+/** Session-pin disk mirror: a small JSON next to the relay state file so pins
+ * survive proxy restarts. Best-effort both ways — a corrupt file starts empty
+ * and a failed save only costs re-learning. Never widens the RelayState shape. */
+const PIN_SAVE_THROTTLE_MS = 1_000;
+let sessionPinsLoaded = false;
+let lastPinSaveAt = 0;
+
+function ensureSessionPinsLoaded(): void {
+ if (sessionPinsLoaded) return;
+ sessionPinsLoaded = true;
+ let raw: string;
+ try {
+  raw = fs.readFileSync(resolveSessionPinPath(), "utf8");
+ } catch {
+  return; // no mirror yet — start empty
+ }
+ try {
+  const parsed = JSON.parse(raw) as { pins?: Record<string, { relay?: unknown; expiresAt?: unknown; lastServedAt?: unknown }> };
+  const pins = parsed?.pins;
+  if (!pins || typeof pins !== "object") return;
+  const now = Date.now();
+  for (const [key, value] of Object.entries(pins)) {
+   if (issuerByConversation.size >= MAX_TRACKED_ISSUERS) break;
+   if (!key || typeof value !== "object" || value === null) continue;
+   const relay = (value as { relay?: unknown }).relay;
+   const expiresAt = (value as { expiresAt?: unknown }).expiresAt;
+   const lastServedAt = (value as { lastServedAt?: unknown }).lastServedAt;
+   if (relay !== null && typeof relay !== "string") continue;
+   if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || expiresAt <= now) continue;
+   if (typeof lastServedAt !== "number" || !Number.isFinite(lastServedAt)) continue;
+   if (now - lastServedAt >= SESSION_PIN_IDLE_MS) continue;
+   issuerByConversation.set(key, { relay, expiresAt, lastServedAt });
+  }
+ } catch {
+  // Corrupt mirror — start empty, never throw.
+ }
+}
+
+function persistSessionPins(): void {
+ const now = Date.now();
+ if (now - lastPinSaveAt < PIN_SAVE_THROTTLE_MS) return;
+ for (const [key, entry] of issuerByConversation) {
+  if (entry.expiresAt <= now || now - entry.lastServedAt >= SESSION_PIN_IDLE_MS) issuerByConversation.delete(key);
+ }
+ while (issuerByConversation.size > MAX_TRACKED_ISSUERS) {
+  const oldest = issuerByConversation.keys().next();
+  if (oldest.done) break;
+  issuerByConversation.delete(oldest.value);
+ }
+ try {
+  const file = resolveSessionPinPath();
+  const dir = path.dirname(file);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const body = JSON.stringify({ version: 1, pins: Object.fromEntries(issuerByConversation) }, null, 2);
+  const tmp = `${file}.${randomUUID()}.tmp`;
+  fs.writeFileSync(tmp, body, "utf8");
+  try {
+   fs.renameSync(tmp, file);
+  } catch {
+   try {
+    fs.rmSync(tmp, { force: true });
+   } catch {}
+   fs.writeFileSync(file, body, "utf8");
+  }
+  lastPinSaveAt = Date.now();
+ } catch {
+  // Best-effort: losing the mirror only costs re-learning pins.
+ }
 }

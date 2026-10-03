@@ -391,6 +391,20 @@ export function resolveUpstreamHealthPath(): string {
  }
 }
 
+export function resolveSessionPinPath(): string {
+ try {
+  const override = dataDirOverride();
+  if (override) return path.join(override, "pi-freeflow-session-pins.json");
+  return path.join(homedir(), ".pi", "agent", "pi-freeflow-session-pins.json");
+ } catch {
+  return path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "..",
+   ".session-pins.json",
+  );
+ }
+}
+
 export const RELAY_STATE_FILE = resolveRelayStatePath();
 export const LOG_FILE = resolveLogFilePath();
 export const CATALOG_CACHE_FILE = resolveCatalogCachePath();

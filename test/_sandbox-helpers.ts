@@ -15,6 +15,7 @@ import {
 	UPDATE_CACHE_FILE,
 	DEBUG_STATE_FILE,
 	CATALOG_CACHE_FILE,
+	resolveSessionPinPath,
 } from "../src/config.ts";
 
 export const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
@@ -29,6 +30,7 @@ const TOUCHED = [
 	UPDATE_CACHE_FILE,
 	DEBUG_STATE_FILE,
 	CATALOG_CACHE_FILE,
+	resolveSessionPinPath(),
 ];
 
 export function clearSandboxFiles(): void {
