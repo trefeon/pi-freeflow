@@ -4,6 +4,7 @@
 
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
+import { Agent } from "undici";
 import { UPSTREAM_HEADER_TIMEOUT_MS } from "./config.ts";
 import { isDebugEnabled, log } from "./logger.ts";
 import {
@@ -23,6 +24,41 @@ import {
 // one warning instead of a wall of identical toasts.
 let lastRollNotify = 0;
 const ROLL_NOTIFY_MS = 5 * 60 * 1_000;
+/********************************************************
+ * Warm client-to-relay dispatcher: one shared undici Agent
+ * with long keep-alive so repeat relay attempts reuse
+ * connections instead of paying a fresh TLS handshake
+ * per attempt. Relay leg only - the direct-to-upstream
+ * fallback keeps the built-in global dispatcher.
+ *
+ * Compat: an npm undici Agent is rejected as a `dispatcher`
+ * by an older-major global fetch bundled in Node
+ * (`invalid onRequestStart method`, cf. commit 7cbbb37), so
+ * the custom dispatcher attaches only when the bundled
+ * undici major covers the npm major (both 7 here); older
+ * Node keeps the built-in global dispatcher, which already
+ * pools keep-alive.
+ ********************************************************/
+let relayAgent: Agent | null = null;
+/** True when the bundled undici accepts the npm undici 7.x Agent as dispatcher. */
+export const canUseRelayDispatcher =
+	Number((process.versions.undici ?? "0").split(".")[0]) >= 7;
+function getRelayAgent(): Agent {
+	if (!relayAgent) {
+		relayAgent = new Agent({ keepAliveTimeout: 30_000, connectTimeout: 10_000 });
+	}
+	return relayAgent;
+}
+/** Extra fetch init for relay-leg attempts; empty when the custom dispatcher is unavailable. */
+function relayLegInit(): { dispatcher?: Agent } {
+	return canUseRelayDispatcher ? { dispatcher: getRelayAgent() } : {};
+}
+/** Test-only: close the shared relay Agent so its sockets never leak across tests. */
+export async function _closeRelayDispatcherForTest(): Promise<void> {
+	const agent = relayAgent;
+	relayAgent = null;
+	if (agent) await agent.close().catch(() => {});
+}
 /********************************************************
  * Hedged failover grace: an attempt with no response headers
  * within this window fires the NEXT candidate in parallel.
@@ -220,14 +256,14 @@ export async function relayFetch(
 			if (!canHedge) {
 				const soloCtl = new AbortController();
 				const solo = buildAttempt(targetUrl, soloCtl);
-				res = await fetch(targetUrl, { ...opts, headers: solo.headers, signal: solo.signal } as unknown as RequestInit);
+				res = await fetch(targetUrl, { ...opts, headers: solo.headers, signal: solo.signal, ...relayLegInit() } as unknown as RequestInit);
 			} else {
 				const primaryUrl = targetUrl;
 				const nextUrl = candidates[i + 1];
 				const nextCheck = validateRelayUrl(nextUrl);
 				const hedgeCtlA = new AbortController();
 				const first = buildAttempt(primaryUrl, hedgeCtlA);
-				const fetchA = fetch(primaryUrl, { ...opts, headers: first.headers, signal: first.signal } as unknown as RequestInit);
+				const fetchA = fetch(primaryUrl, { ...opts, headers: first.headers, signal: first.signal, ...relayLegInit() } as unknown as RequestInit);
 				const stalled = await new Promise<boolean>((resolve) => {
 					const graceTimer = setTimeout(() => resolve(true), HEDGE_GRACE_MS);
 					fetchA.then(
@@ -242,7 +278,7 @@ export async function relayFetch(
 					const hedgeCtlB = new AbortController();
 					const second = buildAttempt(nextUrl, hedgeCtlB);
 					const hedgeStart = Date.now();
-					const fetchB = fetch(nextUrl, { ...opts, headers: second.headers, signal: second.signal } as unknown as RequestInit);
+					const fetchB = fetch(nextUrl, { ...opts, headers: second.headers, signal: second.signal, ...relayLegInit() } as unknown as RequestInit);
 					// Swallow the loser path so the deliberate abort never
 					// surfaces as an unhandled rejection or a direct fallback.
 					fetchA.catch(() => {});

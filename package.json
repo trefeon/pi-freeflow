@@ -57,5 +57,7 @@
     "typescript": "^5.8.2",
     "vitepress": "^1.6.4"
   },
-  "dependencies": {}
+  "dependencies": {
+    "undici": "7.30.0"
+  }
 }
