@@ -8,7 +8,7 @@ import { ALL_MODELS } from "./models.ts";
 import { getActiveRelayState, getRelayHealth, isRelayHealthy } from "./relay-state.ts";
 import { getLastActivityAt, getLeaseCount, getLeaseSnapshot } from "./lease.ts";
 import { PKG_VERSION, PORT } from "./config.ts";
-import { getLastForwardedByteAt, getSseStats } from "./stream-pipe.ts";
+import { getLastForwardedByteAt, getMidStreamFaultStats, getSseStats } from "./stream-pipe.ts";
 
 export interface HealthRelayInfo {
 	url: string;
@@ -44,6 +44,10 @@ export interface HealthData {
 	sseDegraded: boolean;
 	/** Last time any stream byte was forwarded (busy-bypass quiet check), 0 when no stream yet. */
 	lastBytesAt: number;
+	/** Mid-stream turns the upstream model itself failed (model fault, never a relay fault). */
+	midStreamModelFaults: number;
+	/** Mid-stream turns cut by the relay/transport (relay fault, rotated away from). */
+	midStreamRelayTruncations: number;
 }
 
 /**
@@ -80,6 +84,7 @@ export function getHealthData(portOverride?: number, activeRequests = 0): Health
 		};
 	});
 	const sse = getSseStats();
+	const midStreamFaults = getMidStreamFaultStats();
 	return {
 		port: portOverride ?? PORT,
 		active: state.url || "",
@@ -97,6 +102,8 @@ export function getHealthData(portOverride?: number, activeRequests = 0): Health
 		sseRate: sse.rate,
 		sseDegraded: sse.degraded,
 		lastBytesAt: getLastForwardedByteAt(),
+		midStreamModelFaults: midStreamFaults.modelFaults,
+		midStreamRelayTruncations: midStreamFaults.relayTruncations,
 	};
 }
 

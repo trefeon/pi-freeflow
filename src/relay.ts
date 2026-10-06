@@ -159,6 +159,8 @@ export async function relayFetch(
 	let lastResponseRelay: string | null = null;
 	/** Relay URLs that returned a gated 402 DEPLOYMENT_DISABLED this request. */
 	const disabledRelays: string[] = [];
+	/** Bare-500 roll-once cap: one extra attempt per relayFetch turn. */
+	let sawBare500 = false;
 	const u = new URL(url);
 	const relayTarget = `${u.protocol}//${u.host}`;
 	const relayPath = `${u.pathname}${u.search}`;
@@ -469,6 +471,23 @@ export async function relayFetch(
 				continue;
 			}
 
+			// Bounded bare-500 roll-once: a transient model-side 500 carries no
+			// relay-fault signal (413 precedent: roll without health penalty), so
+			// retry once on the next candidate instead of surfacing. A second
+			// consecutive 500 falls through to the terminal passthrough below.
+			if (res.status === 500 && !sawBare500) {
+				sawBare500 = true;
+				lastResponse?.body?.cancel().catch(() => {});
+				lastResponse = res;
+				lastResponseRelay = targetUrl;
+				log(
+					"warn",
+					`relay ${targetUrl} returned HTTP 500 in ${elapsed}s — rolling once to next relay`,
+					{ upstream: url, status: 500 },
+					rid,
+				);
+				continue;
+			}
 			markRelaySuccess(targetUrl, Date.now() - attemptStart);
 
 			// SUCCESS or non-retriable client error (e.g. 200, 404):

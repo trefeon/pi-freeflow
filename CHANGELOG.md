@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.32.1
+
+### Patch Changes
+
+- Recover interrupted answers automatically: when a response stream cuts off mid-answer, the pending turn is retried once on the next healthy relay instead of stopping partway
+- Retry once automatically when the model briefly fails a request: a transient model-side error is now retried on the next relay instead of surfacing immediately, and health reporting distinguishes model failures from relay problems
+- 9b523e9: Keep relay connections warm across turns for faster repeat requests
+
 ## 1.32.0
 
 ### Minor Changes

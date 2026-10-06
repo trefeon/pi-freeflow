@@ -31,6 +31,8 @@ Instead of VPN tunnels, pi-freeflow uses standard edge worker scripts across **C
 | **HTTP 502 / 503** | Roll to next relay | Upstream edge transient error |
 | **HTTP 504** | Fast fallback to direct | Vercel Edge 25s execution timeout |
 | **HTTP 520-530** | Roll to next relay | Cloudflare network/origin drops |
+| **HTTP 500 (Model Error)** | Retry once on next relay | Transient model-side failure; surfaces unchanged if the next relay fails too |
+| **Interrupted stream** | Resume once on next relay | Stream cut mid-answer retries a text-only turn; turns already running tools are never replayed |
 | **Socket / DNS error** | Roll to next relay | Relay host unreachable |
 | **Pool exhausted** | Direct upstream fallback | All relays failed; direct to provider |
 

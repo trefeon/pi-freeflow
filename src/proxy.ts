@@ -53,7 +53,7 @@ import {
 } from "./tool-translation.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
 import { relayFetch } from "./relay.ts";
-import { getActiveRelayState, orderedRelayCandidates } from "./relay-state.ts";
+import { getActiveRelayState, markRelayFailure, orderedRelayCandidates } from "./relay-state.ts";
 import {
  issuerRelayFor,
  prepareChatFailoverBody,
@@ -1376,6 +1376,17 @@ export function startProxy(
           connection: "keep-alive",
           "x-accel-buffering": "no",
          });
+         // Mid-stream failover (budget: exactly one re-fire): headers are
+         // already sent, so a relay that FINs the SSE body without a terminal
+         // marker cannot roll the usual pre-stream way. pipeUpstreamStream
+         // invokes refire at most once, only for genuine upstream truncation
+         // with the client still attached — client aborts and clean terminals
+         // never re-fire. Public practice matches: gateways retry the request
+         // (LiteLLM router fallbacks); SSE resume is not a thing (the API has
+         // no range semantics). The host abandons partial tool calls on
+         // incomplete turns, so the re-fired turn yields a fresh complete
+         // answer instead of a dead stop.
+         let midStreamRefires = 0;
          pipeUpstreamStream(
           Readable.fromWeb(
            response.body as unknown as WebReadableStream,
@@ -1385,6 +1396,54 @@ export function startProxy(
           reqId,
           servedIssuer ?? "direct",
           streamCloak,
+          {
+           refire: async () => {
+            if (midStreamRefires >= 1) return null;
+            midStreamRefires += 1;
+            const cutter = servedIssuer ?? "direct";
+            log(
+             "warn",
+             `responses stream truncated on ${cutter === "direct" ? "direct upstream" : `relay ${cutter}`} — re-firing once on next relay`,
+             { model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url, relay: cutter },
+             reqId,
+            );
+            let retryRes: Response;
+            // Mark the cutter BEFORE re-sending: candidate ordering partitions
+            // healthy-first, so only a pre-marked (cooling) cutter guarantees
+            // the re-fire rolls to a sibling instead of retrying the relay
+            // that just dropped us. A mark here is deserved either way — the
+            // relay demonstrably cut a live stream. (If the re-fire itself
+            // finds nothing usable, the pipe fallthrough may add its own mark
+            // on socket-error paths; bounded by the 4x escalation cap.)
+            if (cutter !== "direct") markRelayFailure(cutter, 0, "stream truncated mid-stream");
+            try {
+             retryRes = await sendViaRelay(bodyForUpstream);
+             if (responsesRequest) {
+              retryRes = await retryWithoutReasoningEncryption(
+               retryRes,
+               requestBody,
+               sendViaRelay,
+               reqId,
+               conversationKey,
+              );
+             }
+            } catch {
+             return null;
+            }
+            if (!retryRes.ok || !retryRes.body) {
+             try {
+              await retryRes.body?.cancel();
+             } catch { }
+             return null;
+            }
+            relayResponse = retryRes;
+            recordUpstreamSuccess("zen", { sessionKey, canary: isCanary });
+            if (responsesRequest && conversationKey !== null && retryRes.ok && issuerReported) {
+             rememberIssuerRelay(conversationKey, servedIssuer);
+            }
+            return Readable.fromWeb(retryRes.body as unknown as WebReadableStream);
+           },
+          },
          );
         } else {
          if (!response.ok) {
