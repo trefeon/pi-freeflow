@@ -745,6 +745,8 @@ export function pipeUpstreamStream(
   const cut = nodeStream;
   upstreamEnded = false;
   nodeStream = next;
+  sseBuffer = "";
+  terminalScanCarry = Buffer.alloc(0);
   watch(next);
   try {
    if (!cut.destroyed) cut.destroy();
@@ -805,11 +807,11 @@ export function pipeUpstreamStream(
    try {
     if (isError) {
      res.write(
-      `\nevent: response.failed\ndata: {"type":"response.failed","response":{"status":"failed","error":{"code":"stream_error","message":${JSON.stringify(errorMsg || "Upstream stream disconnected unexpectedly")}}}}\n\n`,
+      `\n\nevent: response.failed\ndata: {"type":"response.failed","response":{"status":"failed","error":{"code":"stream_error","message":${JSON.stringify(errorMsg || "Upstream stream disconnected unexpectedly")}}}}\n\n`,
      );
     } else {
      res.write(
-      `\nevent: response.incomplete\ndata: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"cancelled"}}}\n\n`,
+      `\n\nevent: response.incomplete\ndata: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"cancelled"}}}\n\n`,
      );
     }
     hasTerminalEvent = true;
@@ -822,7 +824,7 @@ export function pipeUpstreamStream(
    } catch { }
   } else if (!isResponsesApi && totalChunks > 0) {
    try {
-    res.write("\ndata: [DONE]\n\n");
+    res.write("\n\ndata: [DONE]\n\n");
     hasTerminalEvent = true;
    } catch { }
   }
@@ -860,6 +862,8 @@ export function pipeUpstreamStream(
   }
   upstreamEnded = false;
   nodeStream = next;
+  sseBuffer = "";
+  terminalScanCarry = Buffer.alloc(0);
   watch(next);
   log("debug", "mid-stream refire: continuing turn on replacement stream", { totalChunks, totalBytes }, rid);
   return true;
@@ -902,59 +906,22 @@ export function pipeUpstreamStream(
      );
     }
    }
-   if (cloakState && cloak) {
-    // Cloaked stream: buffer across chunks so event names split mid-chunk
-    // still match, rewrite complete SSE blocks, and drop injected calls.
-    sseBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-    let boundary = sseBoundary.exec(sseBuffer);
-    while (boundary) {
-     const block = sseBuffer.slice(0, boundary.index);
-     sseBuffer = sseBuffer.slice(boundary.index + boundary[0].length);
+   // Buffer across chunks into complete SSE blocks delimited by double-newline.
+   // Forwarding only complete blocks guarantees that network chunk boundaries
+   // never split JSON strings on the wire or leave unterminated syntax when
+   // mid-stream refire or truncation occurs.
+   sseBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+   let boundary = sseBoundary.exec(sseBuffer);
+   while (boundary) {
+    const block = sseBuffer.slice(0, boundary.index);
+    sseBuffer = sseBuffer.slice(boundary.index + boundary[0].length);
+    if (cloakState && cloak) {
      const rewritten = rewriteSseBlock(block, cloakState, cloak);
      if (rewritten !== null) forwardText(`${rewritten}\n\n`);
-     boundary = sseBoundary.exec(sseBuffer);
+    } else {
+     forwardText(`${block}\n\n`);
     }
-    return;
-   }
-   // Always scan the FULL chunk plus the small carry from the previous
-   // view. SSE chunks are KBs at most, so includes() over everything
-   // is negligible against correctness — the removed head/tail windows
-   // are exactly what let markers buried mid-chunk or split across
-   // adjacent chunks escape and cause duplicate synthetic terminals.
-   const buf =
-    typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-   const scanBuf =
-    terminalScanCarry.length > 0
-     ? Buffer.concat([terminalScanCarry, buf])
-     : buf;
-   const scanned = scanBuf.toString("utf8");
-   if (!sawToolCall && TOOL_CALL_MARKERS.some((m) => scanned.includes(m))) sawToolCall = true;
-   if (!hasTerminalEvent && checkTerminalEvent(scanned)) {
-    // Upstream-issued transient model failure on a text-only turn: hold the
-    // frame for one silent resume instead of terminating (tool turns veto
-    // inside holdModelFailureForRefire and keep the terminal below).
-    if (isTransientModelFailureFrame(scanned) && holdModelFailureForRefire(chunk)) return;
-    hasTerminalEvent = true;
-   }
-   terminalScanCarry = Buffer.from(scanBuf.subarray(Math.max(0, scanBuf.length - 32)));
-
-   const canContinue = res.write(chunk);
-   if (canContinue === false && !nodeStream.destroyed) {
-    // Backpressure: pause the upstream source until the client
-    // socket drains, instead of buffering an unbounded amount into
-    // the response. 'drain' might never fire if the client closes —
-    // the close handlers below destroy the stream regardless of
-    // its paused state.
-    nodeStream.pause();
-    const onDrain = () => {
-     res.off("drain", onDrain);
-     if (!nodeStream.destroyed) nodeStream.resume();
-    };
-    res.once("drain", onDrain);
-   }
-   const maybeFlush = res as unknown as { flush?: () => void };
-   if (typeof maybeFlush.flush === "function") {
-    maybeFlush.flush();
+    boundary = sseBoundary.exec(sseBuffer);
    }
   } catch { }
  };
@@ -985,9 +952,13 @@ export function pipeUpstreamStream(
     res.writeHead(502, { "content-type": "application/json" });
    } else if (isInternalAbort) {
     clientAborted = true;
+    sseBuffer = "";
+    terminalScanCarry = Buffer.alloc(0);
     ensureTerminalEvent(false, errorMsg || "stream interrupted", false);
    } else {
     if (await tryRefire()) return;
+    sseBuffer = "";
+    terminalScanCarry = Buffer.alloc(0);
     ensureTerminalEvent(!isSubstantial(totalChunks, totalBytes), errorMsg, true);
    }
    if (!res.writableEnded) {
@@ -1003,11 +974,17 @@ export function pipeUpstreamStream(
   upstreamEnded = true;
   // Cloaked streams hold the trailing incomplete block: flush it (rewritten)
   // ahead of the terminal-marker check so a coalesced final event still counts.
-  if (cloakState && cloak && sseBuffer.trim() !== "") {
+  if (sseBuffer.trim() !== "") {
    const tail = sseBuffer;
    sseBuffer = "";
-   const rewritten = rewriteSseBlock(tail, cloakState, cloak);
-   if (rewritten !== null) forwardText(`${rewritten}\n\n`);
+   if (checkTerminalEvent(tail)) {
+    if (cloakState && cloak) {
+     const rewritten = rewriteSseBlock(tail, cloakState, cloak);
+     if (rewritten !== null) forwardText(`${rewritten}\n\n`);
+    } else {
+     forwardText(tail);
+    }
+   }
   }
   if (hasTerminalEvent) recordOnce(false);
   const elapsed = ((Date.now() - startAt) / 1000).toFixed(1);
@@ -1054,11 +1031,15 @@ export function pipeUpstreamStream(
     if (clientAborted || upstreamEnded) {
      // Client disconnect teardown or post-end cleanup — the relay
      // is not at fault; still give the host a terminal event.
+     sseBuffer = "";
+     terminalScanCarry = Buffer.alloc(0);
      ensureTerminalEvent(false, "stream interrupted by client", false);
     } else {
      // Same offer as the clean-end path above: one silent re-fire before
      // marking this relay and terminating the turn.
      if (await tryRefire()) return;
+     sseBuffer = "";
+     terminalScanCarry = Buffer.alloc(0);
      // Upstream socket died mid-stream with no error event.
      // For muse-spark large payloads: raxtant 514KB failed but feoni 802KB
      // succeeded with same 2.6MB in — so this is edge-specific, not pure

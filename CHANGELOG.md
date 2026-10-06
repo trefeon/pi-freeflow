@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.32.2
+
+### Patch Changes
+
+- Prevent JSON parse errors on interrupted responses: network packet boundaries split mid-delta no longer produce unterminated string syntax errors when a turn is retried or terminated.
+
 ## 1.32.1
 
 ### Patch Changes

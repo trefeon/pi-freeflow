@@ -1159,7 +1159,7 @@ test("cut stream's late events after successful rescue cannot corrupt the rescue
 			const req = mockPipeReq();
 			const res = new MockPipeRes();
 			const refireCalls = { n: 0 };
-			let releaseRefire: (s: Readable | null) => void = () => {};
+			let releaseRefire: (s: Readable | null) => void = () => { };
 			const refireGate = new Promise<Readable | null>((resolve) => { releaseRefire = resolve; });
 			pipeUpstreamStream(
 				cutStream,
@@ -1344,6 +1344,186 @@ test("held failure with a dead rescue relay still forwards the genuine verdict",
 					0,
 					"a failed rescue of a model fault never counts as a relay truncation",
 				);
+			} finally {
+				fetchMock.mock.restore();
+			}
+		} finally {
+			_resetUpstreamHealthForTest();
+			resetAllRelayHealth();
+			setActiveRelayState(priorState, false);
+			if (server) {
+				const { promise, resolve } = Promise.withResolvers<void>();
+				server.close(() => resolve());
+				await promise;
+			}
+		}
+	});
+});
+
+test("mid-stream failure with chunk boundary split mid-delta preserves SSE framing without unterminated string", async () => {
+	await withIsolatedSandboxFiles(async () => {
+		clearSandboxFiles();
+		const priorState = getActiveRelayState();
+		seedPool();
+		const { server, port } = await startProxy(PROXY_PORT);
+		const effectivePort = port ?? PROXY_PORT;
+		const localPrefix = `http://127.0.0.1:${effectivePort}`;
+		const realFetch = globalThis.fetch.bind(globalThis);
+		const hits: Record<string, number> = {};
+		try {
+			const fetchMock = test.mock.method(
+				globalThis,
+				"fetch",
+				async (url: unknown, init?: RequestInit) => {
+					const u = String(url);
+					if (u.startsWith(localPrefix)) return realFetch(u, init);
+					if (u.startsWith(RELAY_A)) {
+						hits.A = (hits.A ?? 0) + 1;
+						return new Response(
+							new ReadableStream({
+								start(controller) {
+									// Chunk 1 ends in the middle of a delta string:
+									controller.enqueue(enc.encode('event: response.created\ndata: {"type":"response.created"}\n\ndata: {"type":"response.output_text.delta","delta":"part'));
+									// Chunk 2 finishes the delta and carries the transient model failure:
+									controller.enqueue(enc.encode('ial-0"}\n\nevent: response.failed\ndata: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"The model failed to generate a response"}}}\n\n'));
+									controller.close();
+								},
+							}),
+							{ status: 200, headers: { "content-type": "text/event-stream" } },
+						);
+					}
+					if (u.startsWith(RELAY_B)) {
+						hits.B = (hits.B ?? 0) + 1;
+						return fullStream();
+					}
+					throw new Error(`unexpected upstream fetch in test: ${u}`);
+				},
+			);
+			try {
+				const res = await fetch(`${localPrefix}/v1/responses`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						model: MODEL,
+						stream: true,
+						input: "mid-stream retry e2e",
+						tools: [
+							{ type: "function", name: "bash" },
+							{ type: "function", name: "read" },
+							{ type: "function", name: "edit" },
+							{ type: "function", name: "write" },
+							{ type: "function", name: "glob" },
+							{ type: "function", name: "grep" },
+						],
+					}),
+				});
+				assert.equal(res.status, 200);
+				const text = await res.text();
+				const blocks = text.split(/\r?\n\r?\n/).filter((b) => b.trim().length > 0);
+				for (const block of blocks) {
+					for (const line of block.split(/\r?\n/)) {
+						if (line.startsWith("data:")) {
+							const data = line.slice(5).trim();
+							if (data && data !== "[DONE]") {
+								assert.doesNotThrow(
+									() => JSON.parse(data),
+									`Every data line must be valid JSON without syntax errors, got: ${data}`,
+								);
+							}
+						}
+					}
+				}
+				assert.ok(text.includes("response.completed"), "rescued turn must complete");
+				assert.equal(hits.A, 1);
+				assert.equal(hits.B, 1);
+			} finally {
+				fetchMock.mock.restore();
+			}
+		} finally {
+			_resetUpstreamHealthForTest();
+			resetAllRelayHealth();
+			setActiveRelayState(priorState, false);
+			if (server) {
+				const { promise, resolve } = Promise.withResolvers<void>();
+				server.close(() => resolve());
+				await promise;
+			}
+		}
+	});
+});
+
+test("mid-stream cut mid-delta with dead rescue relay terminates cleanly without unterminated string", async () => {
+	await withIsolatedSandboxFiles(async () => {
+		clearSandboxFiles();
+		const priorState = getActiveRelayState();
+		seedPool();
+		const { server, port } = await startProxy(PROXY_PORT);
+		const effectivePort = port ?? PROXY_PORT;
+		const localPrefix = `http://127.0.0.1:${effectivePort}`;
+		const realFetch = globalThis.fetch.bind(globalThis);
+		const hits: Record<string, number> = {};
+		try {
+			const fetchMock = test.mock.method(
+				globalThis,
+				"fetch",
+				async (url: unknown, init?: RequestInit) => {
+					const u = String(url);
+					if (u.startsWith(localPrefix)) return realFetch(u, init);
+					if (u.startsWith(RELAY_A)) {
+						hits.A = (hits.A ?? 0) + 1;
+						return new Response(
+							new ReadableStream({
+								start(controller) {
+									controller.enqueue(enc.encode('event: response.created\ndata: {"type":"response.created"}\n\ndata: {"type":"response.output_text.delta","delta":"part'));
+									controller.close();
+								},
+							}),
+							{ status: 200, headers: { "content-type": "text/event-stream" } },
+						);
+					}
+					if (u.startsWith(RELAY_B)) {
+						hits.B = (hits.B ?? 0) + 1;
+						return new Response("relay down", { status: 400, headers: { "content-type": "text/plain" } });
+					}
+					throw new Error(`unexpected upstream fetch in test: ${u}`);
+				},
+			);
+			try {
+				const res = await fetch(`${localPrefix}/v1/responses`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						model: MODEL,
+						stream: true,
+						input: "mid-stream retry e2e",
+						tools: [
+							{ type: "function", name: "bash" },
+							{ type: "function", name: "read" },
+						],
+					}),
+				});
+				assert.equal(res.status, 200);
+				const text = await res.text();
+				const blocks = text.split(/\r?\n\r?\n/).filter((b) => b.trim().length > 0);
+				for (const block of blocks) {
+					for (const line of block.split(/\r?\n/)) {
+						if (line.startsWith("data:")) {
+							const data = line.slice(5).trim();
+							if (data && data !== "[DONE]") {
+								assert.doesNotThrow(
+									() => JSON.parse(data),
+									`Every data line must be valid JSON without syntax errors, got: ${data}`,
+								);
+							}
+						}
+					}
+				}
+				assert.ok(
+					text.includes("response.failed") || text.includes("response.incomplete"),
+					"failed rescue must inject synthetic terminal",
+				);
+				assert.equal(hits.A, 1);
+				assert.equal(hits.B, 1);
 			} finally {
 				fetchMock.mock.restore();
 			}
