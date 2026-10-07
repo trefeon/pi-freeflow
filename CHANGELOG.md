@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.33.0
+
+### Minor Changes
+
+- One new free model, picked the same way as the rest (`/model` → `freeflow` → pick):
+
+  - **Ling 3.1 Flash** on KiloCode (`inclusionai/ling-3.1-flash`, short name `ling-3.1-flash:kilo`) — 262K context, text answers.
+
+### Patch Changes
+
+- Remove four free models that stopped serving upstream, so they no longer appear in the model list:
+
+  - **MiMo V2.5** on OpenCode (`mimo-v2.5-free`) — upstream answers `401 Model is not supported`.
+  - **Exo** on OpenCode (`exo-free`) — upstream answers `503 Endpoint is unavailable`.
+  - **Space Bunny Alpha** on KiloCode (`stealth/space-bunny-alpha`) — upstream answers `404 does not exist`.
+  - **Qwen 3.8 27B** on KiloCode (`qwen/qwen3.8-27b:free`) — upstream answers `404 currently unavailable`.
+
+  All four are excluded permanently, so a stale on-disk catalog or a later catalog refresh cannot bring them back.
+
+- Requests that ask for a thinking level a model does not offer no longer fail: the level is clamped to the highest level that model supports (previously only Muse Spark was covered — now every model is), and a chat-style `response_format` left on a responses request is dropped instead of rejected upstream.
+
 ## 1.32.2
 
 ### Patch Changes
