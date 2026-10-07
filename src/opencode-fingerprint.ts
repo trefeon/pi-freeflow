@@ -38,6 +38,35 @@ import {
  type FindGlobRestore,
  type FingerprintToolName,
 } from "./tool-translation.ts";
+import { getModelDef } from "./models.ts";
+import type { ThinkingLevel } from "./types.ts";
+
+/** Effort levels in descending priority (off excluded — clamping to off is never correct). */
+const EFFORT_DESCENDING: ThinkingLevel[] = ["max", "xhigh", "high", "medium", "low", "minimal"];
+
+/**
+ * Find the highest supported effort for a model whose thinkingLevelMap
+ * declares the requested effort as null. Returns null when no clamp is
+ * needed (effort is supported or model has no map).
+ */
+function clampedEffortFor(model: string, effort: string): string | null {
+ const def = getModelDef(model);
+ if (!def?.thinkingLevelMap) return null;
+ const map = def.thinkingLevelMap;
+ // "off" means disable reasoning entirely — never clamp it even when map says null
+ if (effort.toLowerCase() === "off") return null;
+ // "ultra" is an unofficial alias for beyond-max; treat as "max"
+ const key = (effort.toLowerCase() === "ultra" ? "max" : effort.toLowerCase()) as ThinkingLevel;
+ // Effort is supported (non-null) → no clamp
+ if (key in map && map[key] !== null && map[key] !== undefined) return null;
+ // Effort key is unknown and not "ultra" → let upstream decide
+ if (!(key in map) && effort.toLowerCase() !== "ultra") return null;
+ // Find highest supported effort
+ for (const level of EFFORT_DESCENDING) {
+  if (map[level] !== null && map[level] !== undefined) return level;
+ }
+ return null;
+}
 
 /**
  * Safely extract the tool name whether formatted in Chat Completions style
@@ -262,14 +291,15 @@ export function ensureMessagesFingerprintTools(body: Record<string, unknown>, om
  * - `max_tokens` / `max_completion_tokens` become `max_output_tokens` (copied
  *   when absent, dropped either way).
  * - `temperature` / `top_p` are dropped (Responses rejects them).
+ * - `response_format` is dropped (Chat Completions field, Responses rejects it).
  * - `parallel_tool_calls: false` is dropped; absent-or-true rides verbatim.
  * - `tool_choice` is auto-or-absent: `"none"` (string or `{ type: "none" }`)
  *   is dropped, everything else rides (named choices still retarget find->glob).
  * - `store` defaults to false (never persisted server-side).
- * - spark reasoning effort clamps `max` / `ultra` to `xhigh`: the spark
- *   thinkingLevelMap declares `max: null` (unoffered) and upstream serves at
- *   most `xhigh`, so a stale or hand-built `max`/`ultra` effort would 400.
- *   Only spark model ids are clamped; `off: null` stays untouched everywhere.
+ * - Reasoning effort is clamped per model: when the model's thinkingLevelMap
+ *   declares the requested effort as null (unsupported), the effort is clamped
+ *   to the highest supported level. Covers all OpenCode models generically
+ *   (muse-spark, mimo, nemotron, etc.), not just a single model family.
  * Zen-responses only: chat/messages paths keep their own fields, and Kilo/Cline
  * bodies never reach here (the proxy fingerprints Zen bodies exclusively).
  */
@@ -287,23 +317,28 @@ export function normalizeResponsesBody(body: Record<string, unknown>): void {
  delete body.max_completion_tokens;
  delete body.temperature;
  delete body.top_p;
+ delete body.response_format;
  if (body.parallel_tool_calls === false) delete body.parallel_tool_calls;
  const choice = body.tool_choice;
  if (typeof choice === "string" ? choice.toLowerCase() === "none" : (
   choice !== null && typeof choice === "object" && !Array.isArray(choice)
   && (choice as Record<string, unknown>).type === "none"
  )) delete body.tool_choice;
- if (typeof body.model === "string" && /muse-spark/i.test(body.model)) {
+ if (typeof body.model === "string") {
   const reasoning = body.reasoning;
   if (reasoning !== null && typeof reasoning === "object" && !Array.isArray(reasoning)) {
    const effort = (reasoning as Record<string, unknown>).effort;
-   if (typeof effort === "string" && (effort.toLowerCase() === "max" || effort.toLowerCase() === "ultra")) {
-    (reasoning as Record<string, unknown>).effort = "xhigh";
+   if (typeof effort === "string") {
+    const clamped = clampedEffortFor(body.model as string, effort);
+    if (clamped !== null) (reasoning as Record<string, unknown>).effort = clamped;
    }
   }
   for (const key of ["reasoning_effort", "reasoningEffort"] as const) {
    const flat = body[key];
-   if (typeof flat === "string" && (flat.toLowerCase() === "max" || flat.toLowerCase() === "ultra")) body[key] = "xhigh";
+   if (typeof flat === "string") {
+    const clamped = clampedEffortFor(body.model as string, flat);
+    if (clamped !== null) body[key] = clamped;
+   }
   }
  }
  if (body.store === undefined) body.store = false;

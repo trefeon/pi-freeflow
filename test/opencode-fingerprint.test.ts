@@ -531,3 +531,46 @@ test("enforceOpencodeFingerprint: chat path drops tool_choice none, keeps auto-o
 	enforceOpencodeFingerprint(absent, "/v1/chat/completions");
 	assert.ok(!("tool_choice" in absent), "no choice imposed");
 });
+
+test("normalizeResponsesBody: drops response_format leftover from chat completions", () => {
+	const body: Record<string, unknown> = {
+		model: "muse-spark-1.3-contributor-free",
+		input: "hi",
+		response_format: { type: "json_object" },
+	};
+	normalizeResponsesBody(body);
+	assert.ok(!("response_format" in body), "response_format stripped on responses path");
+});
+
+test("normalizeResponsesBody: generalized model effort clamping for mimo and nemotron", () => {
+	// mimo-v2.6-flash-free: max is null, highest non-null is xhigh (mapped to high)
+	const mimo: Record<string, unknown> = {
+		model: "mimo-v2.6-flash-free",
+		input: "hi",
+		reasoning_effort: "max",
+		reasoningEffort: "ultra",
+	};
+	normalizeResponsesBody(mimo);
+	assert.equal(mimo.reasoning_effort, "xhigh", "mimo max clamped to highest supported xhigh");
+	assert.equal(mimo.reasoningEffort, "xhigh", "mimo ultra clamped to highest supported xhigh");
+
+	// nemotron-3-ultra-free: max is null, highest non-null is xhigh
+	const nemo: Record<string, unknown> = {
+		model: "nemotron-3-ultra-free",
+		input: "hi",
+		reasoning_effort: "max",
+		reasoningEffort: "ultra",
+	};
+	normalizeResponsesBody(nemo);
+	assert.equal(nemo.reasoning_effort, "xhigh", "nemotron max clamped to highest supported xhigh");
+	assert.equal(nemo.reasoningEffort, "xhigh", "nemotron ultra clamped to highest supported xhigh");
+
+	// nested reasoning.effort works as well
+	const nested: Record<string, unknown> = {
+		model: "mimo-v2.6-flash-free",
+		input: "hi",
+		reasoning: { effort: "max" },
+	};
+	normalizeResponsesBody(nested);
+	assert.equal((nested.reasoning as Record<string, unknown>).effort, "xhigh", "nested reasoning effort clamped");
+});
