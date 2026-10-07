@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **33 curated free models** across three upstream providers: **OpenCode Zen**, **KiloCode Gateway**, and **Cline**.
+pi-freeflow provides unified access to **31 curated free models** across three upstream providers: **OpenCode Zen**, **KiloCode Gateway**, and **Cline**.
 
 ## Upstream Protocol Distinction
 
@@ -22,7 +22,7 @@ pi-freeflow provides unified access to **33 curated free models** across three u
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: keyless — no `Authorization` header at all (the gateway rejects a placeholder credential with `401 INVALID_TOKEN`; 200 req/hr per IP)
-- **Models**: 17 models with OpenRouter-style thinking format
+- **Models**: 16 models with OpenRouter-style thinking format
 
 ### Cline (`/api/v1/chat/completions`)
 - **Endpoint**: `https://api.cline.bot/api/v1/chat/completions`
@@ -30,15 +30,14 @@ pi-freeflow provides unified access to **33 curated free models** across three u
 - **Models**: 5 models from Cline's rotating free promo; requests roll across saved logins on the daily free limit
 - **Routing**: direct only, never through the relay pool
 
-## 33 Model Specifications
+## 31 Model Specifications
 
-### OpenCode Zen (11 models)
+### OpenCode Zen (10 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
 | `muse-spark-1.2-contributor-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `muse-spark-1.3-contributor-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
-| `mimo-v2.5-free` | 1,048,576 | 131,072 | minimal..xhigh (3 values)* | ✅ |
 | `mimo-v2.6-flash-free` | 1,048,576 | 131,072 | minimal..xhigh (3 values)* | ✅ |
 | `nemotron-3.5-lightning-free` | 1,000,000 | 262,144 | minimal..xhigh | ❌ |
 | `nemotron-3-ultra-free` | 1,000,000 | 128,000 | minimal..xhigh | ❌ |
@@ -47,8 +46,7 @@ pi-freeflow provides unified access to **33 curated free models** across three u
 | `longcat-2.5-preview-free` | 1,000,000 | 131,072 | minimal..max | ✅ |
 | `fledge-alpha-free` | 1,048,576 | 131,072 | low..max | ✅ |
 | `ling-3.1-flash-free` | 262,144 | 32,768 | minimal..max | ❌ |
-
-### KiloCode Gateway (17 models)
+### KiloCode Gateway (16 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -67,8 +65,7 @@ pi-freeflow provides unified access to **33 curated free models** across three u
 | `inkling-small` | 1,048,576 | 262,144 | OpenRouter | ✅ |
 | `ling-3.0-flash-sante` | 262,144 | 32,768 | OpenRouter | ❌ |
 | `step-3.7-flash` | 262,144 | 262,144 | OpenRouter | ✅ |
-| `space-bunny-alpha` | 1,000,000 | 524,288 | OpenRouter | ✅ |
-| `qwen3.8-27b` | 262,144 | 235,929 | OpenRouter | ✅ |
+| `ling-3.1-flash-kilo` | 262,144 | 32,768 | OpenRouter | ❌ |
 
 ### Cline (5 models)
 
@@ -87,9 +84,8 @@ Cline free models come from a rotating per-account promo and need a browser logi
 ## Upstream Routing Matrix
 
 | Upstream | Models | Host | Wire Protocol | Auth |
-| :--- | :--- | :--- | :--- | :--- |
-| **OpenCode Zen** | 11 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat) | Keyless |
-| **KiloCode Gateway** | 17 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
+| **OpenCode Zen** | 10 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat) | Keyless |
+| **KiloCode Gateway** | 16 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
 | **Cline** | 5 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 
 ## Stealth previews

@@ -58,7 +58,7 @@ import type {
 
 // ── 1. Fresh Bootstrap & Static Catalog Registration ─────────────────────────
 
-test("E2E [1/10] fresh new user bootstrap registers 33 models with zero-latency catalog", async () => {
+test("E2E [1/10] fresh new user bootstrap registers 31 models with zero-latency catalog", async () => {
  let registeredProviderName = "";
  let registeredProviderConfig: ProviderConfig | undefined;
  const registeredCommands: Record<string, Omit<RegisteredCommand, "name">> = {};
@@ -92,13 +92,18 @@ test("E2E [1/10] fresh new user bootstrap registers 33 models with zero-latency 
  const hasXPreview = registeredProviderConfig.models.some((m) => m.id === "x-preview-f-free");
  const hasHy3 = registeredProviderConfig.models.some((m) => m.id === "hy3-free" || m.id === "tencent/hy3:free");
  const hasLongcat = registeredProviderConfig.models.some((m) => m.id === "meituan/longcat-2.0-free");
- const hasJev = registeredProviderConfig.models.some((m) => m.id === "jev-1.13-free");
- assert.equal(hasJev, false);
- assert.equal(hasV4Flash, false);
- assert.equal(hasXPreview, false);
- assert.equal(hasHy3, false);
- assert.equal(hasLongcat, false);
-
+	const hasJev = registeredProviderConfig.models.some((m) => m.id === "jev-1.13-free");
+	const hasMimoV25 = registeredProviderConfig.models.some((m) => m.id === "mimo-v2.5-free");
+	const hasBunnyAlpha = registeredProviderConfig.models.some((m) => m.id === "stealth/space-bunny-alpha");
+	const hasQwen38 = registeredProviderConfig.models.some((m) => m.id === "qwen/qwen3.8-27b:free");
+	assert.equal(hasJev, false);
+	assert.equal(hasMimoV25, false);
+	assert.equal(hasBunnyAlpha, false);
+	assert.equal(hasQwen38, false);
+	assert.equal(hasV4Flash, false);
+	assert.equal(hasXPreview, false);
+	assert.equal(hasHy3, false);
+	assert.equal(hasLongcat, false);
  // Slash command and lifecycle hooks registered
  assert.ok(registeredCommands["freeflow"], "/freeflow command must be registered");
  assert.ok(registeredEvents.session_start, "session_start hook must be registered");
@@ -212,7 +217,7 @@ test("E2E [6/10] model catalog accurately maps thinking formats and source routi
  // Canonical resolution
  assert.equal(resolveCanonicalModelId("muse-spark-1.2-contributor-free"), "muse-spark-1.2-contributor-free");
  assert.equal(resolveCanonicalModelId("muse-spark-1.3-contributor-free"), "muse-spark-1.3-contributor-free");
- assert.equal(resolveCanonicalModelId("mimo-v2.5-free"), "mimo-v2.5-free");
+	assert.equal(resolveCanonicalModelId("mimo-v2.6-flash-free"), "mimo-v2.6-flash-free");
 
  // Kilo models identification
  assert.equal(isKiloModel("dots-3-note-preview"), true);
@@ -230,8 +235,8 @@ test("E2E [6/10] model catalog accurately maps thinking formats and source routi
    source: "opencode",
   },
   {
-   id: "mimo-v2.5-free",
-   name: "Mimo",
+			id: "mimo-v2.6-flash-free",
+			name: "Mimo",
    contextWindow: 128000,
    maxTokens: 4096,
    reasoning: true,

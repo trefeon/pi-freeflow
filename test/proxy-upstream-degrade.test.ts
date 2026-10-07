@@ -40,7 +40,7 @@ import { KILO_MODEL_IDS, resolveCanonicalModelId } from "../src/models.ts";
 
 const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
 const TEST_PORT = 19291;
-const ZEN_MODEL = "mimo-v2.5-free";
+const ZEN_MODEL = "mimo-v2.6-flash-free";
 const RESPONSES_MODEL = "muse-spark-1.3-contributor-free";
 const GATE_BODY = JSON.stringify({
  error: {

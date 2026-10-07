@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 33 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 31 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **33 free models** | 11 from OpenCode Zen, 17 from KiloCode Gateway, 5 from Cline, context windows up to 1M. Full list below. | **$0** |
+| **31 free models** | 10 from OpenCode Zen, 16 from KiloCode Gateway, 5 from Cline, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own Cloudflare Workers and Vercel Edge relays. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Every model has a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`. | **$0** |
@@ -185,13 +185,13 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 33 models, one command
+### 31 models, one command
 
 ```bash
 /model → freeflow → pick
 ```
 
-#### OpenCode Zen (11 models), Responses and Chat API
+#### OpenCode Zen (10 models), Responses and Chat API
 
 Good defaults for long coding sessions and agentic work.
 
@@ -199,7 +199,6 @@ Good defaults for long coding sessions and agentic work.
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `muse-spark-1.2-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
 | `muse-spark-1.3-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
-| `mimo-v2.5-free` | Xiaomi MiMo | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh`\* | ✅ |
 | `mimo-v2.6-flash-free` | Xiaomi MiMo | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh`\* | ✅ |
 | `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `minimal … xhigh` | ❌ |
 | `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `minimal … xhigh` | ❌ |
@@ -209,7 +208,7 @@ Good defaults for long coding sessions and agentic work.
 | `fledge-alpha-free` | Stealth preview (lab undisclosed) | **1M** (1.048.576) | **131K** (131.072) | `low / high / max` | ✅ |
 | `ling-3.1-flash-free` | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal … max` | ❌ |
 
-#### KiloCode Gateway (17 models), OpenRouter compatible
+#### KiloCode Gateway (16 models), OpenRouter compatible
 
 Keyless access. Short aliases work for every row (the full ID is in parentheses).
 
@@ -229,9 +228,8 @@ Keyless access. Short aliases work for every row (the full ID is in parentheses)
 | `content-safety` (`nvidia/...:free`) | NVIDIA | **128K** (128.000) | **8K** (8.192) | ❌ *(non-thinking)* | ✅ |
 | `ling-3.0-flash-sante` (`inclusionai/ling-3.0-flash-sante:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
 | `step-3.7-flash` (`stepfun/...:free`) | StepFun | **262K** (262.144) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
-| `space-bunny-alpha` (`stealth/...`) | Stealth preview (lab undisclosed) | **1M** (1.000.000) | **512K** (524.288) | `minimal…xhigh`\* | ✅ |
 | `inkling-small` (`thinkingmachines/inkling-small:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
-| `qwen3.8-27b` (`qwen/...:free`) | Alibaba Qwen | **262K** (262.144) | **235K** (235.929) | `minimal…xhigh`\* | ✅ |
+| `ling-3.1-flash-kilo` (`inclusionai/ling-3.1-flash`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
 
 \* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.
 
@@ -344,7 +342,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
 src/
 ├── index.ts          # extension entry, lifecycle hooks
-├── models.ts         # 33-model catalog definitions
+├── models.ts         # 31-model catalog definitions
 ├── catalog.ts        # model catalog cache (24h disk)
 ├── proxy.ts          # local proxy server (127.0.0.1:28180)
 ├── relay.ts          # relay fetch, rolling on retryable failures

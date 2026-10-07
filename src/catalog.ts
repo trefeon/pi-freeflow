@@ -42,6 +42,10 @@ import type {
  *   reproduced across separate runs on different days while every other Zen model answers.
  * - inclusionai/ling-3.0-flash-fin:free: gone from Kilo (2026-10-01) — keyless chat 404
  *   "The requested model ... does not exist".
+ * - mimo-v2.5-free: decommissioned upstream (2026-10-07) — HTTP 401 "Model mimo-v2.5-free is not supported".
+ * - exo-free: unserved upstream (2026-10-07) — HTTP 503 "Error from provider (Console): Upstream request failed: Endpoint is unavailable.".
+ * - stealth/space-bunny-alpha: gone from Kilo (2026-10-07) — keyless chat 404 "The requested model ... does not exist".
+ * - qwen/qwen3.8-27b:free: gone from Kilo (2026-10-07) — keyless chat 404 "The requested model is currently unavailable.".
  */
 export const DEAD_MODEL_IDS = new Set<string>([
  "jev-1.13-free",
@@ -61,13 +65,17 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "inclusionai/ling-3.0-flash-vl:free",
  "ling-3.0-flash-fin-free",
  "inclusionai/ling-3.0-flash-fin:free",
+ "mimo-v2.5-free",
+ "exo-free",
+ "stealth/space-bunny-alpha",
+ "qwen/qwen3.8-27b:free",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.
  * Upstream lists paid models alongside free ones (e.g. claude-fable-5-1,
  * claude-opus-4-*, gemini-3-*) so a bare upstream merge leaks paid entries that
  * fail with 401 Missing API key. Known static IDs without a free suffix
- * (e.g. big-pickle, stealth/space-bunny-alpha) stay allowed via MODEL_MAP.
+ * (e.g. big-pickle, inclusionai/ling-3.1-flash) stay allowed via MODEL_MAP.
  */
 export function isFreeCatalogId(id: string): boolean {
  if (typeof id !== "string" || id.length === 0) return false;
@@ -100,7 +108,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 33 verified models for 0ms instant availability.
+ * Initialized with all 31 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
  ...m,

@@ -162,7 +162,7 @@ const mockPi: ExtensionAPI = {
 
 // ── 1. Fresh install ────────────────────────────────────────────────────────
 
-test("user flow [1/6] fresh install registers 33 models, binds a proxy, and onboards exactly once", async () => {
+test("user flow [1/6] fresh install registers 31 models, binds a proxy, and onboards exactly once", async () => {
  await withIsolatedSandboxFiles(async () => {
   clearSandboxFiles();
 
@@ -215,7 +215,7 @@ test("user flow [1/6] fresh install registers 33 models, binds a proxy, and onbo
    assert.equal(
     registeredConfig.models.length,
     ALL_MODELS.length,
-    "all 33 static models must be registered",
+				"all 31 static models must be registered",
    );
    assert.match(registeredConfig.baseUrl, /127\.0\.0\.1/, "baseUrl must point to loopback");
 
@@ -233,7 +233,7 @@ test("user flow [1/6] fresh install registers 33 models, binds a proxy, and onbo
    assert.equal(fs.readFileSync(ONBOARDED_FLAG_FILE, "utf8"), "1");
    assert.match(
     msgs[0],
-    /^freeflow ready: 33 free models via local proxy 127\.0\.0\.1:28180\. /,
+				/^freeflow ready: 31 free models via local proxy 127\.0\.0\.1:28180\. /,
     "welcome must announce the local proxy",
    );
 

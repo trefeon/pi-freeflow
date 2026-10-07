@@ -244,12 +244,14 @@ test("mergeCatalog drops paid upstream ids like claude-fable-5-1 (issue #6)", ()
 });
 
 test("isFreeCatalogId accepts -free, :free, /free and known ids, rejects paid and dead", () => {
- assert.equal(isFreeCatalogId("mimo-v2.5-free"), true);
- assert.equal(isFreeCatalogId("thinkingmachines/inkling-small:free"), true);
- assert.equal(isFreeCatalogId("stepfun/step-3.7-flash:free"), true);
- assert.equal(isFreeCatalogId("lab/new-model/free"), true);
- assert.equal(isFreeCatalogId("big-pickle"), true);
- assert.equal(isFreeCatalogId("stealth/space-bunny-alpha"), true);
+	assert.equal(isFreeCatalogId("mimo-v2.6-flash-free"), true);
+	assert.equal(isFreeCatalogId("mimo-v2.5-free"), false);
+	assert.equal(isFreeCatalogId("thinkingmachines/inkling-small:free"), true);
+	assert.equal(isFreeCatalogId("stepfun/step-3.7-flash:free"), true);
+	assert.equal(isFreeCatalogId("lab/new-model/free"), true);
+	assert.equal(isFreeCatalogId("big-pickle"), true);
+	assert.equal(isFreeCatalogId("inclusionai/ling-3.1-flash"), true);
+	assert.equal(isFreeCatalogId("stealth/space-bunny-alpha"), false);
  assert.equal(isFreeCatalogId("claude-fable-5-1"), false);
  assert.equal(isFreeCatalogId("nex-agi/nex-n2.5-pro:free"), false);
  assert.equal(isFreeCatalogId("z-ai/glm-5.2:free"), false);

@@ -18,7 +18,7 @@ import { readRecentLogs } from "../src/logger.ts";
 import { _resetFreeTierHintForTest, _resetUpstreamHealthForTest } from "../src/upstream-health.ts";
 
 const RESPONSES_MODEL = "muse-spark-1.3-contributor-free";
-const CHAT_MODEL = "mimo-v2.5-free";
+const CHAT_MODEL = "mimo-v2.6-flash-free";
 
 const CHAT_SSE = 'data: {"id":"chatcmpl-1","model":"x","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}\n\ndata: [DONE]\n\n';
 const RESPONSES_SSE = 'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","output":[]}}\n\n';

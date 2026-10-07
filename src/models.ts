@@ -1,9 +1,9 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 33 verified free models (live-verified 2026-09-28):
+ * Defines the 31 verified free models (live-verified 2026-10-07):
  * - 10 OpenCode Zen models (2 Responses API + 8 Chat Completions)
- * - 18 KiloCode Keyless Gateway models (OpenRouter format)
+ * - 16 KiloCode Keyless Gateway models (OpenRouter format)
  * - 5 Cline direct-only models (per-user pool)
  */
 
@@ -47,23 +47,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
    medium: "medium",
    high: "high",
    xhigh: "xhigh",
-   max: null,
-  },
- },
- {
-  id: "mimo-v2.5-free",
-  name: "MiMo V2.5 [OpenCode]",
-  reasoning: true,
-  contextWindow: 1_048_576,
-  maxTokens: 131_072,
-  input: ["text", "image"],
-  thinkingLevelMap: {
-   off: null,
-   minimal: "low",
-   low: "low",
-   medium: "medium",
-   high: "high",
-   xhigh: "high",
    max: null,
   },
  },
@@ -357,19 +340,6 @@ export const KILO_MODELS: ModelDef[] = [
   thinkingLevelMap: KILO_REASONING_MAP,
  },
  {
-  // Added 2026-09-28: live on the Kilo free list (isFree:true, 0/0
-  // pricing, 1M context, text+image in) + keyless chat 200. Passes
-  // isFreeCatalogId via MODEL_MAP (no :free suffix by design).
-  id: "stealth/space-bunny-alpha",
-  name: "Space Bunny Alpha [Kilo]",
-  reasoning: true,
-  contextWindow: 1_000_000,
-  maxTokens: 524_288,
-  input: ["text", "image"],
-  thinkingFormat: "openrouter",
-  thinkingLevelMap: KILO_REASONING_MAP,
- },
- {
   id: "thinkingmachines/inkling-small:free",
   name: "Inkling Small [Kilo]",
   reasoning: true,
@@ -390,12 +360,13 @@ export const KILO_MODELS: ModelDef[] = [
   thinkingLevelMap: KILO_REASONING_MAP,
  },
  {
-  id: "qwen/qwen3.8-27b:free",
-  name: "Qwen 3.8 27B [Kilo]",
+  // Added 2026-10-07: live on Kilo free list (isFree:true, 0/0 pricing, 262K ctx)
+  id: "inclusionai/ling-3.1-flash",
+  name: "Ling 3.1 Flash [Kilo]",
   reasoning: true,
   contextWindow: 262_144,
-  maxTokens: 235_929,
-  input: ["text", "image"],
+  maxTokens: 32_768,
+  input: ["text"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
  },
@@ -517,7 +488,6 @@ export const MODEL_ALIASES: Record<string, string> = {
  "content-safety": "nvidia/nemotron-3.5-content-safety:free",
  "ling-3.0-flash-sante": "inclusionai/ling-3.0-flash-sante:free",
  "step-3.7-flash": "stepfun/step-3.7-flash:free",
- "space-bunny-alpha": "stealth/space-bunny-alpha",
  "inkling-small": "thinkingmachines/inkling-small:free",
  "mimo-v2.6-flash": "mimo-v2.6-flash-free",
  "space-bunny": "space-bunny-free",
@@ -525,7 +495,7 @@ export const MODEL_ALIASES: Record<string, string> = {
  "longcat": "longcat-2.5-preview-free",
  "fledge-alpha": "fledge-alpha-free",
  "ling-3.1-flash": "ling-3.1-flash-free",
- "qwen3.8-27b": "qwen/qwen3.8-27b:free",
+ "ling-3.1-flash:kilo": "inclusionai/ling-3.1-flash",
  // provider-prefixed short aliases (slash-normalized)
  "laguna-s-2.1:free": "poolside/laguna-s-2.1:free",
  "laguna-xs-2.1:free": "poolside/laguna-xs-2.1:free",
@@ -559,9 +529,8 @@ export const CLINE_MODEL_IDS = new Set<string>([
   .filter(([_, target]) => CLINE_MODELS.some((cm) => cm.id === target))
   .map(([alias]) => alias),
 ]);
-
 /**
- * Combined list of all 33 static free models (canonical)
+ * Combined list of all 31 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS];
 
