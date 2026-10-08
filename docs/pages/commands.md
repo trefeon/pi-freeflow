@@ -40,3 +40,4 @@ Logs are written to `~/.pi/agent/pi-freeflow.log` with auto-rotation at 10MB (10
 | **Model list not updating** | 24-hour disk cache TTL active | Run `/freeflow refresh` or delete the cache file |
 | **Relay 404 / broken URL** | Old or deleted edge deployment | Run `/freeflow remove <url>` to clean up |
 | **OpenCode 429 FreeUsageLimitError** | Daily OpenCode quota exhausted | Wait for UTC reset or route through an egress relay |
+| **Tool call renders as raw JSON** | Free model returned arguments that do not match the tool's declared shape | Automatic — the proxy repairs unambiguous packets against the tool schema. If it persists, the model invented an ambiguous shape; report it with the model name |

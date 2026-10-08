@@ -40,6 +40,7 @@ src/
 ├── relay.ts           # Multi-cloud relay fetch with failover and direct fallback
 ├── relay-state.ts     # Persistent relay pool state and ordering logic
 ├── stream-pipe.ts     # Resilient SSE stream pass-through with thinking sniffing
+├── tool-args.ts       # Schema-driven repair of malformed model tool-call arguments
 ├── types.ts           # Core domain types, Pi/OMP ExtensionAPI and UI contracts
 └── update-checker.ts  # Background version check + update notification
 ```
@@ -69,3 +70,30 @@ To prevent network burst storms when multiple subagents boot simultaneously, the
 - **Zero-buffering SSE**: `res.flushHeaders()` and `res.write()` ensure tokens stream immediately
 - **Disconnect cleanup**: `req.on("close")`, `req.on("error")` immediately destroy upstream streams
 - **Proxy timeout**: 300 seconds (5 minutes) for heavy prompt evaluations
+
+## Tool-Call Argument Repair
+
+Free models reliably lose tool-argument fidelity once a request carries a full
+agent tool inventory. Measured live against OpenCode Zen with the real host
+`todo` schema: with one tool the same model emitted canonical arguments, but at
+roughly seventy tools it returned the phases JSON-encoded into the wrong field,
+wrapped in an extra object, or under names the schema never declared — so the
+host rendered every phase as one raw JSON string instead of real task lines.
+
+`src/tool-args.ts` repairs those packets against the schema the caller itself
+declared, so the fix is schema-driven rather than a per-model quirk list:
+
+- **Envelope unwrap** — a declared array that arrived wrapped in a single-key
+  object (`items: { item: [...] }`) is unwrapped.
+- **JSON-string decode** — a declared object or array that arrived as a JSON
+  string is parsed. Declared `string` properties are never decoded.
+- **Role-based promotion** — invented keys are moved onto the declared
+  properties they left missing, but only when every key has exactly one
+  structurally compatible target. Nothing is matched by name similarity, and
+  an ambiguous element discards the whole move.
+
+Arguments change only when the result validates against the declared schema.
+Well-formed calls stay byte-identical, tools without structured parameters are
+never buffered (so their arguments still stream incrementally), and truncated
+JSON is never completed. The repair runs on all three wire shapes, streamed and
+aggregated, for every supported upstream.

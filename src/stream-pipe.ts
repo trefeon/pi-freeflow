@@ -17,6 +17,7 @@ import {
 } from "./config.ts";
 import type { CaseRestoreMap, FindGlobRestore } from "./opencode-fingerprint.ts";
 import { restoreToolNameForCaller } from "./tool-translation.ts";
+import { repairToolArguments } from "./tool-args.ts";
 
 /**
  * A premature stream end counts as "substantial" only when BOTH thresholds
@@ -153,8 +154,9 @@ export function _resetSseStatsForTest(): void {
  * on the streamed path, so this section mirrors the aggregate semantics
  * event-by-event: function_call deltas whose name is in this request's
  * injected list are dropped, surviving names get caller casing (Bash) and the
- * Pi find->glob rename restored. State is per-stream (no globals); the
- * non-stream path is untouched.
+ * Pi find->glob rename restored. Completed tool arguments are additionally
+ * repaired against `argSchemas` on the terminal events that carry the whole
+ * payload. State is per-stream (no globals); the non-stream path is untouched.
  */
 export interface StreamCloakOptions {
  /** False when the caller declared no tools (chat folds dropped args to text). */
@@ -167,6 +169,8 @@ export interface StreamCloakOptions {
  injected?: readonly string[];
  /** Request pathname; decides the Responses vs Chat event shapes. */
  pathname: string;
+ /** Caller tool schemas for argument repair; undefined/empty means byte-identical. */
+ argSchemas?: ReadonlyMap<string, Record<string, unknown>>;
 }
 
 /** Per-stream drop tracking (delta events carry no name, only an index/id). */
@@ -175,6 +179,22 @@ export interface SseStreamCloakState {
  responsesDroppedByItemId: Map<string, boolean>;
  chatDroppedByIndex: Map<number, boolean>;
  messagesDroppedByIndex: Map<number, boolean>;
+ /** Output index -> tool name, so nameless argument deltas can find their schema. */
+ responsesNameByIndex: Map<number, string>;
+ /** Anthropic block index -> tool name, same purpose for input_json deltas. */
+ messagesNameByIndex: Map<number, string>;
+ /** Chat tool-call index -> restored tool name. */
+ chatNameByIndex: Map<number, string>;
+ /**
+ * Argument fragments for tool calls whose schema admits a repair, keyed the
+ * same way as the name maps above. Streaming APIs deliver arguments in
+ * fragments, so a malformed packet can only be judged once complete: those
+ * fragments are held here and re-emitted, repaired, on the call's terminal
+ * event. Tools absent from `argSchemas` are never buffered, so their
+ * arguments still stream incrementally exactly as before.
+ */
+ chatArgsByIndex: Map<number, string>;
+ messagesArgsByIndex: Map<number, string>;
 }
 
 export function createSseStreamCloakState(): SseStreamCloakState {
@@ -183,6 +203,11 @@ export function createSseStreamCloakState(): SseStreamCloakState {
   responsesDroppedByItemId: new Map(),
   chatDroppedByIndex: new Map(),
   messagesDroppedByIndex: new Map(),
+  responsesNameByIndex: new Map(),
+  messagesNameByIndex: new Map(),
+  chatNameByIndex: new Map(),
+  chatArgsByIndex: new Map(),
+  messagesArgsByIndex: new Map(),
  };
 }
 
@@ -200,11 +225,21 @@ export function shouldBypassStreamCloak(cloak?: StreamCloakOptions): boolean {
  // Tool-less callers must still see tool calls stripped when the
  // injected record exists (legacy direct calls keep everything).
  if (!cloak.callerHadTools && cloak.injected !== undefined) return false;
+ // A repairable schema means fragmented arguments must be buffered.
+ if (cloak.argSchemas !== undefined && cloak.argSchemas.size > 0) return false;
  return true;
 }
 
 function isInjectedName(name: unknown, injected?: readonly string[]): boolean {
  return typeof name === "string" && injected !== undefined && injected.includes(name.toLowerCase());
+}
+
+/** True when the request declared a schema for this tool, so its arguments can be repaired. */
+function isRepairableTool(
+ name: string,
+ schemas: ReadonlyMap<string, Record<string, unknown>> | undefined,
+): boolean {
+ return schemas !== undefined && schemas.size > 0 && schemas.has(name.trim().toLowerCase());
 }
 
 /** Caller casing first, then the Pi find->glob rename (upstream glob->find). */
@@ -261,8 +296,9 @@ function rewriteResponsesBlock(
  const hadEventPrefix = /^\s*event:/m.test(block);
 
  // New function_call item announced: drop when injected; tool-less callers
- // drop every function_call, never leaking calls downstream. Ids and
- // arguments ride verbatim (only the name is ever rewritten).
+ // drop every function_call, never leaking calls downstream. Ids ride
+ // verbatim; `output_item.done` carries the whole argument string, so that is
+ // where schema repair applies (name-only deltas cannot be repaired yet).
  if (type === "response.output_item.added" || type === "response.output_item.done") {
   const item = parsed.item;
   if (item && typeof item === "object" && !Array.isArray(item)) {
@@ -275,6 +311,12 @@ function rewriteResponsesBlock(
      return null;
     }
     const restored = restoreStreamName(rec.name, cloak);
+    if (typeof parsed.output_index === "number") state.responsesNameByIndex.set(parsed.output_index, restored);
+    if (type === "response.output_item.done") {
+     rec.name = restored;
+     rec.arguments = repairToolArguments(restored, typeof rec.arguments === "string" ? rec.arguments : "", cloak.argSchemas);
+     return emitSseBlock(event, JSON.stringify(parsed), hadEventPrefix);
+    }
     if (restored !== rec.name) {
      rec.name = restored;
      return emitSseBlock(event, JSON.stringify(parsed), hadEventPrefix);
@@ -284,13 +326,24 @@ function rewriteResponsesBlock(
   return block;
  }
 
- // Argument deltas carry no name: earlier added/done decisions rule by index/id.
- // Tool-less callers drop every function_call_arguments delta outright.
+// Argument deltas carry no name: earlier added/done decisions rule by index/id.
+// Tool-less callers drop every function_call_arguments delta outright. The
+// `.done` event carries the whole `arguments` string, so it is repairable.
  if (type === "response.function_call_arguments.delta" || type === "response.function_call_arguments.done") {
   if (!cloak.callerHadTools) return null;
   const droppedByIndex = typeof parsed.output_index === "number" && state.responsesDroppedByIndex.get(parsed.output_index) === true;
   const droppedById = typeof parsed.item_id === "string" && state.responsesDroppedByItemId.get(parsed.item_id) === true;
   if (droppedByIndex || droppedById) return null;
+  if (type === "response.function_call_arguments.done" && typeof parsed.arguments === "string") {
+   const name = typeof parsed.output_index === "number" ? state.responsesNameByIndex.get(parsed.output_index) : undefined;
+   if (name !== undefined) {
+    const repairedArgs = repairToolArguments(name, parsed.arguments, cloak.argSchemas);
+    if (repairedArgs !== parsed.arguments) {
+     parsed.arguments = repairedArgs;
+     return emitSseBlock(event, JSON.stringify(parsed), hadEventPrefix);
+    }
+   }
+  }
   return block;
  }
 
@@ -374,6 +427,28 @@ function rewriteChatBlock(
    continue;
   }
   const d = delta as Record<string, unknown>;
+  // Terminal chunk for this choice: re-emit every buffered tool call's whole
+  // argument packet, repaired. The fragments never went out, so this is the
+  // first and only time the client sees them. Runs before the tool_calls
+  // branch because the terminal chunk usually carries an empty delta.
+  // Indices flushed on this block: their arguments are final, so the
+  // per-delta loop below must not buffer them a second time.
+  const flushedIndices = new Set<number>();
+  if (c.finish_reason && state.chatArgsByIndex.size > 0) {
+   const flushed: unknown[] = [];
+   for (const [idx, args] of state.chatArgsByIndex) {
+    const name = state.chatNameByIndex.get(idx);
+    if (name === undefined) continue;
+    flushedIndices.add(idx);
+    flushed.push({ index: idx, type: "function", function: { name, arguments: repairToolArguments(name, args, cloak.argSchemas) } });
+   }
+   state.chatArgsByIndex.clear();
+   state.chatNameByIndex.clear();
+   if (flushed.length > 0) {
+    d.tool_calls = [...(Array.isArray(d.tool_calls) ? d.tool_calls : []), ...flushed];
+    changed = true;
+   }
+  }
   if (!Array.isArray(d.tool_calls)) {
    if (Object.keys(d).length > 0) allDeltasEmpty = false;
    continue;
@@ -407,6 +482,19 @@ function rewriteChatBlock(
      changed = true;
     }
     state.chatDroppedByIndex.delete(idx);
+    state.chatNameByIndex.set(idx, restored);
+    if (isRepairableTool(restored, cloak.argSchemas) && !flushedIndices.has(idx)) {
+     // Hold this call's arguments: the packet is only judgeable once whole,
+     // so it is re-emitted repaired on the terminal finish_reason chunk.
+     state.chatArgsByIndex.set(idx, "");
+     if (fnRec && typeof fnRec.arguments === "string" && fnRec.arguments !== "") {
+      state.chatArgsByIndex.set(idx, fnRec.arguments);
+      delete fnRec.arguments;
+      changed = true;
+     }
+     kept.push(tc);
+     continue;
+    }
     kept.push(tc);
     continue;
    }
@@ -415,8 +503,14 @@ function rewriteChatBlock(
     changed = true;
     continue;
    }
-   kept.push(tc);
+  if (state.chatArgsByIndex.has(idx) && fnRec && typeof fnRec.arguments === "string") {
+   state.chatArgsByIndex.set(idx, (state.chatArgsByIndex.get(idx) ?? "") + fnRec.arguments);
+   delete fnRec.arguments;
+   changed = true;
+   continue;
   }
+  kept.push(tc);
+ }
   if (kept.length > 0) {
    d.tool_calls = kept;
    allDeltasEmpty = false;
@@ -522,17 +616,25 @@ function rewriteMessagesBlock(
    }
    if (typeof rec.name === "string") {
     const restored = restoreStreamName(rec.name, cloak);
-    if (restored !== rec.name) {
-     rec.name = restored;
-     return emitSseBlock(event, JSON.stringify(parsed), hadEventPrefix);
+    rec.name = restored;
+    state.messagesNameByIndex.set(index, restored);
+    if (isRepairableTool(restored, cloak.argSchemas)) {
+     state.messagesArgsByIndex.set(index, typeof rec.input === "string" ? rec.input : "");
     }
+    return emitSseBlock(event, JSON.stringify(parsed), hadEventPrefix);
    }
   }
   return block;
  }
- // Input deltas carry no name: the start verdict rules by index.
+ // Input deltas carry no name: the start verdict rules by index. Repairable
+ // tools buffer their fragments, re-emitted whole on content_block_stop.
  if (type === "content_block_delta") {
   if (state.messagesDroppedByIndex.get(index) === true) return null;
+  const delta = parsed.delta as Record<string, unknown> | undefined;
+  if (state.messagesArgsByIndex.has(index) && delta && typeof delta.partial_json === "string") {
+   state.messagesArgsByIndex.set(index, (state.messagesArgsByIndex.get(index) ?? "") + delta.partial_json);
+   return null;
+  }
   return block;
  }
  // Block close for a dropped tool_use carries no name: drop it too.
@@ -541,7 +643,18 @@ function rewriteMessagesBlock(
    state.messagesDroppedByIndex.delete(index);
    return null;
   }
-  return block;
+  const buffered = state.messagesArgsByIndex.get(index);
+  if (buffered === undefined) return block;
+  const name = state.messagesNameByIndex.get(index) ?? "";
+  state.messagesArgsByIndex.delete(index);
+  state.messagesNameByIndex.delete(index);
+  const flushed: Record<string, unknown> = {
+   type: "content_block_delta",
+   index,
+   delta: { type: "input_json_delta", partial_json: repairToolArguments(name, buffered, cloak.argSchemas) },
+  };
+  const stopBlock = emitSseBlock(event, JSON.stringify(parsed), hadEventPrefix);
+  return `${emitSseBlock("content_block_delta", JSON.stringify(flushed), false)}\n\n${stopBlock}`;
  }
  return block;
 }

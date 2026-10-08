@@ -38,6 +38,7 @@ import {
  type FindGlobRestore,
  type FingerprintToolName,
 } from "./tool-translation.ts";
+import { buildArgRepairSchemas, repairToolArguments, repairToolArgumentsValue } from "./tool-args.ts";
 import { getModelDef } from "./models.ts";
 import type { ThinkingLevel } from "./types.ts";
 
@@ -358,6 +359,11 @@ export function normalizeResponsesBody(body: Record<string, unknown>): void {
  * for downstream cloaking. Cloaking strips by `injected` only: names in
  * `injectedReal` were served with executable definitions, so model calls to
  * them execute downstream instead of being cloaked.
+ *
+ * `argSchemas` (lowercased caller tool name -> declared parameters) lets
+ * downstream repair malformed arguments against the caller's own schema; it
+ * is empty when no caller tool declares a structured parameter, so such
+ * requests keep streaming byte-identically.
  */
 export function enforceOpencodeFingerprint(
  body: Record<string, unknown>,
@@ -370,6 +376,7 @@ export function enforceOpencodeFingerprint(
  findGlob: FindGlobRestore;
  injected: string[];
  injectedReal: string[];
+ argSchemas: Map<string, Record<string, unknown>>;
 } {
  const clientRequestedStream = body.stream === true;
  const callerHadTools = Array.isArray(body.tools) && body.tools.length > 0;
@@ -398,6 +405,10 @@ export function enforceOpencodeFingerprint(
  if (body.tool_choice !== undefined) {
   body.tool_choice = retargetToolChoiceForUpstream(body.tool_choice, findGlob) as Record<string, unknown> | string;
  }
+ // Captured before translation and injection: the map is keyed by CALLER tool
+ // name (what arrives downstream), and injected placeholders must not be
+ // repairable.
+ const argSchemas = buildArgRepairSchemas(Array.isArray(body.tools) ? body.tools : []);
  const callerUpstream = new Set<string>();
  const callerNames = new Set<string>();
  if (Array.isArray(body.tools)) {
@@ -440,7 +451,7 @@ export function enforceOpencodeFingerprint(
  // Empty-placeholder callers stay silent via the COMPAT description and the
  // output-aggregator; real OMP definitions execute normally.
 
- return { clientRequestedStream, callerHadTools, addedTools: after > before, caseRestore, findGlob, injected, injectedReal };
+ return { clientRequestedStream, callerHadTools, addedTools: after > before, caseRestore, findGlob, injected, injectedReal, argSchemas };
 }
 
 /**
@@ -497,6 +508,7 @@ function cloakChatMessage(
  caseRestore?: CaseRestoreMap,
  findGlob?: FindGlobRestore,
  injected?: readonly string[],
+ argSchemas?: ReadonlyMap<string, Record<string, unknown>>,
 ): void {
  if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
  const m = msg as Record<string, unknown>;
@@ -524,11 +536,9 @@ function cloakChatMessage(
   if (tc && typeof tc === "object" && !Array.isArray(tc)) {
    const fn = (tc as Record<string, unknown>).function;
    if (fn && typeof fn === "object" && !Array.isArray(fn) && typeof (fn as Record<string, unknown>).name === "string") {
-    (fn as Record<string, unknown>).name = restoreCallerName(
-     (fn as Record<string, unknown>).name as string,
-     caseRestore,
-     findGlob,
-    );
+    const f = fn as Record<string, unknown>;
+    f.name = restoreCallerName(f.name as string, caseRestore, findGlob);
+    f.arguments = repairToolArguments(f.name as string, typeof f.arguments === "string" ? f.arguments : "", argSchemas);
    }
   }
   kept.push(tc);
@@ -543,6 +553,7 @@ export function sseToChatCompletionJson(
  caseRestore?: CaseRestoreMap,
  findGlob?: FindGlobRestore,
  injected?: readonly string[],
+ argSchemas?: ReadonlyMap<string, Record<string, unknown>>,
 ): Record<string, unknown> {
  const events = parseSseEvents(sseText);
  let id = "chatcmpl-freeflow";
@@ -596,7 +607,7 @@ export function sseToChatCompletionJson(
      }
      // Choice contains a pre-assembled message: cloak before returning.
      if (c.message) {
-      cloakChatMessage(c.message, callerHadTools, caseRestore, findGlob, injected);
+      cloakChatMessage(c.message, callerHadTools, caseRestore, findGlob, injected, argSchemas);
       return parsed as Record<string, unknown>;
      }
     }
@@ -625,7 +636,10 @@ export function sseToChatCompletionJson(
   const kept = injected === undefined
    ? toolCalls
    : toolCalls.filter((tc) => !injected.includes(tc.function.name.toLowerCase()));
-  for (const tc of kept) tc.function.name = restoreCallerName(tc.function.name, caseRestore, findGlob);
+  for (const tc of kept) {
+   tc.function.name = restoreCallerName(tc.function.name, caseRestore, findGlob);
+   tc.function.arguments = repairToolArguments(tc.function.name, tc.function.arguments, argSchemas);
+  }
   if (kept.length > 0) message.tool_calls = kept;
  }
 
@@ -650,9 +664,17 @@ export function sseToChatCompletionJson(
  * place. Only names this request injected are removed; caller calls keep
  * restored names (caller casing, upstream glob back to caller find). Tool-less
  * callers never see function_call items: every call is dropped, never leaked.
- * Ids and arguments ride verbatim (only the name is ever rewritten).
+ * Ids ride verbatim; arguments are repaired against the caller's declared
+ * schema when it says the emitted shape cannot be right.
  */
-function cloakResponsesObject(resp: unknown, callerHadTools = true, caseRestore?: CaseRestoreMap, findGlob?: FindGlobRestore, injected?: readonly string[]): void {
+function cloakResponsesObject(
+ resp: unknown,
+ callerHadTools = true,
+ caseRestore?: CaseRestoreMap,
+ findGlob?: FindGlobRestore,
+ injected?: readonly string[],
+ argSchemas?: ReadonlyMap<string, Record<string, unknown>>,
+): void {
  if (!resp || typeof resp !== "object" || Array.isArray(resp)) return;
  const output = (resp as Record<string, unknown>).output;
  if (!Array.isArray(output)) return;
@@ -663,7 +685,11 @@ function cloakResponsesObject(resp: unknown, callerHadTools = true, caseRestore?
    if (rec.type === "function_call") {
     if (typeof rec.name === "string" && injected !== undefined && injected.includes(rec.name.toLowerCase())) continue;
     if (!callerHadTools) continue;
-    if (typeof rec.name === "string") rec.name = restoreCallerName(rec.name, caseRestore, findGlob);
+    if (typeof rec.name === "string") {
+     const name = restoreCallerName(rec.name, caseRestore, findGlob);
+     rec.name = name;
+     rec.arguments = repairToolArguments(name, typeof rec.arguments === "string" ? rec.arguments : "", argSchemas);
+    }
    }
   }
   kept.push(item);
@@ -681,6 +707,7 @@ export function sseToResponsesJson(
  caseRestore?: CaseRestoreMap,
  findGlob?: FindGlobRestore,
  injected?: readonly string[],
+ argSchemas?: ReadonlyMap<string, Record<string, unknown>>,
 ): Record<string, unknown> {
  const events = parseSseEvents(sseText);
  // 1. Highest fidelity: response.completed event carries the final full response object
@@ -689,7 +716,7 @@ export function sseToResponsesJson(
   try {
    const parsed = JSON.parse(ev.data);
    if (parsed?.type === "response.completed" && parsed.response && typeof parsed.response === "object") {
-    cloakResponsesObject(parsed.response, callerHadTools, caseRestore, findGlob, injected);
+    cloakResponsesObject(parsed.response, callerHadTools, caseRestore, findGlob, injected, argSchemas);
     return parsed.response as Record<string, unknown>;
    }
   } catch { }
@@ -700,7 +727,7 @@ export function sseToResponsesJson(
   try {
    const parsed = JSON.parse(ev.data);
    if (parsed?.response && typeof parsed.response === "object") {
-    cloakResponsesObject(parsed.response, callerHadTools, caseRestore, findGlob, injected);
+    cloakResponsesObject(parsed.response, callerHadTools, caseRestore, findGlob, injected, argSchemas);
     return parsed.response as Record<string, unknown>;
    }
   } catch { }
@@ -709,7 +736,7 @@ export function sseToResponsesJson(
  try {
   const parsed = JSON.parse(sseText);
   if (parsed && typeof parsed === "object") {
-   cloakResponsesObject(parsed, callerHadTools, caseRestore, findGlob, injected);
+   cloakResponsesObject(parsed, callerHadTools, caseRestore, findGlob, injected, argSchemas);
    return parsed;
   }
  } catch { }
@@ -726,8 +753,8 @@ export function sseToResponsesJson(
  * Only names this request injected are removed; caller blocks keep restored
  * names (caller casing, upstream glob back to caller find). Tool-less callers
  * never see tool_use: stray placeholder input folds to text, matching the
- * SSE aggregator fallback below. Block objects ride verbatim (only names
- * are ever rewritten).
+ * SSE aggregator fallback below. Ids ride verbatim; `input` is repaired
+ * against the caller's declared schema when the emitted shape cannot be right.
  */
 function cloakMessagesContent(
  msg: unknown,
@@ -735,6 +762,7 @@ function cloakMessagesContent(
  caseRestore?: CaseRestoreMap,
  findGlob?: FindGlobRestore,
  injected?: readonly string[],
+ argSchemas?: ReadonlyMap<string, Record<string, unknown>>,
 ): void {
  if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
  const content = (msg as Record<string, unknown>).content;
@@ -751,7 +779,11 @@ function cloakMessagesContent(
    const rec = block as Record<string, unknown>;
    const isInjected = typeof rec.name === "string" && injected !== undefined && injected.includes(rec.name.toLowerCase());
    if (callerHadTools && !isInjected) {
-    if (typeof rec.name === "string") rec.name = restoreCallerName(rec.name, caseRestore, findGlob);
+    if (typeof rec.name === "string") {
+     const name = restoreCallerName(rec.name, caseRestore, findGlob);
+     rec.name = name;
+     rec.input = repairToolArgumentsValue(name, rec.input, argSchemas);
+    }
     kept.push(block);
    } else if (!callerHadTools) {
     let text = "";
@@ -787,6 +819,7 @@ export function sseToMessagesJson(
  caseRestore?: CaseRestoreMap,
  findGlob?: FindGlobRestore,
  injected?: readonly string[],
+ argSchemas?: ReadonlyMap<string, Record<string, unknown>>,
 ): Record<string, unknown> {
  const events = parseSseEvents(sseText);
  let id = "msg_freeflow";
@@ -848,7 +881,7 @@ export function sseToMessagesJson(
    continue;
   }
   if (type === "message" && parsed.role !== undefined) {
-   cloakMessagesContent(parsed, callerHadTools, caseRestore, findGlob, injected);
+   cloakMessagesContent(parsed, callerHadTools, caseRestore, findGlob, injected, argSchemas);
    return parsed;
   }
  }
@@ -865,7 +898,8 @@ export function sseToMessagesJson(
     } catch {
      input = {};
     }
-    content.push({ type: "tool_use", id: tool.id, name: restoreCallerName(tool.name, caseRestore, findGlob), input });
+    const name = restoreCallerName(tool.name, caseRestore, findGlob);
+    content.push({ type: "tool_use", id: tool.id, name, input: repairToolArgumentsValue(name, input, argSchemas) });
    }
    continue;
   }
@@ -900,6 +934,7 @@ export function convertSseToJson(
  caseRestore?: CaseRestoreMap,
  findGlob?: FindGlobRestore,
  injected?: readonly string[],
+ argSchemas?: ReadonlyMap<string, Record<string, unknown>>,
 ): string {
  if (!sseText || typeof sseText !== "string") return sseText;
  const trimmed = sseText.trim();
@@ -908,14 +943,13 @@ export function convertSseToJson(
  }
  try {
   if (pathname.endsWith("/responses")) {
-   return JSON.stringify(sseToResponsesJson(trimmed, callerHadTools, caseRestore, findGlob, injected));
+   return JSON.stringify(sseToResponsesJson(trimmed, callerHadTools, caseRestore, findGlob, injected, argSchemas));
   }
   if (pathname.endsWith("/messages")) {
-   return JSON.stringify(sseToMessagesJson(trimmed, callerHadTools, caseRestore, findGlob, injected));
+   return JSON.stringify(sseToMessagesJson(trimmed, callerHadTools, caseRestore, findGlob, injected, argSchemas));
   }
-  return JSON.stringify(sseToChatCompletionJson(trimmed, callerHadTools, caseRestore, findGlob, injected));
+  return JSON.stringify(sseToChatCompletionJson(trimmed, callerHadTools, caseRestore, findGlob, injected, argSchemas));
  } catch {
   return sseText;
  }
- return sseText;
 }

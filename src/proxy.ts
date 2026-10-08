@@ -51,6 +51,7 @@ import {
  clineChatBodyFromResponsesBody,
  translateToolsForPath,
 } from "./tool-translation.ts";
+import { buildArgRepairSchemas } from "./tool-args.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
 import { relayFetch } from "./relay.ts";
 import { getActiveRelayState, markRelayFailure, orderedRelayCandidates } from "./relay-state.ts";
@@ -266,6 +267,9 @@ async function handleClineRequest(opts: {
   if (Array.isArray(chatBody.tools)) chatBody.tools = translateToolsForPath(chatBody.tools, "/v1/chat/completions");
   delete chatBody.prompt_cache_key;
  }
+ // Cline bypasses the fingerprint, but its arguments still malform the same
+ // way: capture the caller's own schemas before translation for repair.
+ const argSchemas = buildArgRepairSchemas(Array.isArray(parsedBody.tools) ? parsedBody.tools : []);
  chatBody.stream = true;
  let upstreamRes: Response;
  let limitHint: ClineLimitHint | undefined;
@@ -329,6 +333,9 @@ async function handleClineRequest(opts: {
    req,
    reqId,
    "direct",
+   argSchemas.size > 0
+    ? { callerHadTools: true, argSchemas, pathname: "/v1/chat/completions" }
+    : undefined,
   );
   return;
  }
@@ -344,7 +351,7 @@ async function handleClineRequest(opts: {
   return;
  }
  if (!responsesRequest) {
-  const data = convertSseToJson(sseText, pathname);
+  const data = convertSseToJson(sseText, pathname, true, undefined, undefined, undefined, argSchemas);
   if (!res.headersSent) {
    res.writeHead(upstreamRes.status, { "content-type": "application/json" });
    res.end(data);
@@ -353,7 +360,7 @@ async function handleClineRequest(opts: {
   }
   return;
  }
- const chat = sseToChatCompletionJson(sseText);
+ const chat = sseToChatCompletionJson(sseText, true, undefined, undefined, undefined, argSchemas);
  const resp = chatResponsesJsonFromChatCompletion(chat, model);
  if (clientRequestedStream) {
   if (!res.headersSent) {
@@ -1046,20 +1053,22 @@ export function startProxy(
    let callerHadTools = true;
    let callerCaseRestore: CaseRestoreMap | undefined;
    let callerFindGlob: FindGlobRestore | undefined;
-   let callerInjected: string[] | undefined;
+  let callerInjected: string[] | undefined;
+  let callerArgSchemas: Map<string, Record<string, unknown>> | undefined;
    if (!isKilo && !isCline && parsedBody) {
     const fp = enforceOpencodeFingerprint(parsedBody, target.pathname);
     callerHadTools = fp.callerHadTools;
     callerCaseRestore = fp.caseRestore;
     callerFindGlob = fp.findGlob;
     callerInjected = fp.injected;
+    callerArgSchemas = fp.argSchemas;
     bodyModified = true;
    }
    // Streaming cloak: thread this request's placeholder records into the SSE
    // pipe so streamed deltas get the same strip+restore as aggregated bodies.
    // Kilo/Cline bypass the fingerprint, so their streams stay verbatim.
    const streamCloak: StreamCloakOptions | undefined = !isKilo && !isCline && callerInjected !== undefined
-    ? { callerHadTools, caseRestore: callerCaseRestore, findGlob: callerFindGlob, injected: callerInjected, pathname: target.pathname }
+    ? { callerHadTools, caseRestore: callerCaseRestore, findGlob: callerFindGlob, injected: callerInjected, argSchemas: callerArgSchemas, pathname: target.pathname }
     : undefined;
 
    const isStream = clientRequestedStream;
@@ -1091,6 +1100,9 @@ export function startProxy(
      // the timeout ceiling; the stream phase is owned by
      // pipeUpstreamStream and its close handling.
      const kiloController = new AbortController();
+     // Kilo bodies ride verbatim, but its models malform arguments the same
+     // way: capture the caller's schemas so the reply can be repaired too.
+     const kiloArgSchemas = buildArgRepairSchemas(Array.isArray(parsedBody.tools) ? parsedBody.tools : []);
      const kiloTimeoutId = setTimeout(
       () => kiloController.abort(upstreamTimeoutError()),
       UPSTREAM_HEADER_TIMEOUT_MS,
@@ -1177,9 +1189,9 @@ export function startProxy(
        connection: "keep-alive",
        "x-accel-buffering": "no",
       });
-      // Kilo is fetched directly (not via the relay pool), so pass undefined:
-      // attributing kilo-side stream failures to an unrelated opencode relay
-      // would mark a healthy relay as failed.
+      // Kilo is fetched directly (not via the relay pool), so pass undefined as
+      // the issuer: attributing kilo-side stream failures to an unrelated
+      // opencode relay would mark a healthy relay as failed.
       pipeUpstreamStream(
        Readable.fromWeb(
         response.body as unknown as WebReadableStream,
@@ -1188,11 +1200,21 @@ export function startProxy(
        req,
        reqId,
        undefined,
+       kiloArgSchemas.size > 0
+        ? {
+         callerHadTools: true,
+         argSchemas: kiloArgSchemas,
+         pathname: target.pathname.endsWith("/responses") ? "/v1/responses" : "/v1/chat/completions",
+        }
+        : undefined,
       );
      } else {
-      const data = withRateLimitHint(response.status, await response.text());
-      const ct =
-       response.headers.get("content-type") || "application/json";
+      let rawText = await response.text();
+      if (response.ok && kiloArgSchemas.size > 0) {
+       rawText = convertSseToJson(rawText, target.pathname, true, undefined, undefined, undefined, kiloArgSchemas);
+      }
+      const data = withRateLimitHint(response.status, rawText);
+      const ct = response.headers.get("content-type") || "application/json";
       res.writeHead(response.status, { "content-type": ct });
       res.end(data);
      }
@@ -1458,7 +1480,7 @@ export function startProxy(
           response.headers.get("content-type") ||
           "application/json";
          if (response.ok && (ct.includes("text/event-stream") || rawText.includes("data:"))) {
-          rawText = convertSseToJson(rawText, target.pathname, callerHadTools, callerCaseRestore, callerFindGlob, callerInjected);
+          rawText = convertSseToJson(rawText, target.pathname, callerHadTools, callerCaseRestore, callerFindGlob, callerInjected, callerArgSchemas);
           ct = "application/json";
          }
          const data = isRelayDisabledError(response.status, rawText)
@@ -1647,7 +1669,7 @@ export function startProxy(
       } else if (upstreamRes.body) {
        let rawText = await upstreamRes.text();
        if (upstreamRes.ok && (outHeaders["content-type"]?.includes("text/event-stream") || rawText.includes("data:"))) {
-        rawText = convertSseToJson(rawText, target.pathname, callerHadTools, callerCaseRestore, callerFindGlob, callerInjected);
+        rawText = convertSseToJson(rawText, target.pathname, callerHadTools, callerCaseRestore, callerFindGlob, callerInjected, callerArgSchemas);
         outHeaders["content-type"] = "application/json";
        }
        res.writeHead(upstreamRes.status, outHeaders);
