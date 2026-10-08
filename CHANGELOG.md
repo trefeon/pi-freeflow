@@ -10,6 +10,7 @@
   When a request carries a full set of agent tools, free models often return tool arguments that do not match the tool's declared shape. A planning tool asked for phased tasks could come back with the phases buried inside a JSON-encoded list under the wrong field, wrapped in an extra object, or under names the tool never declared — so the host rendered each phase as one long raw JSON string instead of real task lines.
 
   The proxy now checks returned arguments against the tool schema the caller declared and repairs them when the intended shape is unambiguous, across all three API shapes, streamed and non-streamed, and for every supported model provider. Well-formed calls, calls for tools without structured parameters, and arguments that were cut off mid-stream all pass through untouched.
+- Fix tool calls being rejected with an invalid-arguments error when a model makes several calls in one turn. Some models label every parallel call `0`, so the pieces of different calls were joined together and arrived as one unreadable blob — a planning tool could then reject every update, even a minimal one, and leave its task list stuck mid-turn. Calls are now kept apart by their own identifier, and a call whose text arrives in several pieces still reassembles whole.
 
 ## 1.33.1
 
