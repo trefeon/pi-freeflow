@@ -11,6 +11,7 @@ export default defineConfig({
       { text: 'Stealth Models Watchlist', link: '/pages/stealth-models' },
       { text: 'Multi-Cloud Relays', link: '/pages/relays' },
       { text: 'Commands & Troubleshooting', link: '/pages/commands' },
+      { text: 'OpenCode Free-Tier Gate', link: '/pages/free-tier-gate' },
     ],
     nav: [
       { text: 'Home', link: '/' },
