@@ -317,6 +317,64 @@ test("sseToChatCompletionJson: strips only injected, restores caller casing and 
 	assert.equal(res.choices[0].message.tool_calls[0].function.name, "find", "upstream glob restored to caller find");
 });
 
+test("sseToChatCompletionJson: parallel calls sharing index 0 stay separate", () => {
+	// Observed live from space-bunny-free on 2026-10-08: two tool calls in one
+	// turn, both labelled index 0, each with its own id. Keying fragments on
+	// index alone spliced them into one unparseable argument blob, which the
+	// host rejected with "Unexpected token at position 0" on every retry.
+	const sse = [
+		'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_AAA","type":"function","function":{"name":"todo","arguments":"{\\"i\\":\\"Mark A done\\",\\"op\\":\\"done\\",\\"task\\":\\"alpha\\"}"}}]}}]}',
+		'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_BBB","type":"function","function":{"name":"todo","arguments":"{\\"i\\":\\"Mark B done\\",\\"op\\":\\"done\\",\\"task\\":\\"beta\\"}"}}]}}]}',
+		'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+		"data: [DONE]",
+	].join("\n\n");
+	const res = sseToChatCompletionJson(sse, true) as {
+		choices: Array<{ message: { tool_calls: Array<{ id: string; function: { name: string; arguments: string } }> } }>;
+	};
+	const calls = res.choices[0].message.tool_calls;
+	assert.equal(calls.length, 2, "two parallel calls must not merge into one");
+	assert.deepEqual(calls.map((call) => call.id), ["call_AAA", "call_BBB"], "emission order preserved");
+	for (const call of calls) {
+		assert.equal(call.function.name, "todo", "each call keeps its own name");
+		assert.doesNotThrow(() => JSON.parse(call.function.arguments), `arguments for ${call.id} must parse`);
+	}
+	assert.deepEqual(JSON.parse(calls[0].function.arguments), { i: "Mark A done", op: "done", task: "alpha" });
+	assert.deepEqual(JSON.parse(calls[1].function.arguments), { i: "Mark B done", op: "done", task: "beta" });
+});
+
+test("sseToChatCompletionJson: one call split across deltas still reassembles whole", () => {
+	// The ordinary shape: the first delta carries the id, later ones carry only
+	// `arguments`. Those must rejoin the call the index already opened.
+	const sse = [
+		'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{\\"comm"}}]}}]}',
+		'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"and\\":\\"ls\\"}"}}]}}]}',
+		'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+		"data: [DONE]",
+	].join("\n\n");
+	const res = sseToChatCompletionJson(sse, true) as {
+		choices: Array<{ message: { tool_calls: Array<{ id: string; function: { arguments: string } }> } }>;
+	};
+	const calls = res.choices[0].message.tool_calls;
+	assert.equal(calls.length, 1, "id-less follow-up deltas must not open a second call");
+	assert.equal(calls[0].id, "call_1");
+	assert.deepEqual(JSON.parse(calls[0].function.arguments), { command: "ls" });
+});
+
+test("sseToChatCompletionJson: id-less streams still split on distinct indices", () => {
+	// Providers that send no id at all keep working through the index fallback.
+	const sse = [
+		'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"a\\"}"}},{"index":1,"type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"b\\"}"}}]}}]}',
+		'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+		"data: [DONE]",
+	].join("\n\n");
+	const res = sseToChatCompletionJson(sse, true) as {
+		choices: Array<{ message: { tool_calls: Array<{ function: { arguments: string } }> } }>;
+	};
+	const calls = res.choices[0].message.tool_calls;
+	assert.equal(calls.length, 2);
+	assert.deepEqual(calls.map((call) => JSON.parse(call.function.arguments)), [{ path: "a" }, { path: "b" }]);
+});
+
 test("enforce+sse round trip: caller Bash survives cloak with original casing", () => {
 	const body: Record<string, unknown> = {
 		stream: false,

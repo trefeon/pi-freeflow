@@ -564,10 +564,16 @@ export function sseToChatCompletionJson(
  let reasoningContent = "";
  let role = "assistant";
  let usage: unknown = undefined;
+ // Keyed by tool-call id whenever the provider sends one. Index is NOT
+ // trustworthy: free models routinely label every parallel call `index: 0`,
+ // and merging their fragments produces one unparseable argument blob
+ // (observed live: `{"i":"a","op":"done"}{"i":"b","op":"done"}`). Index is
+ // only the fallback for providers that omit an id entirely.
  const toolCallsMap = new Map<
-  number,
+  string,
   { id: string; type: string; function: { name: string; arguments: string } }
  >();
+ const keyByIndex = new Map<number, string>();
 
  for (const ev of events) {
   if (ev.data === "[DONE]") continue;
@@ -591,8 +597,15 @@ export function sseToChatCompletionJson(
       }
       if (Array.isArray(delta.tool_calls)) {
        for (const tc of delta.tool_calls) {
-        const idx = tc.index ?? 0;
-        const existing = toolCallsMap.get(idx) ?? {
+        // The first delta of a call carries its id; later deltas carry only
+        // `arguments`. A later id-less delta therefore belongs to whatever
+        // call this index already opened.
+        const idx = typeof tc.index === "number" ? tc.index : 0;
+        const hasId = typeof tc.id === "string" && tc.id !== "";
+        let key = hasId ? `id:${tc.id}` : keyByIndex.get(idx);
+        if (key === undefined) key = `idx:${idx}`;
+        if (hasId) keyByIndex.set(idx, key);
+        const existing = toolCallsMap.get(key) ?? {
          id: tc.id || "",
          type: tc.type || "function",
          function: { name: "", arguments: "" },
@@ -601,7 +614,7 @@ export function sseToChatCompletionJson(
         if (tc.type) existing.type = tc.type;
         if (tc.function?.name) existing.function.name += tc.function.name;
         if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
-        toolCallsMap.set(idx, existing);
+        toolCallsMap.set(key, existing);
        }
       }
      }
@@ -617,9 +630,9 @@ export function sseToChatCompletionJson(
   }
  }
 
- const toolCalls = Array.from(toolCallsMap.entries())
-  .sort(([a], [b]) => a - b)
-  .map(([, tc]) => tc);
+ // Map insertion order is emission order, which is what the host expects. The
+ // previous numeric sort assumed the keys were indices; they are now ids.
+ const toolCalls = Array.from(toolCallsMap.values());
 
  const message: Record<string, unknown> = {
   role,
