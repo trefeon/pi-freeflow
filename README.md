@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 31 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 30 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **31 free models** | 10 from OpenCode Zen, 16 from KiloCode Gateway, 5 from Cline, context windows up to 1M. Full list below. | **$0** |
+| **30 free models** | 10 from OpenCode Zen, 15 from KiloCode Gateway, 5 from Cline, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own Cloudflare Workers and Vercel Edge relays. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Every model has a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`. | **$0** |
@@ -185,7 +185,7 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 31 models, one command
+### 30 models, one command
 
 ```bash
 /model → freeflow → pick
@@ -225,7 +225,6 @@ Keyless access. Short aliases work for every row (the full ID is in parentheses)
 | `lfm-2.5` (`liquid/lfm-2.5-2.6b:free`) | Liquid AI | **65K** (65.536) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
 | `kilo-auto` (`kilo-auto/free`) | Kilo Gateway Auto | **256K** (256.000) | **10K** (10.000) | `minimal…xhigh`\* | ❌ |
 | `openrouter` (`openrouter/free`) | OpenRouter Free | **200K** (200.000) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
-| `content-safety` (`nvidia/...:free`) | NVIDIA | **128K** (128.000) | **8K** (8.192) | ❌ *(non-thinking)* | ✅ |
 | `ling-3.0-flash-sante` (`inclusionai/ling-3.0-flash-sante:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
 | `step-3.7-flash` (`stepfun/...:free`) | StepFun | **262K** (262.144) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
 | `inkling-small` (`thinkingmachines/inkling-small:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
@@ -342,7 +341,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
 src/
 ├── index.ts          # extension entry, lifecycle hooks
-├── models.ts         # 31-model catalog definitions
+├── models.ts         # 30-model catalog definitions
 ├── catalog.ts        # model catalog cache (24h disk)
 ├── proxy.ts          # local proxy server (127.0.0.1:28180)
 ├── relay.ts          # relay fetch, rolling on retryable failures

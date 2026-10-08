@@ -46,6 +46,14 @@ import type {
  * - exo-free: unserved upstream (2026-10-07) — HTTP 503 "Error from provider (Console): Upstream request failed: Endpoint is unavailable.".
  * - stealth/space-bunny-alpha: gone from Kilo (2026-10-07) — keyless chat 404 "The requested model ... does not exist".
  * - qwen/qwen3.8-27b:free: gone from Kilo (2026-10-07) — keyless chat 404 "The requested model is currently unavailable.".
+ * - nvidia/nemotron-3.5-content-safety:free: tool-less guardrail model (2026-10-08),
+ *   NOT decommissioned — it answers 200 keyless chat with no tools, but every
+ *   tool-bearing request 404s "No endpoints found that support tool use" (Kilo
+ *   `supported_parameters` lists reasoning only, no tools). It is a 4B
+ *   moderation classifier fine-tuned from Gemma-3-4B that "moderates inputs to
+ *   and responses from LLMs", not a chat model. Same exclusion class as
+ *   jev-1.13-free: live, wrong shape for an agentic harness, so it must never
+ *   re-enter the picker via disk cache or upstream merge.
  */
 export const DEAD_MODEL_IDS = new Set<string>([
  "jev-1.13-free",
@@ -69,6 +77,7 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "exo-free",
  "stealth/space-bunny-alpha",
  "qwen/qwen3.8-27b:free",
+ "nvidia/nemotron-3.5-content-safety:free",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.
@@ -108,7 +117,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 31 verified models for 0ms instant availability.
+ * Initialized with all 30 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
  ...m,

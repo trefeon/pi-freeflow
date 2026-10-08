@@ -58,7 +58,7 @@ import type {
 
 // ── 1. Fresh Bootstrap & Static Catalog Registration ─────────────────────────
 
-test("E2E [1/10] fresh new user bootstrap registers 31 models with zero-latency catalog", async () => {
+test("E2E [1/10] fresh new user bootstrap registers 30 models with zero-latency catalog", async () => {
  let registeredProviderName = "";
  let registeredProviderConfig: ProviderConfig | undefined;
  const registeredCommands: Record<string, Omit<RegisteredCommand, "name">> = {};
