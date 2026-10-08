@@ -1,9 +1,9 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 31 verified free models (live-verified 2026-10-07):
+ * Defines the 30 verified free models (live-verified 2026-10-08):
  * - 10 OpenCode Zen models (2 Responses API + 8 Chat Completions)
- * - 16 KiloCode Keyless Gateway models (OpenRouter format)
+ * - 15 KiloCode Keyless Gateway models (OpenRouter format)
  * - 5 Cline direct-only models (per-user pool)
  */
 
@@ -320,14 +320,6 @@ export const KILO_MODELS: ModelDef[] = [
   thinkingLevelMap: KILO_REASONING_MAP,
  },
  {
-  id: "nvidia/nemotron-3.5-content-safety:free",
-  name: "Nemotron Content Safety [Kilo]",
-  reasoning: false,
-  contextWindow: 128_000,
-  maxTokens: 8_192,
-  input: ["text", "image"],
- },
- {
   // Resurrected 2026-09-28: back on the live Kilo free list
   // (isFree:true, 0/0 pricing, no expiry) + keyless chat 200.
   id: "stepfun/step-3.7-flash:free",
@@ -485,7 +477,6 @@ export const MODEL_ALIASES: Record<string, string> = {
  "nemotron-3-super": "nvidia/nemotron-3-super-120b-a12b:free",
  "north-mini-code": "cohere/north-mini-code:free",
  "lfm-2.5": "liquid/lfm-2.5-2.6b:free",
- "content-safety": "nvidia/nemotron-3.5-content-safety:free",
  "ling-3.0-flash-sante": "inclusionai/ling-3.0-flash-sante:free",
  "step-3.7-flash": "stepfun/step-3.7-flash:free",
  "inkling-small": "thinkingmachines/inkling-small:free",
@@ -530,7 +521,7 @@ export const CLINE_MODEL_IDS = new Set<string>([
   .map(([alias]) => alias),
 ]);
 /**
- * Combined list of all 31 static free models (canonical)
+ * Combined list of all 30 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS];
 

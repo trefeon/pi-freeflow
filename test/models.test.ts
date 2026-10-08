@@ -226,7 +226,6 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "liquid/lfm-2.5-2.6b:free": { ctx: 65_536, max: 32_768, reasoning: true },
   "kilo-auto/free": { ctx: 256_000, max: 10_000, reasoning: true },
   "openrouter/free": { ctx: 200_000, max: 65_536, reasoning: true },
-  "nvidia/nemotron-3.5-content-safety:free": { ctx: 128_000, max: 8_192, reasoning: false },
   // Added 2026-08-30 (live-verified)
   "inclusionai/ling-3.0-flash-sante:free": { ctx: 262_144, max: 32_768, reasoning: true },
   "thinkingmachines/inkling-small:free": { ctx: 1_048_576, max: 262_144, reasoning: true },

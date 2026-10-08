@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **31 curated free models** across three upstream providers: **OpenCode Zen**, **KiloCode Gateway**, and **Cline**.
+pi-freeflow provides unified access to **30 curated free models** across three upstream providers: **OpenCode Zen**, **KiloCode Gateway**, and **Cline**.
 
 ## Upstream Protocol Distinction
 
@@ -30,7 +30,7 @@ pi-freeflow provides unified access to **31 curated free models** across three u
 - **Models**: 5 models from Cline's rotating free promo; requests roll across saved logins on the daily free limit
 - **Routing**: direct only, never through the relay pool
 
-## 31 Model Specifications
+## 30 Model Specifications
 
 ### OpenCode Zen (10 models)
 
@@ -61,7 +61,6 @@ pi-freeflow provides unified access to **31 curated free models** across three u
 | `lfm-2.5` | 65,536 | 32,768 | OpenRouter | ❌ |
 | `kilo-auto` | 256,000 | 10,000 | OpenRouter (reasoning) | ❌ |
 | `openrouter` | 200,000 | 65,536 | OpenRouter (reasoning) | ✅ |
-| `content-safety` | 128,000 | 8,192 | non-thinking (classifier) | ✅ |
 | `inkling-small` | 1,048,576 | 262,144 | OpenRouter | ✅ |
 | `ling-3.0-flash-sante` | 262,144 | 32,768 | OpenRouter | ❌ |
 | `step-3.7-flash` | 262,144 | 262,144 | OpenRouter | ✅ |

@@ -19,11 +19,15 @@ the free-model picker.
 
 - Stealth preview on OpenRouter from 2026-08-20, about a week, priced at
   $0 during the window. Needed an OpenRouter key (free-tier rate limits
-  applied). Never keyless through Zen or Kilo.
+  applied).
 - Suspected GLM-5.3 variant on tokenizer and error-code matches across
   several testers. Later unmask claims are unconfirmed.
-- Verdict: not in the picker (window expired, wrong auth). Successor path:
-  a named `glm-5.3-flash` style ID on a free list.
+- Confirmed on the OpenCode Zen side as `x-preview-f-free` (it is
+  `stealth/ox-alpha` on OpenRouter, and the Zen picker shows the friendly
+  name while the API takes the masked id). Re-checked 2026-10-08: absent
+  from the live Zen list, and both `ox-alpha` and `ox-alpha-free` answer
+  `401` "Model ... is not supported". Recorded in the dead-model list.
+- Verdict: not in the picker (window expired, model decommissioned).
 
 ## Pony Alpha
 
@@ -38,7 +42,7 @@ the free-model picker.
 - Verdict: out of scope. OpenRouter-key models are not part of this
   keyless picker.
 
-## Graduated to the picker
+## Currently in the picker, and former entries
 
 - Space Bunny (`space-bunny-free`, OpenCode Zen free list, 2026-09-23):
   stealth preview with the lab undisclosed, but live on the free list and
@@ -46,10 +50,10 @@ the free-model picker.
   picker as `space-bunny`.
 - Space Bunny Alpha (`stealth/space-bunny-alpha`, KiloCode Gateway free
   list, 2026-09-28): same stealth family under a Kilo-native ID, live on
-  the free list (`isFree:true`, 1M context, text+image in) and answering
-  keyless probes. In the picker as `space-bunny-alpha`. Passes the free
-  gate through the static entry (no `:free` suffix by design, same as
-  `big-pickle`).
+  the free list then and answering keyless probes. **Left the Kilo free
+  list on 2026-10-07** — keyless chat now answers `404` "The requested
+  model does not exist". Out of the picker and recorded in the dead-model
+  list.
 
 ## Decision
 
@@ -67,6 +71,12 @@ Free slots with a printed expiry leave the picker when the window closes:
 - `nex-n2.5-pro` and `nex-n2.5-mini` left the Kilo free list on 2026-09-28
   (absent from the listing, keyless 404) and left the picker with it; the
   paid versions under other names don't count.
+- `space-bunny-free` (OpenCode Zen free list) — OpenCode announced on
+  2026-10-08 that the free period is ending, with the model sponsored in
+  the free tier for a few more days before reveal. Still answering
+  keyless probes, still in the picker. The self-hosted relay now probes
+  it every pass, so a withdrawal shows up as one actionable log line
+  instead of surfacing to whoever picks the model next.
 
 ## Sources
 
