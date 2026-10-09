@@ -189,6 +189,57 @@ test("truncated arguments are never completed", () => {
 	assert.equal(repairToolArguments("todo", truncated, schemas), truncated);
 });
 
+test("a leading fragment of the previous call is stripped", () => {
+	// Live 2026-10-09 on space-bunny-free: the model opened its next call by
+	// echoing the tail of the one it had just seen, so a single tool call
+	// arrived as `<tail of previous>{"…this call…"}`. Keying stream fragments
+	// by call id cannot separate these - there is only one call - so the host
+	// refused the payload with "Unexpected token at position 0".
+	const call = '{"op":"done","task":"Fetch mlbb.io ranked stats"}';
+	for (const junk of [
+		',"timeout":400}',
+		'}]}',
+		'}{',
+		'{"op":"view","task":"previous call"}},',
+		' ranks for both heroes"}',
+	]) {
+		const corrupted = junk + call;
+		const out = repairToolArguments("todo", corrupted, schemas);
+		assert.deepEqual(
+			JSON.parse(out),
+			{ op: "done", task: "Fetch mlbb.io ranked stats" },
+			`prefix ${JSON.stringify(junk)} must be dropped`,
+		);
+	}
+});
+
+test("the salvage never fabricates a call that was never made", () => {
+	// A prefix with no complete object behind it, and a truncation that happens
+	// to contain a brace, both stay unparseable rather than becoming a call.
+	for (const corrupted of [
+		',"timeout":400}',
+		'{"op":"init","list":[{"phase":"R","items":["a"',
+		'prefix {"partial": ',
+		'{"op":"init"',
+	]) {
+		assert.equal(repairToolArguments("todo", corrupted, schemas), corrupted);
+	}
+});
+
+test("a salvaged payload is not otherwise reshaped", () => {
+	// The caller's own object sits behind the junk; the repair must hand back
+	// exactly that, not also run shape repair over it.
+	const call = '{"op":"done","task":"keep me"}';
+	assert.equal(repairToolArguments("todo", 'junk' + call, schemas), call);
+});
+
+test("well-formed arguments never enter the salvage path", () => {
+	// A brace inside a declared string value must stay put: only payloads that
+	// already fail to parse are rescanned.
+	const args = '{"op":"start","task":"use { and } literally"}';
+	assert.equal(repairToolArguments("todo", args, schemas), args);
+});
+
 test("an absent required property is not invented", () => {
 	// OMP repairs a bare init itself; the proxy must not fabricate a list.
 	const bare = '{"op":"init"}';

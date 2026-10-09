@@ -342,6 +342,46 @@ export function buildArgRepairSchemas(tools: unknown[]): Map<string, Record<stri
   return schemas;
 }
 
+
+/**
+ * Parse a tool-call argument string, salvaging one that arrives with a leading
+ * fragment of the *previous* call spliced onto its front.
+ *
+ * Observed live on space-bunny-free: a model that emitted a call, saw the
+ * result, then opened its next call by echoing the tail of the old one. The
+ * stream carried a single tool call, so keying fragments by call id cannot
+ * separate them, and the host rejected the payload:
+ *
+ *   `,"timeout":400}{"i":"…","command":"…"}`
+ *   `]}]}{"i":"Planning research phases","op":"init",…}`
+ *
+ * Both are one complete JSON object with junk in front of it. Only strings that
+ * do not parse as-is are considered, and only a position that yields a complete
+ * object is accepted, so a well-formed call never reaches this path and a
+ * truncated one is still refused rather than completed.
+ *
+ * Returns undefined when nothing salvageable is present.
+ */
+function parseArguments(argsJson: string): { value: Record<string, unknown>; salvaged: boolean } | undefined {
+  try {
+    const value = JSON.parse(argsJson);
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+    return { value: value as Record<string, unknown>, salvaged: false };
+  } catch {
+    // fall through to the salvage scan
+  }
+  for (let i = argsJson.indexOf("{"); i !== -1; i = argsJson.indexOf("{", i + 1)) {
+    try {
+      const value = JSON.parse(argsJson.slice(i));
+      if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+        return { value: value as Record<string, unknown>, salvaged: true };
+      }
+    } catch {
+      // not a start position; try the next brace
+    }
+  }
+  return undefined;
+}
 /**
  * Repair one tool call's arguments against its declared schema. `name` is the
  * downstream (restored) caller tool name. Returns the input string untouched
@@ -356,21 +396,20 @@ export function repairToolArguments(
   if (schemas === undefined || schemas.size === 0) return argsJson;
   const schema = schemas.get(name.trim().toLowerCase());
   if (schema === undefined) return argsJson;
-  let parsed: unknown;
-  try {
-   parsed = JSON.parse(argsJson);
-  } catch {
-   // Truncated or non-JSON arguments: paper over nothing.
-   return argsJson;
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return argsJson;
-  const rec = parsed as Record<string, unknown>;
+  const parsed = parseArguments(argsJson);
+  // Nothing parses: truncated or non-JSON arguments. Paper over nothing.
+  if (parsed === undefined) return argsJson;
+  const rec = parsed.value;
   const repaired = repairValue(rec, schema, 0);
   const value = repaired.value === null || typeof repaired.value !== "object" || Array.isArray(repaired.value)
    ? rec
    : (repaired.value as Record<string, unknown>);
   const promoted = promoteStringArray(value, schema, 0);
   const result = promoted === value ? value : promoted;
+  // A salvaged payload needs no further reshaping: what follows the junk is
+  // already the caller's own object, and re-serializing it would be a change
+  // the repair was never asked to make.
+  if (parsed.salvaged) return matchesSchema(rec, schema, 0) ? JSON.stringify(rec) : argsJson;
   if (!repaired.changed && promoted === value) return argsJson;
   if (!matchesSchema(result, schema, 0)) return argsJson;
   return JSON.stringify(result);
