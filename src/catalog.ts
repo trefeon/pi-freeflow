@@ -30,7 +30,8 @@ import type {
 
 /**
  * Pruned model IDs that must never re-enter the catalog via disk cache or upstream merge.
- * - jev-1.13-free: non-chat decision model, chat-incompatible (live chat 500) — never registered.
+ * - jev-1.13-free: non-chat decision model, chat-incompatible — never registered.
+ *   Re-confirmed 2026-10-09: 400 through the plugin while every catalog model 200s.
  * - deepseek-v4-flash-free: listed but unserved upstream (live chat 400 "Model is unavailable").
  * - nex-agi/nex-n2.5-pro:free + nex-agi/nex-n2.5-mini:free: gone 2026-09-28 — zero nex-agi
  *   IDs on the live Kilo list, keyless chat 404 "does not exist".
@@ -43,7 +44,18 @@ import type {
  * - inclusionai/ling-3.0-flash-fin:free: gone from Kilo (2026-10-01) — keyless chat 404
  *   "The requested model ... does not exist".
  * - mimo-v2.5-free: decommissioned upstream (2026-10-07) — HTTP 401 "Model mimo-v2.5-free is not supported".
- * - exo-free: unserved upstream (2026-10-07) — HTTP 503 "Error from provider (Console): Upstream request failed: Endpoint is unavailable.".
+ * - exo-free: deprecated upstream (2026-10-09) — HTTP 410 "Model exo-free has
+ *   been deprecated." (was 503 "Endpoint is unavailable" on 2026-10-07).
+ * - fledge-alpha-free: withdrawn upstream (2026-10-09) — absent from the live
+ *   Zen list, chat 401 "Model fledge-alpha-free is not supported".
+ * - inclusionai/ling-3.0-flash-sante:free: demoted to paid on Kilo (2026-10-09) —
+ *   :free ID gone from the live list, keyless chat 404 "does not exist";
+ *   only the paid counterpart remains.
+ * - stepfun/step-3.7-flash:free: demoted to paid on Kilo (2026-10-09) — same
+ *   shape: :free ID gone, keyless 404; paid ID remains.
+ * - meituan/longcat-2.0-free: demoted to paid on Kilo (2026-10-09) —
+ *   `meituan/longcat-2.0` remains live with isFree:false; keyless chat
+ *   answers 401 PAID_MODEL_AUTH_REQUIRED.
  * - stealth/space-bunny-alpha: gone from Kilo (2026-10-07) — keyless chat 404 "The requested model ... does not exist".
  * - qwen/qwen3.8-27b:free: gone from Kilo (2026-10-07) — keyless chat 404 "The requested model is currently unavailable.".
  * - nvidia/nemotron-3.5-content-safety:free: tool-less guardrail model (2026-10-08),
@@ -78,6 +90,9 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "stealth/space-bunny-alpha",
  "qwen/qwen3.8-27b:free",
  "nvidia/nemotron-3.5-content-safety:free",
+ "fledge-alpha-free",
+ "inclusionai/ling-3.0-flash-sante:free",
+ "stepfun/step-3.7-flash:free",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.

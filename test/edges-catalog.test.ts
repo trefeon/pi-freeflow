@@ -247,7 +247,7 @@ test("isFreeCatalogId accepts -free, :free, /free and known ids, rejects paid an
 	assert.equal(isFreeCatalogId("mimo-v2.6-flash-free"), true);
 	assert.equal(isFreeCatalogId("mimo-v2.5-free"), false);
 	assert.equal(isFreeCatalogId("thinkingmachines/inkling-small:free"), true);
-	assert.equal(isFreeCatalogId("stepfun/step-3.7-flash:free"), true);
+	assert.equal(isFreeCatalogId("stepfun/step-5-preview-free"), true);
 	assert.equal(isFreeCatalogId("lab/new-model/free"), true);
 	assert.equal(isFreeCatalogId("big-pickle"), true);
 	assert.equal(isFreeCatalogId("inclusionai/ling-3.1-flash"), true);

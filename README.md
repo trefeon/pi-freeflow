@@ -205,7 +205,7 @@ Good defaults for long coding sessions and agentic work.
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 | `space-bunny-free` | Stealth preview (lab undisclosed) | **1M** (1.048.576) | **512K** (524.288) | `low … max` | ✅ |
 | `longcat-2.5-preview-free` | Meituan LongCat | **1M** (1.000.000) | **131K** (131.072) | `minimal … max` | ✅ |
-| `fledge-alpha-free` | Stealth preview (lab undisclosed) | **1M** (1.048.576) | **131K** (131.072) | `low / high / max` | ✅ |
+| `step-5-preview-free` | StepFun | **1M** (1.000.000) | **64K** (64.000) | `minimal … max` | ✅ |
 | `ling-3.1-flash-free` | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal … max` | ❌ |
 
 #### KiloCode Gateway (16 models), OpenRouter compatible
@@ -225,8 +225,8 @@ Keyless access. Short aliases work for every row (the full ID is in parentheses)
 | `lfm-2.5` (`liquid/lfm-2.5-2.6b:free`) | Liquid AI | **65K** (65.536) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
 | `kilo-auto` (`kilo-auto/free`) | Kilo Gateway Auto | **256K** (256.000) | **10K** (10.000) | `minimal…xhigh`\* | ❌ |
 | `openrouter` (`openrouter/free`) | OpenRouter Free | **200K** (200.000) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
-| `ling-3.0-flash-sante` (`inclusionai/ling-3.0-flash-sante:free`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
-| `step-3.7-flash` (`stepfun/...:free`) | StepFun | **262K** (262.144) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
+| `glyph-cluster` (`stealth/glyph-cluster`) | Stealth preview (lab undisclosed) | **256K** (256.000) | **256K** (256.000) | `minimal…xhigh`\* | ❌ |
+| `step-5-preview:kilo` (`stepfun/...:free`) | StepFun | **1M** (1.000.000) | **64K** (64.000) | `minimal…xhigh`\* | ✅ |
 | `inkling-small` (`thinkingmachines/inkling-small:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
 | `ling-3.1-flash-kilo` (`inclusionai/ling-3.1-flash`) | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
 

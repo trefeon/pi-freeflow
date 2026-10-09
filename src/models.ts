@@ -1,7 +1,7 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 30 verified free models (live-verified 2026-10-08):
+ * Defines the 30 verified free models (live-verified 2026-10-09):
  * - 10 OpenCode Zen models (2 Responses API + 8 Chat Completions)
  * - 15 KiloCode Keyless Gateway models (OpenRouter format)
  * - 5 Cline direct-only models (per-user pool)
@@ -153,19 +153,24 @@ export const OPENCODE_MODELS: ModelDef[] = [
   },
  },
  {
-  id: "fledge-alpha-free",
-  name: "Fledge Alpha Free [OpenCode]",
+  // Added 2026-10-09: replaces fledge-alpha-free (withdrawn upstream —
+  // absent from the live list, chat 401 "not supported"). Live on the Zen
+  // list; gated-lane 403 matches the working models from a refused egress,
+  // so it rides the same fingerprint path. Specs mirror the StepFun Step 5
+  // family (Kilo sibling: 1M ctx, 64K max completion, text+image).
+  id: "step-5-preview-free",
+  name: "Step 5 Preview [OpenCode]",
   reasoning: true,
-  contextWindow: 1_048_576,
-  maxTokens: 131_072,
+  contextWindow: 1_000_000,
+  maxTokens: 64_000,
   input: ["text", "image"],
   thinkingLevelMap: {
    off: null,
-   minimal: null,
+   minimal: "minimal",
    low: "low",
-   medium: null,
+   medium: "medium",
    high: "high",
-   xhigh: null,
+   xhigh: "xhigh",
    max: "max",
   },
  },
@@ -191,9 +196,10 @@ export const OPENCODE_MODELS: ModelDef[] = [
 /**
  * Shared effort map for Kilo reasoning models — verified live 2026-08-29:
  * gateway accepts flat reasoning_effort minimal..xhigh for every reasoning
- * model; stepfun/step-3.7-flash measured monotonic 77→313 thinking chars
- * across minimal→xhigh. Declaring the map locks the picker (instead of
- * host guessing) and matches the OpenCode-model pattern.
+ * model; a StepFun reasoning model (step-3.7-flash, since retired from the
+ * free list) measured monotonic 77→313 thinking chars across minimal→xhigh.
+ * Declaring the map locks the picker (instead of host guessing) and matches
+ * the OpenCode-model pattern.
  */
 const KILO_REASONING_MAP: ThinkingLevelMap = {
  off: null,
@@ -320,13 +326,14 @@ export const KILO_MODELS: ModelDef[] = [
   thinkingLevelMap: KILO_REASONING_MAP,
  },
  {
-  // Resurrected 2026-09-28: back on the live Kilo free list
-  // (isFree:true, 0/0 pricing, no expiry) + keyless chat 200.
-  id: "stepfun/step-3.7-flash:free",
-  name: "Step 3.7 Flash [Kilo]",
+  // Added 2026-10-09: replaces step-3.7-flash (demoted to paid upstream —
+  // :free ID 404s keyless). Live on Kilo free list (isFree:true, 0/0
+  // pricing, 1M ctx) + keyless chat served (429 provider concurrency).
+  id: "stepfun/step-5-preview-free",
+  name: "Step 5 Preview [Kilo]",
   reasoning: true,
-  contextWindow: 262_144,
-  maxTokens: 262_144,
+  contextWindow: 1_000_000,
+  maxTokens: 64_000,
   input: ["text", "image"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
@@ -342,11 +349,13 @@ export const KILO_MODELS: ModelDef[] = [
   thinkingLevelMap: KILO_REASONING_MAP,
  },
  {
-  id: "inclusionai/ling-3.0-flash-sante:free",
-  name: "Ling 3.0 Flash Sante [Kilo]",
+  // Added 2026-10-09: live on Kilo free list (isFree:true, 0/0 pricing,
+  // 256K ctx) + keyless chat 200.
+  id: "stealth/glyph-cluster",
+  name: "Glyph Cluster [Kilo]",
   reasoning: true,
-  contextWindow: 262_144,
-  maxTokens: 32_768,
+  contextWindow: 256_000,
+  maxTokens: 256_000,
   input: ["text"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
@@ -477,14 +486,14 @@ export const MODEL_ALIASES: Record<string, string> = {
  "nemotron-3-super": "nvidia/nemotron-3-super-120b-a12b:free",
  "north-mini-code": "cohere/north-mini-code:free",
  "lfm-2.5": "liquid/lfm-2.5-2.6b:free",
- "ling-3.0-flash-sante": "inclusionai/ling-3.0-flash-sante:free",
- "step-3.7-flash": "stepfun/step-3.7-flash:free",
+ "step-5-preview:kilo": "stepfun/step-5-preview-free",
+ "glyph-cluster": "stealth/glyph-cluster",
  "inkling-small": "thinkingmachines/inkling-small:free",
  "mimo-v2.6-flash": "mimo-v2.6-flash-free",
  "space-bunny": "space-bunny-free",
  "longcat-2.5-preview": "longcat-2.5-preview-free",
  "longcat": "longcat-2.5-preview-free",
- "fledge-alpha": "fledge-alpha-free",
+ "step-5-preview": "step-5-preview-free",
  "ling-3.1-flash": "ling-3.1-flash-free",
  "ling-3.1-flash:kilo": "inclusionai/ling-3.1-flash",
  // provider-prefixed short aliases (slash-normalized)

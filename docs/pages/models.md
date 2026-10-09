@@ -44,7 +44,7 @@ pi-freeflow provides unified access to **30 curated free models** across three u
 | `big-pickle` | 200,000 | 32,000 | high, max | ❌ |
 | `space-bunny-free` | 1,048,576 | 524,288 | low..max | ✅ |
 | `longcat-2.5-preview-free` | 1,000,000 | 131,072 | minimal..max | ✅ |
-| `fledge-alpha-free` | 1,048,576 | 131,072 | low..max | ✅ |
+| `step-5-preview-free` | 1,000,000 | 64,000 | minimal..max | ✅ |
 | `ling-3.1-flash-free` | 262,144 | 32,768 | minimal..max | ❌ |
 ### KiloCode Gateway (16 models)
 
@@ -62,8 +62,8 @@ pi-freeflow provides unified access to **30 curated free models** across three u
 | `kilo-auto` | 256,000 | 10,000 | OpenRouter (reasoning) | ❌ |
 | `openrouter` | 200,000 | 65,536 | OpenRouter (reasoning) | ✅ |
 | `inkling-small` | 1,048,576 | 262,144 | OpenRouter | ✅ |
-| `ling-3.0-flash-sante` | 262,144 | 32,768 | OpenRouter | ❌ |
-| `step-3.7-flash` | 262,144 | 262,144 | OpenRouter | ✅ |
+| `glyph-cluster` | 256,000 | 256,000 | OpenRouter | ❌ |
+| `step-5-preview:kilo` | 1,000,000 | 64,000 | OpenRouter | ✅ |
 | `ling-3.1-flash-kilo` | 262,144 | 32,768 | OpenRouter | ❌ |
 
 ### Cline (5 models)

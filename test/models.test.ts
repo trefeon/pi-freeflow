@@ -58,7 +58,7 @@ test("1M context window models are properly configured", () => {
 		"cline-free/kimi-k3",
 		"z-ai/glm-5.3-flash",
 		"mimo-v2.6-flash-free",
-		"fledge-alpha-free",
+		"step-5-preview-free",
 		"space-bunny-free",
 		"longcat-2.5-preview-free",
 		"nemotron-3.5-lightning-free",
@@ -66,6 +66,7 @@ test("1M context window models are properly configured", () => {
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
 		"thinkingmachines/inkling-small:free",
+		"stepfun/step-5-preview-free",
 	];
 
  for (const id of oneMillionModels) {
@@ -114,16 +115,25 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
 	assert.equal(lingKilo.thinkingFormat, "openrouter");
 	assert.equal(getModelUpstream("inclusionai/ling-3.1-flash"), "kilo");
 	assert.equal(getModelUpstream("ling-3.1-flash:kilo"), "kilo");
-	// Step 3.7 Flash is back on the Kilo free list (resurrected 2026-09-28)
-	const step = getModelDef("stepfun/step-3.7-flash:free");
+	// Step 5 Preview replaces Step 3.7 Flash on the Kilo free list (2026-10-09)
+	const step = getModelDef("stepfun/step-5-preview-free");
 	assert.ok(step);
-	assert.equal(step.contextWindow, 262_144);
-	assert.equal(step.maxTokens, 262_144);
+	assert.equal(step.contextWindow, 1_000_000);
+	assert.equal(step.maxTokens, 64_000);
 	assert.equal(step.reasoning, true);
 	assert.deepEqual(step.input, ["text", "image"]);
 	assert.equal(step.thinkingFormat, "openrouter");
-	assert.equal(getModelUpstream("stepfun/step-3.7-flash:free"), "kilo");
-	assert.equal(getModelUpstream("step-3.7-flash"), "kilo");
+	assert.equal(getModelUpstream("stepfun/step-5-preview-free"), "kilo");
+	assert.equal(getModelUpstream("step-5-preview:kilo"), "kilo");
+	// Glyph Cluster is new on the Kilo free list (2026-10-09)
+	const glyph = getModelDef("stealth/glyph-cluster");
+	assert.ok(glyph);
+	assert.equal(glyph.contextWindow, 256_000);
+	assert.equal(glyph.maxTokens, 256_000);
+	assert.equal(glyph.reasoning, true);
+	assert.deepEqual(glyph.input, ["text"]);
+	assert.equal(getModelUpstream("stealth/glyph-cluster"), "kilo");
+	assert.equal(getModelUpstream("glyph-cluster"), "kilo");
 });
 
 test("2026-09-28 pruned models stay out of the static catalog", () => {
@@ -136,14 +146,20 @@ test("2026-09-28 pruned models stay out of the static catalog", () => {
 		"mimo-v2.5-free",
 		"stealth/space-bunny-alpha",
 		"qwen/qwen3.8-27b:free",
+		"fledge-alpha-free",
+		"inclusionai/ling-3.0-flash-sante:free",
+		"stepfun/step-3.7-flash:free",
 	]) {
 		assert.equal(getModelDef(id), undefined, `${id} must not resolve`);
 		assert.equal(MODEL_MAP.get(id), undefined, `${id} must not be in MODEL_MAP`);
 	}
  // Pruned aliases fall through to the verbatim ID (no cross-lab residue)
- assert.equal(resolveCanonicalModelId("nex-n2.5-pro"), "nex-n2.5-pro");
- assert.equal(resolveCanonicalModelId("nex-n2.5-mini"), "nex-n2.5-mini");
- assert.equal(resolveCanonicalModelId("glm-5.2"), "glm-5.2");
+	assert.equal(resolveCanonicalModelId("nex-n2.5-pro"), "nex-n2.5-pro");
+	assert.equal(resolveCanonicalModelId("nex-n2.5-mini"), "nex-n2.5-mini");
+	assert.equal(resolveCanonicalModelId("glm-5.2"), "glm-5.2");
+	assert.equal(resolveCanonicalModelId("fledge-alpha"), "fledge-alpha");
+	assert.equal(resolveCanonicalModelId("step-3.7-flash"), "step-3.7-flash");
+	assert.equal(resolveCanonicalModelId("ling-3.0-flash-sante"), "ling-3.0-flash-sante");
 });
 
 test("model aliases resolve correctly to canonical IDs", () => {
@@ -211,8 +227,9 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "nemotron-3-ultra-free": { ctx: 1_000_000, max: 128_000, reasoning: true },
   "nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 262_144, reasoning: true },
   "big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
-  // Added 2026-10-03 (live: Zen docs endpoint table + keyless chat 200 via proxy; models.dev ctx/out)
-  "fledge-alpha-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
+	// Added 2026-10-09 (live: Zen listing + gated-lane 403 matching working models;
+	// specs mirror the StepFun Step 5 family — Kilo sibling 1M ctx / 64K max, text+image)
+	"step-5-preview-free": { ctx: 1_000_000, max: 64_000, reasoning: true },
   "ling-3.1-flash-free": { ctx: 262_144, max: 32_768, reasoning: true },
   // KiloCode Gateway
   "dots-studio/dots-3-note-preview:free": { ctx: 512_000, max: 512_000, reasoning: true },
@@ -226,11 +243,11 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "liquid/lfm-2.5-2.6b:free": { ctx: 65_536, max: 32_768, reasoning: true },
   "kilo-auto/free": { ctx: 256_000, max: 10_000, reasoning: true },
   "openrouter/free": { ctx: 200_000, max: 65_536, reasoning: true },
-  // Added 2026-08-30 (live-verified)
-  "inclusionai/ling-3.0-flash-sante:free": { ctx: 262_144, max: 32_768, reasoning: true },
-  "thinkingmachines/inkling-small:free": { ctx: 1_048_576, max: 262_144, reasoning: true },
-  // Resurrected 2026-09-28 (live: Kilo free list isFree:true + keyless chat 200)
-  "stepfun/step-3.7-flash:free": { ctx: 262_144, max: 262_144, reasoning: true },
+	"thinkingmachines/inkling-small:free": { ctx: 1_048_576, max: 262_144, reasoning: true },
+	// Retired 2026-10-09 (demoted to paid upstream — :free IDs 404 keyless)
+	// Added 2026-10-09 (live: Kilo free list isFree:true + keyless chat served; 256K/1M ctx)
+	"stealth/glyph-cluster": { ctx: 256_000, max: 256_000, reasoning: true },
+	"stepfun/step-5-preview-free": { ctx: 1_000_000, max: 64_000, reasoning: true },
 		// Added 2026-10-07 (live: Kilo free list isFree:true + keyless chat 200; 262K ctx)
 		"inclusionai/ling-3.1-flash": { ctx: 262_144, max: 32_768, reasoning: true },
   // Cline direct-only (per-user pool — https://api.cline.bot)
@@ -253,9 +270,11 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 
 test("new alias map resolves to canonical kilo ids", () => {
  assert.equal(resolveCanonicalModelId("inkling-small"), "thinkingmachines/inkling-small:free");
- assert.equal(resolveCanonicalModelId("ling-3.0-flash-sante"), "inclusionai/ling-3.0-flash-sante:free");
+	assert.equal(resolveCanonicalModelId("glyph-cluster"), "stealth/glyph-cluster");
 	assert.equal(resolveCanonicalModelId("mimo-v2.6-flash"), "mimo-v2.6-flash-free");
 	assert.equal(resolveCanonicalModelId("ling-3.1-flash:kilo"), "inclusionai/ling-3.1-flash");
+	assert.equal(resolveCanonicalModelId("step-5-preview"), "step-5-preview-free");
+	assert.equal(resolveCanonicalModelId("step-5-preview:kilo"), "stepfun/step-5-preview-free");
 });
 
 test("union-alpha is pruned from the static catalog", () => {

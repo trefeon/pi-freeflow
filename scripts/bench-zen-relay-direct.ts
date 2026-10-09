@@ -105,7 +105,7 @@ const CELLS: Cell[] = [
  { model: "nemotron-3.5-lightning-free", effortLabel: "high", effortSent: "high", perPath: 2 },
  { model: "space-bunny-free", effortLabel: "high", effortSent: "high", perPath: 2 },
  { model: "longcat-2.5-preview-free", effortLabel: "high", effortSent: "high", perPath: 2 },
- { model: "fledge-alpha-free", effortLabel: "high", effortSent: "high", perPath: 2 },
+ { model: "step-5-preview-free", effortLabel: "high", effortSent: "high", perPath: 2 },
  { model: "ling-3.1-flash-free", effortLabel: "high", effortSent: "high", perPath: 2 },
 ];
 
