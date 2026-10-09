@@ -44,7 +44,7 @@ pi-freeflow provides unified access to **30 curated free models** across three u
 | `big-pickle` | 200,000 | 32,000 | high, max | ❌ |
 | `space-bunny-free` | 1,048,576 | 524,288 | low..max | ✅ |
 | `longcat-2.5-preview-free` | 1,000,000 | 131,072 | minimal..max | ✅ |
-| `step-5-preview-free` | 1,000,000 | 64,000 | minimal..max | ✅ |
+| `step-5-preview-free` | 1,000,000 | 65,536 | low..high | ✅ |
 | `ling-3.1-flash-free` | 262,144 | 32,768 | minimal..max | ❌ |
 ### KiloCode Gateway (16 models)
 

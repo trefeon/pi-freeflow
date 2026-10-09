@@ -16,7 +16,7 @@ export type ThinkingLevel =
 
 export type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
 
-export type ModelInputType = "text" | "image";
+export type ModelInputType = "text" | "image" | "video";
 
 export interface ModelDef {
  id: string;

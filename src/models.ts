@@ -21,7 +21,7 @@ export const OPENCODE_MODELS: ModelDef[] = [
   contextWindow: 1_048_576,
   maxTokens: 131_072,
   api: "openai-responses",
-  input: ["text", "image"],
+ input: ["text", "image", "video"],
   thinkingLevelMap: {
    off: null,
    minimal: "minimal",
@@ -39,7 +39,7 @@ export const OPENCODE_MODELS: ModelDef[] = [
   contextWindow: 1_048_576,
   maxTokens: 131_072,
   api: "openai-responses",
-  input: ["text", "image"],
+ input: ["text", "image", "video"],
   thinkingLevelMap: {
    off: null,
    minimal: "minimal",
@@ -56,7 +56,7 @@ export const OPENCODE_MODELS: ModelDef[] = [
   reasoning: true,
   contextWindow: 1_048_576,
   maxTokens: 131_072,
-  input: ["text", "image"],
+ input: ["text", "image", "video"],
   thinkingLevelMap: {
    off: null,
    minimal: "low",
@@ -124,7 +124,7 @@ export const OPENCODE_MODELS: ModelDef[] = [
   reasoning: true,
   contextWindow: 1_048_576,
   maxTokens: 524_288,
-  input: ["text", "image"],
+ input: ["text", "image", "video"],
   thinkingLevelMap: {
    off: null,
    minimal: null,
@@ -153,26 +153,30 @@ export const OPENCODE_MODELS: ModelDef[] = [
   },
  },
  {
-  // Added 2026-10-09: replaces fledge-alpha-free (withdrawn upstream —
-  // absent from the live list, chat 401 "not supported"). Live on the Zen
-  // list; gated-lane 403 matches the working models from a refused egress,
-  // so it rides the same fingerprint path. Specs mirror the StepFun Step 5
-  // family (Kilo sibling: 1M ctx, 64K max completion, text+image).
-  id: "step-5-preview-free",
-  name: "Step 5 Preview [OpenCode]",
-  reasoning: true,
-  contextWindow: 1_000_000,
-  maxTokens: 64_000,
-  input: ["text", "image"],
-  thinkingLevelMap: {
-   off: null,
-   minimal: "minimal",
-   low: "low",
-   medium: "medium",
-   high: "high",
-   xhigh: "xhigh",
-   max: "max",
-  },
+ // Added 2026-10-09: replaces fledge-alpha-free (withdrawn upstream —
+ // absent from the live list, chat 401 "not supported"). Live on the Zen
+ // list; gated-lane 403 matches the working models from a refused egress,
+ // so it rides the same fingerprint path. Specs per models.dev
+ // (opencode/step-5-preview-free) + StepFun docs, NOT the enrichModelDef
+ // substring heuristic (which yields reasoning:false / 262K / text-only):
+ // 1M ctx, 64K max output, text+image+video, efforts low/medium/high only.
+ // minimal is explicitly null (omitting the key leaves it selectable in
+ // the host); xhigh/max are unsupported upstream.
+ id: "step-5-preview-free",
+ name: "Step 5 Preview [OpenCode]",
+ reasoning: true,
+ contextWindow: 1_000_000,
+ maxTokens: 65_536,
+ input: ["text", "image", "video"],
+ thinkingLevelMap: {
+  off: null,
+  minimal: null,
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: null,
+  max: null,
+ },
  },
  {
   id: "ling-3.1-flash-free",
@@ -231,7 +235,7 @@ export const KILO_MODELS: ModelDef[] = [
   reasoning: true,
   contextWindow: 256_000,
   maxTokens: 131_072,
-  input: ["text", "image"],
+ input: ["text", "image", "video"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
  },
@@ -333,8 +337,8 @@ export const KILO_MODELS: ModelDef[] = [
   name: "Step 5 Preview [Kilo]",
   reasoning: true,
   contextWindow: 1_000_000,
-  maxTokens: 64_000,
-  input: ["text", "image"],
+ maxTokens: 65_536,
+ input: ["text", "image", "video"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
  },
@@ -427,7 +431,7 @@ export const CLINE_MODELS: ModelDef[] = [
   contextWindow: 1_048_576,
   maxTokens: 131_072,
   api: "openai-responses",
-  input: ["text", "image"],
+ input: ["text", "image", "video"],
   thinkingLevelMap: {
    off: null,
    minimal: "minimal",
@@ -442,9 +446,9 @@ export const CLINE_MODELS: ModelDef[] = [
   id: "z-ai/glm-5.3-flash",
   name: "GLM 5.3 Flash [Cline]",
   reasoning: true,
-  contextWindow: 1_000_000,
+ contextWindow: 1_048_576,
   maxTokens: 131_072,
-  input: ["text", "image"],
+ input: ["text", "image", "video"],
   thinkingLevelMap: CLINE_FLASH_REASONING_MAP,
  },
  {
@@ -457,7 +461,7 @@ export const CLINE_MODELS: ModelDef[] = [
   reasoning: true,
   contextWindow: 1_048_576,
   maxTokens: 131_072,
-  input: ["text", "image"],
+ input: ["text", "image", "video"],
   thinkingLevelMap: CLINE_FLASH_REASONING_MAP,
  },
  {

@@ -205,7 +205,7 @@ Good defaults for long coding sessions and agentic work.
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 | `space-bunny-free` | Stealth preview (lab undisclosed) | **1M** (1.048.576) | **512K** (524.288) | `low … max` | ✅ |
 | `longcat-2.5-preview-free` | Meituan LongCat | **1M** (1.000.000) | **131K** (131.072) | `minimal … max` | ✅ |
-| `step-5-preview-free` | StepFun | **1M** (1.000.000) | **64K** (64.000) | `minimal … max` | ✅ |
+| `step-5-preview-free` | StepFun | **1M** (1.000.000) | **64K** (65.536) | `low … high` | ✅ |
 | `ling-3.1-flash-free` | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal … max` | ❌ |
 
 #### KiloCode Gateway (16 models), OpenRouter compatible

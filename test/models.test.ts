@@ -100,7 +100,7 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
  assert.equal(mimo.contextWindow, 1_048_576);
  assert.equal(mimo.maxTokens, 131_072);
  assert.equal(mimo.reasoning, true);
- assert.deepEqual(mimo.input, ["text", "image"]);
+ assert.deepEqual(mimo.input, ["text", "image", "video"]);
  assert.equal(mimo.thinkingLevelMap?.minimal, "low");
  assert.equal(mimo.thinkingLevelMap?.xhigh, "high");
  assert.equal(getModelUpstream("mimo-v2.6-flash-free"), "opencode");
@@ -119,9 +119,9 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
 	const step = getModelDef("stepfun/step-5-preview-free");
 	assert.ok(step);
 	assert.equal(step.contextWindow, 1_000_000);
-	assert.equal(step.maxTokens, 64_000);
+	assert.equal(step.maxTokens, 65_536);
 	assert.equal(step.reasoning, true);
-	assert.deepEqual(step.input, ["text", "image"]);
+	assert.deepEqual(step.input, ["text", "image", "video"]);
 	assert.equal(step.thinkingFormat, "openrouter");
 	assert.equal(getModelUpstream("stepfun/step-5-preview-free"), "kilo");
 	assert.equal(getModelUpstream("step-5-preview:kilo"), "kilo");
@@ -134,6 +134,24 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
 	assert.deepEqual(glyph.input, ["text"]);
 	assert.equal(getModelUpstream("stealth/glyph-cluster"), "kilo");
 	assert.equal(getModelUpstream("glyph-cluster"), "kilo");
+});
+test("2026-10-09 Zen Step 5 Preview carries verified reasoning specs (issue #37)", () => {
+ // The enrichModelDef substring heuristic yields reasoning:false / 262K /
+ // text-only for this ID; the static entry must override all three and lock
+ // efforts to the documented low/medium/high set (minimal explicitly null so
+ // the host cannot select it).
+ const step = getModelDef("step-5-preview-free");
+ assert.ok(step);
+ assert.equal(step.reasoning, true);
+ assert.equal(step.contextWindow, 1_000_000);
+ assert.equal(step.maxTokens, 65_536);
+ assert.deepEqual(step.input, ["text", "image", "video"]);
+ assert.equal(step.thinkingLevelMap?.minimal, null);
+ assert.equal(step.thinkingLevelMap?.low, "low");
+ assert.equal(step.thinkingLevelMap?.medium, "medium");
+ assert.equal(step.thinkingLevelMap?.high, "high");
+ assert.equal(step.thinkingLevelMap?.xhigh, null);
+ assert.equal(getModelUpstream("step-5-preview"), "opencode");
 });
 
 test("2026-09-28 pruned models stay out of the static catalog", () => {
@@ -228,8 +246,9 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 262_144, reasoning: true },
   "big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
 	// Added 2026-10-09 (live: Zen listing + gated-lane 403 matching working models;
-	// specs mirror the StepFun Step 5 family — Kilo sibling 1M ctx / 64K max, text+image)
-	"step-5-preview-free": { ctx: 1_000_000, max: 64_000, reasoning: true },
+	// specs per models.dev opencode/step-5-preview-free + StepFun docs: 1M ctx / 64K max,
+	// text+image+video, efforts low/medium/high — minimal explicitly null, xhigh/max null)
+	"step-5-preview-free": { ctx: 1_000_000, max: 65_536, reasoning: true },
   "ling-3.1-flash-free": { ctx: 262_144, max: 32_768, reasoning: true },
   // KiloCode Gateway
   "dots-studio/dots-3-note-preview:free": { ctx: 512_000, max: 512_000, reasoning: true },
@@ -247,13 +266,13 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 	// Retired 2026-10-09 (demoted to paid upstream — :free IDs 404 keyless)
 	// Added 2026-10-09 (live: Kilo free list isFree:true + keyless chat served; 256K/1M ctx)
 	"stealth/glyph-cluster": { ctx: 256_000, max: 256_000, reasoning: true },
-	"stepfun/step-5-preview-free": { ctx: 1_000_000, max: 64_000, reasoning: true },
+	"stepfun/step-5-preview-free": { ctx: 1_000_000, max: 65_536, reasoning: true },
 		// Added 2026-10-07 (live: Kilo free list isFree:true + keyless chat 200; 262K ctx)
 		"inclusionai/ling-3.1-flash": { ctx: 262_144, max: 32_768, reasoning: true },
   // Cline direct-only (per-user pool — https://api.cline.bot)
   "cline-free/deepseek-v4.1-flash": { ctx: 1_000_000, max: 384_000, reasoning: true },
   "cline-free/muse-spark-1.3-contributor": { ctx: 1_048_576, max: 131_072, reasoning: true },
-  "z-ai/glm-5.3-flash": { ctx: 1_000_000, max: 131_072, reasoning: true },
+  "z-ai/glm-5.3-flash": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // Added 2026-09-22 (live: desktop-identity free list + chat probe)
   "cline-free/kimi-k3": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "cline-free/solar-pro4": { ctx: 524_288, max: 131_072, reasoning: true },
