@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.34.0
+
+### Minor Changes
+
+- aa6f259: Three new free models, picked the same way as the rest (`/model` → `freeflow` → pick):
+
+  - **Step 5 Preview** on OpenCode Zen (`step-5-preview-free`, short name `step-5-preview`) — 1M context, answers with vision.
+  - **Step 5 Preview** on KiloCode (`stepfun/step-5-preview-free`, short name `step-5-preview:kilo`) — 1M context, answers with vision.
+  - **Glyph Cluster** on KiloCode (`stealth/glyph-cluster`, short name `glyph-cluster`) — 256K context, text answers.
+
+### Patch Changes
+
+- 50981fb: Align nine model entries with the specs their upstream catalogs publish. Models now advertise video input where the vendor lists it, two entries pick up a larger context window, and Step 5 Preview on KiloCode reports the full 64K output allowance.
+- f637c58: Recover tool calls that arrive with the tail of the previous call stuck to the
+  front. Some models open a new call by echoing the end of the one they have just
+  seen, so a single call is delivered as `<tail of previous>{"…this call…"}` and
+  the host refuses it as invalid JSON. When such a payload does not parse, the
+  proxy now locates the complete call behind the stray text and hands that back.
+
+  Only payloads that already fail to parse are rescanned, and only a position that
+  yields a complete object is accepted — a well-formed call is never rewritten,
+  and a truncated one is still refused rather than completed.
+
+  Also adds a whole-inventory fidelity test covering every tool either host can
+  declare, across all three API shapes.
+
+- aa6f259: Remove three free models that stopped serving upstream, so they no longer appear in the model list:
+
+  - **Fledge Alpha** on OpenCode (`fledge-alpha-free`) — withdrawn upstream and no longer listed.
+  - **Ling 3.0 Flash Sante** on KiloCode (`inclusionai/ling-3.0-flash-sante:free`) — the free variant is gone; only the paid one remains.
+  - **Step 3.7 Flash** on KiloCode (`stepfun/step-3.7-flash:free`) — the free variant is gone; only the paid one remains.
+
+  All three are excluded permanently, so a stale on-disk catalog or a later catalog refresh cannot bring them back.
+
+- 50981fb: Correct the OpenCode Zen Step 5 Preview entry: it is a reasoning model with 1M context, 64K max output, text/image/video input, and only `low`/`medium`/`high` thinking levels (`minimal` is explicitly disabled). Previously the entry mirrored the Kilo sibling and the fallback heuristic, so the picker showed no thinking support.
+
 ## 1.33.3
 
 ### Patch Changes
