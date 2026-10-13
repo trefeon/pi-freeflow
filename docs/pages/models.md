@@ -106,7 +106,7 @@ Anonymous access: no account, no key, no login step. Direct only, never through 
 
 | Upstream | Models | Host | Wire Protocol | Auth |
 | **OpenCode Zen** | 10 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat) | Keyless |
-| **KiloCode Gateway** | 16 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
+| **KiloCode Gateway** | 15 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
 | **Cline** | 2 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 | **OVHcloud AI Endpoints** | 9 | `oai.endpoints.kepler.ai.cloud.ovh.net` | `/v1/chat/completions` (responses path translated) | Keyless, anonymous |
 

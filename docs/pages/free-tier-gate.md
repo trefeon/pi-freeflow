@@ -2,7 +2,7 @@
 
 How the OpenCode Zen free tier decides whether to answer a request, measured
 directly against the live gateway. This page exists because the answer is not
-what the error message suggests, and because two widely-shared assumptions
+what the error message suggests, and because three widely-shared assumptions
 about it are provably wrong.
 
 Unless a line says otherwise, every result below was reproduced against
@@ -34,30 +34,75 @@ Paid models fail differently and are not part of this problem:
 
 ## What actually opens the gate
 
-Two request properties must **both** hold. Either alone is refused.
+**Four** request properties must **all** hold. Any one missing is refused, and
+the refusal is the same `403` in every case, so the error never says which one
+was wrong.
 
-| Tool declarations | Streaming | Result |
-| --- | --- | --- |
-| placeholder sextet | `stream: true` | **`200`** |
-| placeholder sextet | absent | `403` |
-| placeholder sextet | `stream: false` | `403` |
-| none | `stream: true` | `403` |
-| none | absent | `403` |
+| # | Axis | Accepted | Missing |
+| --- | --- | --- | --- |
+| 1 | `User-Agent` | `opencode/1.19.0` and other `opencode/*` values | `403` |
+| 2 | Session header | `x-opencode-session` **or** `x-session-affinity`, carrying a canonical id | `403` |
+| 3 | Tool declarations | the placeholder sextet `{bash, glob, grep, read, edit, write}` | `403` |
+| 4 | Streaming | `stream: true` | `403` |
+
+Measured 2026-10-13 against `space-bunny-free` and
+`nemotron-3.5-lightning-free`, on both the chat and the responses path, with
+the other axes held correct:
+
+| Variation | Result |
+| --- | --- |
+| all four axes | **`200`** |
+| no request-identity headers at all | `403` |
+| `User-Agent` alone, no session header | `403` (0/4) |
+| every header except `User-Agent` | `403` (0/4) |
+| `User-Agent` + `x-opencode-session` | **`200`** (2/2) |
+| `User-Agent` + `x-session-affinity` | **`200`** (2/2) |
+| `User-Agent` + `x-opencode-client` | `403` |
+| `User-Agent` + `x-opencode-project` | `403` |
+| `User-Agent` + `x-opencode-session-id` | `403` |
+| `User-Agent` + `x-opencode-request` | `403` |
+
+Two results in that table are worth dwelling on, because both were widely
+believed to be the opposite:
+
+- **`User-Agent` is load-bearing on its own account.** Dropping it from an
+  otherwise complete header set turns `200` into `403`.
+- **`x-opencode-session-id` is not the session header.** It is present in the
+  set and is *not* sufficient — `User-Agent` plus `x-opencode-session-id` is
+  still refused. The two header names the gateway accepts are
+  `x-opencode-session` and `x-session-affinity`.
+
+Axis 2 carries a value constraint, not just a presence check. The session id
+must be one the upstream generator would have produced: prefix `ses_`, exactly
+26 characters, the first 12 of them hexadecimal. A near-miss is refused —
+
+| Session value | Result |
+| --- | --- |
+| generator output | **`200`** |
+| correct prefix, 25 characters | `403` |
+| `sesx` instead of `ses_` | `403` |
+| a non-hex character inside the first 12 | `403` |
+
+The **timestamp inside it is not range-checked.** Ids encoding 2000-01-01 and
+2050-01-01 both answer `200`, as does one an hour in the future, so a session
+id minted at start-up stays valid for the life of a long-running daemon. That
+is fortunate, because pi-freeflow mints exactly one per process.
 
 Two details worth stating precisely:
 
 - **`stream: false` is refused, not just "no `stream` key".** Sending an
   explicit `stream: false` is refused the same way an absent key is. What the
-  gateway requires is that the request is actually a streaming request.
+  gateway requires is that the request is actually a streaming request. The
+  proxy sends `stream: true` upstream regardless and converts the answer back
+  for a caller that asked for JSON.
 - **The placeholder tools must be declared, but never called.** They are
   compatibility stubs. pi-freeflow ships them as
   `OPENCODE_FINGERPRINT_TOOLS = ["bash", "glob", "grep", "read", "edit", "write"]`
   in `src/tool-translation.ts`, with a description telling the model not to
   call them. Requests without them are refused.
 
-Reproduced across four models — `nemotron-3.5-lightning-free`,
-`mimo-v2.6-flash-free`, `longcat-2.5-preview-free` all flip 403 → 200 when
-streaming is on and the sextet is declared.
+These four axes are stated where they are enforced, at the top of
+`src/opencode-fingerprint.ts`.
 
 ### No exception
 
@@ -72,8 +117,14 @@ reach. That has stopped. Measured 2026-10-13, a direct request to
 | `space-bunny-free` | `true` | `403` |
 | `nemotron-3.5-lightning-free` | key absent | `403` |
 
-All three returned the same envelope. Note the middle row: streaming on its own
-is no longer enough, where it was on 2026-10-08.
+All three returned the same envelope, and the middle row is the important one:
+streaming on its own is no longer enough, where it was on 2026-10-08.
+
+That is the whole explanation, and it is not that the model changed its mind.
+On 2026-10-08 a request carrying no identity headers was accepted. It no longer
+is, because the gateway now checks request identity as part of the gate. A model
+that used to answer a probe with nothing but a model name now needs the same
+four axes as every other model.
 
 ```json
 {"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."}}
@@ -82,28 +133,34 @@ is no longer enough, where it was on 2026-10-08.
 So the free list has no reachable model left to use as a control, and that
 changes how a negative probe result should be read. A bare probe returning
 `403` used to be ambiguous between "the probe is broken" and "the model is
-gone", and `space-bunny-free` settled it by always answering. It can no longer
+gone`, and `space-bunny-free` settled it by always answering. It can no longer
 settle anything, and a bare-probe `403` now proves neither hypothesis. Only a
-request that satisfies the gate — the placeholder sextet plus `stream: true`,
-as in the gate table above — reaches a model at all, so a refusal is only
-interpretable when it comes from that shape.
+request that satisfies all four axes, as in the gate table above, reaches a
+model at all, so a refusal is only interpretable when it comes from that shape.
 
 ## What does not matter
 
-Each of these was varied while streaming and the placeholder sextet were held
-present. None changed the outcome away from `200`:
+Once all four axes are present, these make no difference to the outcome:
 
-- `User-Agent` version, across `opencode/1.0.0` … `opencode/1.22.0`
+- `User-Agent` version, across `opencode/1.0.0` … `opencode/1.22.0` — the value
+  matters, the exact version does not
 - `x-opencode-client: cli` vs `desktop`
 - `x-opencode-project`, whether the SHA-1 of the upstream git remote, the
   literal `global`, a random hex value, or empty
+- `x-opencode-session-id` and `x-opencode-request` — sent on every request, and
+  neither is one of the two session headers the gateway reads
 - payload size, from ~100 B to ~640 KB
-- a fresh session ID per request vs one session reused across four requests
+- a fresh session id per request vs one session reused across four requests
+- the timestamp encoded in the session id, from 2000 to 2050
 
-Request identity is still worth sending, and pi-freeflow still sends it —
-`src/config.ts` mints a canonical `ses_…` session and a per-turn `msg_…`
-request ID, matching the vendor's own identifier encoding. But **none of it is
-load-bearing for the gate.** It is good hygiene, not the mechanism.
+An earlier version of this page claimed request identity was not load-bearing at
+all — "good hygiene, not the mechanism" — and was wrong. `User-Agent` and a
+canonical session id are two of the four axes. pi-freeflow sends the full set
+from `src/config.ts`: a `User-Agent`, `x-opencode-client`, `x-opencode-project`,
+the canonical `ses_…` session on `x-opencode-session`, `x-opencode-session-id`
+and `x-session-affinity`, and a per-turn `msg_…` request id. The three the
+gateway does not read are kept because they cost nothing and matching the real
+client is the safer default.
 
 ## What is wrong about the popular workaround
 
@@ -147,23 +204,29 @@ fails over immediately rather than replaying a refusal that cannot succeed.
 
 ## Testing this yourself
 
-A minimal direct probe that satisfies the gate:
+A minimal direct probe that satisfies all four axes. The session id has to be
+one the upstream generator would produce — `ses_` plus 26 characters, the first
+12 hexadecimal. Anything hand-rolled and close enough to pass a shape check is
+still refused:
 
 ```js
+const session = "ses_" + createOpenCodeId(); // opencode's own generator
+
 const res = await fetch("https://opencode.ai/zen/v1/chat/completions", {
   method: "POST",
   headers: {
     "content-type": "application/json",
     accept: "text/event-stream",
-    "user-agent": "opencode/1.18.35",
+    "user-agent": "opencode/1.19.0",      // axis 1
     "x-opencode-client": "cli",
+    "x-opencode-session": session,        // axis 2
   },
   body: JSON.stringify({
     model: "nemotron-3.5-lightning-free",
     messages: [{ role: "user", content: "hi" }],
-    stream: true,              // required
+    stream: true,                         // axis 4
     max_tokens: 16,
-    tools: ["bash", "glob", "grep", "read", "edit", "write"].map((name) => ({
+    tools: ["bash", "glob", "grep", "read", "edit", "write"].map((name) => ({  // axis 3
       type: "function",
       function: {
         name,
@@ -175,7 +238,9 @@ const res = await fetch("https://opencode.ai/zen/v1/chat/completions", {
 });
 ```
 
-Drop either `stream: true` or `tools` and it returns `403`.
+Drop the `user-agent`, the session header, `stream: true`, or `tools` and it
+returns `403` — the same `403` in all four cases, with nothing in the body to
+say which axis was wrong.
 
 Note that `max_tokens: 16` is fine on the chat-completions wire but rejected
 on `/responses`, where the floor is 16 or higher — `muse-spark-1.3-contributor-free`
