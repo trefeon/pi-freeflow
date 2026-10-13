@@ -208,7 +208,7 @@ Good defaults for long coding sessions and agentic work.
 | `step-5-preview-free` | StepFun | **1M** (1.000.000) | **64K** (65.536) | `low … high` | ✅ |
 | `ling-3.1-flash-free` | Inclusion AI | **262K** (262.144) | **32K** (32.768) | `minimal … max` | ❌ |
 
-#### KiloCode Gateway (16 models), OpenRouter compatible
+#### KiloCode Gateway (15 models), OpenRouter compatible
 
 Keyless access. Short aliases work for every row (the full ID is in parentheses).
 

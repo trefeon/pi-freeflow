@@ -22,12 +22,12 @@ pi-freeflow provides unified access to **36 curated free models** across four up
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: keyless — no `Authorization` header at all (the gateway rejects a placeholder credential with `401 INVALID_TOKEN`; 200 req/hr per IP)
-- **Models**: 16 models with OpenRouter-style thinking format
+- **Models**: 15 models with OpenRouter-style thinking format
 
 ### Cline (`/api/v1/chat/completions`)
 - **Endpoint**: `https://api.cline.bot/api/v1/chat/completions`
 - **Auth**: per-user login via `/freeflow cline login` (browser approval, saved to a per-user pool on your machine)
-- **Models**: 5 models from Cline's rotating free promo; requests roll across saved logins on the daily free limit
+- **Models**: 2 models from Cline's rotating free promo; requests roll across saved logins on the daily free limit
 - **Routing**: direct only, never through the relay pool
 
 ### OVHcloud AI Endpoints (`/v1/chat/completions`)
