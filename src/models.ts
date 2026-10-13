@@ -1,8 +1,8 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 36 verified free models (live-verified 2026-10-13):
- * - 10 OpenCode Zen models (2 Responses API + 8 Chat Completions)
+ * Defines the 37 verified free models (live-verified 2026-10-13):
+ * - 11 OpenCode Zen models (2 Responses API + 9 Chat Completions)
  * - 15 KiloCode Keyless Gateway models (OpenRouter format)
  * - 2 Cline direct-only models (per-user pool)
  * - 9 OVHcloud AI Endpoints models (keyless, direct-only)
@@ -15,6 +15,27 @@ import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
  * Endpoint: https://opencode.ai/zen/v1
  */
 export const OPENCODE_MODELS: ModelDef[] = [
+ {
+  id: "cat-jam-free",
+  name: "Cat Jam [OpenCode]",
+  reasoning: true,
+  // Context is 262_144, NOT the 1M an acceptance probe suggests: the gateway
+  // answers 200 to oversized prompts and silently truncates. A needle planted
+  // at the end of a 248,232-token prompt is recalled; at 250,272 it is not.
+  // Cross-checked against the published spec, which agrees.
+  contextWindow: 262_144,
+  maxTokens: 131_072,
+  input: ["text"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: null,
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: null,
+  },
+ },
  {
   id: "muse-spark-1.2-contributor-free",
   name: "Muse Spark 1.2 [OpenCode]",

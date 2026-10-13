@@ -61,6 +61,7 @@ test("1M context window models are properly configured", () => {
 		"cline-free/muse-spark-1.3-contributor",
 		"z-ai/glm-5.3-flash",
 		"mimo-v2.6-flash-free",
+		"stepfun/step-5-preview-free",
 		"step-5-preview-free",
 		"space-bunny-free",
 		"longcat-2.5-preview-free",
@@ -69,7 +70,6 @@ test("1M context window models are properly configured", () => {
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
 		"thinkingmachines/inkling-small:free",
-		"stepfun/step-5-preview-free",
 	];
 
  for (const id of oneMillionModels) {
@@ -237,6 +237,13 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
  // error messages). Change only with a fresh live verification.
  const locked: Record<string, { ctx: number; max: number; reasoning: boolean }> = {
   // OpenCode Zen
+  // Added 2026-10-13 (live: Zen listing + keyless chat 200; efforts low..xhigh
+  // accepted while minimal 400s upstream; chat-only, /v1/responses answers 400).
+  // Context is 262_144 — the published value, matching where recall actually
+  // fails: the needle is recalled at 248,232 prompt tokens and lost at 250,272,
+  // while the gateway keeps answering 200 all the way to ~1M and truncates
+  // silently. Acceptance is not capability; do not raise this from a 200.
+  "cat-jam-free": { ctx: 262_144, max: 131_072, reasoning: true },
   "muse-spark-1.2-contributor-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "muse-spark-1.3-contributor-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // Added 2026-09-22 (live: Zen /v1/models + keyless chat 200 on mimo-v2.6-flash-free)

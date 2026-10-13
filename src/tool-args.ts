@@ -357,8 +357,12 @@ export function buildArgRepairSchemas(tools: unknown[]): Map<string, Record<stri
  *
  * Both are one complete JSON object with junk in front of it. Only strings that
  * do not parse as-is are considered, and only a position that yields a complete
- * object is accepted, so a well-formed call never reaches this path and a
- * truncated one is still refused rather than completed.
+ * object is accepted, so a well-formed call never reaches this path.
+ *
+ * A second live shape (2026-10-13) carried BOTH faults at once — the previous
+ * call's tail in front AND the closing brace missing — so the scan also offers
+ * the candidate with its closers appended. That offer is made only at the first
+ * brace and only when a fragment precedes it; see appendClosers.
  *
  * Returns undefined when nothing salvageable is present.
  */
@@ -370,17 +374,66 @@ function parseArguments(argsJson: string): { value: Record<string, unknown>; sal
   } catch {
     // fall through to the salvage scan
   }
-  for (let i = argsJson.indexOf("{"); i !== -1; i = argsJson.indexOf("{", i + 1)) {
-    try {
-      const value = JSON.parse(argsJson.slice(i));
-      if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-        return { value: value as Record<string, unknown>, salvaged: true };
-      }
-    } catch {
-      // not a start position; try the next brace
+ for (let i = argsJson.indexOf("{"); i !== -1; i = argsJson.indexOf("{", i + 1)) {
+  const candidate = argsJson.slice(i);
+  // Two shapes to try, in order: the candidate as written, then the candidate
+  // with its missing closers appended. The closer is only offered at the FIRST
+  // brace and only when something precedes it — that fragment is the evidence
+  // the model was mid-call and lost the tail. A bare `{"op":"init"` stays
+  // refused, and so does an inner `{"phase":…` inside an already-truncated
+  // object, which is why this is not offered at every brace.
+  const candidates = i === 0 ? [candidate] : [candidate, appendClosers(candidate)];
+  for (const attempt of candidates) {
+   if (attempt === undefined) continue;
+   try {
+    const value = JSON.parse(attempt);
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+     return { value: value as Record<string, unknown>, salvaged: true };
     }
+   } catch {
+    // not a start position; try the next brace
+   }
   }
+ }
   return undefined;
+}
+
+/**
+ * Append the closers an unterminated JSON object is missing, or undefined when
+ * that would mean guessing.
+ *
+ * Only ever called on a candidate that starts at a `{` preceded by a fragment
+ * of the previous call, and only when the candidate's own contents already
+ * end cleanly. Two refusals keep this honest:
+ *
+ * - Cut inside a string literal (an unterminated `"`) returns undefined. The
+ *   value itself is incomplete, so any closing brace would silently shorten
+ *   it — and these arguments carry shell commands.
+ * - Nothing left open returns undefined, so a well-formed candidate never
+ *   reaches this path.
+ *
+ * Appending a closer never adds or removes a value, so a caller whose payload
+ * parsed to a complete object here is getting back exactly what the model
+ * emitted, minus the previous call's echo.
+ */
+function appendClosers(text: string): string | undefined {
+ const open: string[] = [];
+ let inString = false;
+ let escaped = false;
+ for (const ch of text) {
+  if (inString) {
+   if (escaped) escaped = false;
+   else if (ch === "\\") escaped = true;
+   else if (ch === '"') inString = false;
+   continue;
+  }
+  if (ch === '"') inString = true;
+  else if (ch === "{" || ch === "[") open.push(ch === "{" ? "}" : "]");
+  else if (ch === "}" || ch === "]") open.pop();
+ }
+ // Inside a string at the end: the value was cut mid-token, so refuse.
+ if (inString || open.length === 0) return undefined;
+ return text + open.reverse().join("");
 }
 /**
  * Repair one tool call's arguments against its declared schema. `name` is the

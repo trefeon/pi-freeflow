@@ -213,6 +213,46 @@ test("a leading fragment of the previous call is stripped", () => {
 	}
 });
 
+test("a leading fragment plus a missing closing brace still resolves", () => {
+	// Observed 2026-10-13 on space-bunny-free, three times in one long session:
+	// the model opened its next call by echoing the tail of the previous one AND
+	// stopped before the closing brace, so the payload was
+	// `<tail of previous>{"…"…` — one complete object with junk in front and its
+	// last brace absent. The salvage below only ever parsed to end-of-string, so
+	// the unterminated object failed, no later brace existed to try, and the host
+	// refused the whole call with "Unexpected token at position 0".
+	//
+	// Closing the brace is only attempted when a leading fragment was already
+	// detected, which is what keeps the four payloads above from being completed.
+	const call = '{"op":"done","task":"Check the registry packument"}';
+	for (const corrupted of [
+		',"timeout":180}{"op":"done","task":"Check the registry packument"',
+		',"async":true}{"op":"done","task":"Check the registry packument"',
+		',"timeout":0}{"op":"done","task":"Check the registry packument"',
+	]) {
+		assert.deepEqual(
+			JSON.parse(repairToolArguments("todo", corrupted, schemas)),
+			{ op: "done", task: "Check the registry packument" },
+			`${JSON.stringify(corrupted)} must resolve to the caller's own object`,
+		);
+	}
+});
+
+test("a missing brace alone is still refused, with no leading fragment", () => {
+	// The narrow rule: without a preceding fragment to prove the model was
+	// mid-call, an unterminated object stays unparseable. Only payloads whose
+	// own contents are already complete get a closer appended; anything cut
+	// mid-key or mid-value still fails to parse and is refused.
+	for (const truncated of [
+		'{"op":"init","list":[{"phase":"R","items":["a"',
+		'{"op":"init"',
+		'{"op":"done","task":"cut mid value',
+		'{"op":"do',
+	]) {
+		assert.equal(repairToolArguments("todo", truncated, schemas), truncated);
+	}
+});
+
 test("the salvage never fabricates a call that was never made", () => {
 	// A prefix with no complete object behind it, and a truncation that happens
 	// to contain a brace, both stay unparseable rather than becoming a call.

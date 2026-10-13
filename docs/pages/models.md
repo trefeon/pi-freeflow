@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **36 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
+pi-freeflow provides unified access to **37 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
 
 ## Upstream Protocol Distinction
 
@@ -11,7 +11,7 @@ pi-freeflow provides unified access to **36 curated free models** across four up
 
 ### OpenCode Zen — Chat Completions (`/v1/chat/completions`)
 - **Endpoint**: `https://opencode.ai/zen/v1/chat/completions`
-- **Models**: 8 models (Space Bunny, LongCat, MiMo, Nemotron, Big Pickle, Ling, etc.)
+- **Models**: 9 models (Cat Jam, Space Bunny, LongCat, MiMo, Nemotron, Big Pickle, Ling, etc.)
 - **Config**: `api: "openai-completions"`, supports reasoning effort
 
 ### OpenCode Zen — Messages API (`/v1/messages`)
@@ -37,12 +37,13 @@ pi-freeflow provides unified access to **36 curated free models** across four up
 - **Routing**: direct only, never through the relay pool
 - **Config**: `api: "openai-completions"`. Chat is the only upstream shape: OVH's responses endpoint rejects every array `input` with `422 input: data did not match any variant of untagged enum ResponseInput` and accepts only a bare string, so a responses-path request is translated to chat upstream and the answer mapped back — the same shape mapping the Cline lane uses.
 
-## 36 Model Specifications
+## 37 Model Specifications
 
-### OpenCode Zen (10 models)
+### OpenCode Zen (11 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
+| `cat-jam-free` | 262,144 | 131,072 | low..xhigh | ❌ |
 | `muse-spark-1.2-contributor-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `muse-spark-1.3-contributor-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `mimo-v2.6-flash-free` | 1,048,576 | 131,072 | minimal..xhigh (3 values)* | ✅ |

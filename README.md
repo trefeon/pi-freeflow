@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 36 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 37 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **36 free models** | 10 from OpenCode Zen, 15 from KiloCode Gateway, 2 from Cline, 9 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
+| **37 free models** | 11 from OpenCode Zen, 15 from KiloCode Gateway, 2 from Cline, 9 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own Cloudflare Workers, Deno Deploy, and Vercel Edge relays. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`; the two Cline models have no alias and must be typed in full. | **$0** |
@@ -185,18 +185,19 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 36 models, one command
+### 37 models, one command
 
 ```bash
 /model → freeflow → pick
 ```
 
-#### OpenCode Zen (10 models), Responses and Chat API
+#### OpenCode Zen (11 models), Responses and Chat API
 
 Good defaults for long coding sessions and agentic work.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
+| `cat-jam-free` | Cat Jam | **256K** (262.144) | **131K** (131.072) | `low … xhigh` | ❌ |
 | `muse-spark-1.2-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
 | `muse-spark-1.3-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
 | `mimo-v2.6-flash-free` | Xiaomi MiMo | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh`\* | ✅ |
@@ -358,7 +359,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ```
 src/
 ├── index.ts                 # extension entry, lifecycle hooks
-├── models.ts                # 36-model catalog definitions
+├── models.ts                # 37-model catalog definitions
 ├── catalog.ts               # model catalog cache (24h disk)
 ├── proxy.ts                 # local proxy server (127.0.0.1:28180)
 ├── client.ts                # session-side daemon attach/spawn and heartbeat
