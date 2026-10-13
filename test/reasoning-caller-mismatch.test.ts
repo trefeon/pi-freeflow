@@ -363,7 +363,10 @@ test("issuer unavailable ships a portable history in one attempt, no 400", async
 test("relay to direct also ships a portable history", async () => {
 	_resetReasoningStateForTest();
 	await withIsolatedSandboxFiles(async () => {
-		const { server, port } = await startProxy(19298);
+		// Ephemeral, not a hardcoded port: startProxy only falls back to port+1
+		// on EADDRINUSE, and a port can also become unbindable with EACCES
+		// (Windows/WSL reservations netsh does not report).
+		const { server, port } = await startProxy(0);
 		const effectivePort = port ?? 19298;
 		const realFetch = globalThis.fetch.bind(globalThis);
 		const calls: Array<{ url: string; body: string }> = [];
