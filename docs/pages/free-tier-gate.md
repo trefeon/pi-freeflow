@@ -5,9 +5,9 @@ directly against the live gateway. This page exists because the answer is not
 what the error message suggests, and because two widely-shared assumptions
 about it are provably wrong.
 
-Every result below was reproduced against `https://opencode.ai/zen/v1` on
-2026-10-08. Each row is a controlled comparison: one variable changed, same
-request otherwise.
+Unless a line says otherwise, every result below was reproduced against
+`https://opencode.ai/zen/v1` on 2026-10-08. Each row is a controlled
+comparison: one variable changed, same request otherwise.
 
 ## The refusal
 
@@ -19,6 +19,9 @@ A refused request answers `403` with a plain JSON envelope:
 
 From a plain external IP this is the **dominant** outcome: of 12 free-suffixed
 model IDs on the Zen list, 11 were refused and only one answered.
+
+Re-measured 2026-10-13, the twelfth is refused too: nothing on the free list
+answers a bare probe. See [No exception](#no-exception).
 
 Paid models fail differently and are not part of this problem:
 
@@ -56,13 +59,34 @@ Reproduced across four models — `nemotron-3.5-lightning-free`,
 `mimo-v2.6-flash-free`, `longcat-2.5-preview-free` all flip 403 → 200 when
 streaming is on and the sextet is declared.
 
-### The one exception
+### No exception
 
-`space-bunny-free` answers `200` in **both** shapes, with or without streaming
-and tools. It is the single model on the free list that a bare probe can
-always reach, which makes it a useful control when testing the gate — and a
-poor choice for probing *other* models, because it will never reproduce a
-refusal.
+`space-bunny-free` used to answer `200` in **both** shapes, with or without
+streaming and tools, which made it the one model a bare probe could always
+reach. That has stopped. Measured 2026-10-13, a direct request to
+`https://opencode.ai/zen/v1/chat/completions` declaring no tools at all:
+
+| Model | `stream` | Status |
+| --- | --- | --- |
+| `space-bunny-free` | key absent | `403` |
+| `space-bunny-free` | `true` | `403` |
+| `nemotron-3.5-lightning-free` | key absent | `403` |
+
+All three returned the same envelope. Note the middle row: streaming on its own
+is no longer enough, where it was on 2026-10-08.
+
+```json
+{"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."}}
+```
+
+So the free list has no reachable model left to use as a control, and that
+changes how a negative probe result should be read. A bare probe returning
+`403` used to be ambiguous between "the probe is broken" and "the model is
+gone", and `space-bunny-free` settled it by always answering. It can no longer
+settle anything, and a bare-probe `403` now proves neither hypothesis. Only a
+request that satisfies the gate — the placeholder sextet plus `stream: true`,
+as in the gate table above — reaches a model at all, so a refusal is only
+interpretable when it comes from that shape.
 
 ## What does not matter
 
