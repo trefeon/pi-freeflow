@@ -13,13 +13,14 @@ import {
  enrichModelDef,
  isFreeCatalogId,
  mergeCatalog,
+ sanitizeCatalogModels,
  readCatalogCache,
  refreshCatalog,
  setAliveCatalog,
  writeCatalogCache,
 } from "../src/catalog.ts";
 import { CATALOG_CACHE_FILE, CATALOG_CACHE_TTL_MS } from "../src/config.ts";
-import { ALL_MODELS } from "../src/models.ts";
+import { ALL_MODELS, OVH_MODELS } from "../src/models.ts";
 import type { RegisteredModel } from "../src/types.ts";
 
 /** Baseline static models as RegisteredModel entries. */
@@ -260,7 +261,37 @@ test("isFreeCatalogId accepts -free, :free, /free and known ids, rejects paid an
 	assert.equal(isFreeCatalogId("cline-free/deepseek-v4.1-flash"), false);
 	assert.equal(isFreeCatalogId("cline-free/kimi-k3"), false);
 	assert.equal(isFreeCatalogId("cline-free/solar-pro4"), false);
+	// OVH lane: the `ovh-free/` prefix carries `-free`, so every namespaced
+	// id stays allowed while an unnamespaced OVH id that is not in the
+	// catalog does not (otherwise a paid OVH id could ride the picker).
+	assert.equal(isFreeCatalogId("ovh-free/gpt-oss-120b"), true);
+	assert.equal(isFreeCatalogId("ovh-free/gpt-oss-20b"), true);
+	assert.equal(isFreeCatalogId("ovh-free/Qwen3.5-397B-A17B"), true);
+	assert.equal(isFreeCatalogId("ovh-free/Qwen3.5-9B"), true);
+	assert.equal(isFreeCatalogId("ovh-free/Qwen3.6-27B"), true);
+	assert.equal(isFreeCatalogId("ovh-free/Qwen3.8-27B"), true);
+	assert.equal(isFreeCatalogId("ovh-free/Mistral-Small-3.2-24B-Instruct-2506"), true);
+	assert.equal(isFreeCatalogId("ovh-free/Mistral-7B-Instruct-v0.3"), true);
+	assert.equal(isFreeCatalogId("ovh-free/Meta-Llama-3_3-70B-Instruct"), true);
+	assert.equal(isFreeCatalogId("ovh/Mistral-Nemo-Instruct-2407"), false, "an unnamespaced OVH id is not in the catalog");
  assert.equal(isFreeCatalogId(""), false);
+});
+
+test("sanitizeCatalogModels keeps every OVH id and repairs its source", () => {
+	// A stale disk cache carries a `source` label; sanitize must re-derive it
+	// from the static definition so an OVH model can never register as a
+	// Zen model, and must never drop one of the nine.
+	const seeded: RegisteredModel[] = OVH_MODELS.map((m) => ({
+		...m,
+		source: "opencode" as const,
+	}));
+	const merged = sanitizeCatalogModels(seeded);
+	assert.equal(merged.length, OVH_MODELS.length);
+	for (const m of merged) {
+		assert.equal(m.source, "ovh", `${m.id}: source must be re-derived as ovh`);
+		assert.equal(m.contextWindow > 0, true, `${m.id}: specs survive sanitize`);
+	}
+	assert.deepEqual(merged.map((m) => m.id).sort(), OVH_MODELS.map((m) => m.id).sort());
 });
 
 test("sanitizeCatalogModels repairs stale spark api to openai-responses (issue #6)", () => {

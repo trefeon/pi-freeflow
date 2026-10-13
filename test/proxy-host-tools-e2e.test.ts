@@ -96,11 +96,14 @@ function postJson(port: number, path: string, payload: unknown): Promise<{ statu
 /**
  * Start a mock upstream capturing its request body, redirect global fetch at
  * it, start the real proxy, run the client flow, then tear everything down.
+ * `capture.path` (optional) receives the upstream pathname, for assertions
+ * about which endpoint a lane actually called.
  */
 async function withProxyAndMock(
 	proxyPort: number,
 	respond: (res: http.ServerResponse) => void,
 	client: (port: number) => Promise<void>,
+	capture?: { path?: string },
 ): Promise<Record<string, unknown> | null> {
 	_resetUpstreamHealthForTest();
 	_resetFreeTierHintForTest();
@@ -109,6 +112,7 @@ async function withProxyAndMock(
 		const chunks: Buffer[] = [];
 		req.on("data", (c) => chunks.push(c as Buffer));
 		req.on("end", () => {
+			if (capture) capture.path = req.url ?? "";
 			upstreamReceivedBody = JSON.parse(Buffer.concat(chunks).toString());
 			respond(res);
 		});
@@ -479,3 +483,183 @@ test("proxy e2e: cline responses path reshapes tools with zero fingerprint", asy
 		_resetClinePoolCacheForTest();
 	}
 });
+
+const OVH_MODEL = "ovh-free/gpt-oss-20b";
+
+/** Chat SSE the OVH mock answers with (upstream always streams). */
+function ovhChatSse(model: string, text: string): string {
+	const chunk = (delta: unknown, finish?: string): string =>
+		`data: ${JSON.stringify({ id: "chatcmpl-ovh", object: "chat.completion", model, choices: [{ index: 0, delta, ...(finish ? { finish_reason: finish } : {}) }] })}\n\n`;
+	return chunk({ role: "assistant", content: "" }) + chunk({ content: text }) + chunk({}, "stop") + "data: [DONE]\n\n";
+}
+
+test("proxy e2e: ovh chat bypass has zero fingerprint, forces upstream stream, and aggregates", async () => {
+	// OVH bypass (observable contract), same shape as the Cline bypass: zero
+	// injected fingerprint tools, no store, and the lane's own transforms —
+	// the `ovh-free/` prefix stripped for the wire (OVH knows only the bare
+	// id) and caller tools reshaped to the chat shape, Pi `find` -> `glob`.
+	// Upstream always streams; a non-streaming caller gets the aggregated
+	// object back. Fails if the fingerprint call-site ever covers OVH bodies.
+	const callerTools = mixedCallerTools();
+	const rawSse = ovhChatSse("gpt-oss-20b", "hello");
+	let clientBody = "";
+	const capture: { path?: string } = {};
+	const upstream = await withProxyAndMock(29322, (res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end(rawSse);
+	}, async (port) => {
+		const res = await postJson(port, "/v1/chat/completions", {
+			model: OVH_MODEL,
+			messages: [{ role: "user", content: "hi" }],
+			stream: false,
+			tools: callerTools,
+			tool_choice: "auto",
+		});
+		assert.equal(res.status, 200);
+		clientBody = res.body;
+	}, capture);
+	assert.ok(upstream);
+	assert.equal(capture.path, "/v1/chat/completions", "an ovh chat request goes to the chat endpoint");
+	assert.equal(upstream.model, "gpt-oss-20b", "the ovh-free/ prefix must be stripped for the wire");
+	assert.equal(upstream.stream, true, "ovh upstream always streams for aggregation (transport, not fingerprint)");
+	assert.ok(!("store" in upstream), "ovh never adds store");
+	assert.equal(upstream.tool_choice, "auto", "ovh carries tool_choice verbatim");
+	assert.ok(Array.isArray(upstream.tools));
+	const tools = upstream.tools as unknown[];
+	assert.equal(tools.length, callerTools.length, "ovh adds zero fingerprint tools");
+	const names = tools.map(upstreamToolName);
+	assert.ok(!names.includes("find"), "caller find is never sent upstream as find");
+	assert.ok(names.includes("glob"), "ovh reshapes caller find to chat glob");
+	assert.ok(names.includes("Bash"), "ovh keeps the caller's Bash casing (no fingerprint canonicalization)");
+	const client = JSON.parse(clientBody) as Record<string, unknown>;
+	assert.equal(client.object, "chat.completion", "a non-streaming chat caller gets the aggregated object");
+	assert.equal((client.choices as Array<Record<string, unknown>>)[0].message !== undefined, true);
+});
+
+test("proxy e2e: ovh streamed chat request pipes the upstream SSE straight through", async () => {
+	// A streaming chat caller must not pay an aggregate-and-re-emit round
+	// trip: the upstream stream is the client stream, still fingerprint-free.
+	const callerTools = mixedCallerTools();
+	const rawSse = ovhChatSse("gpt-oss-20b", "streamed");
+	let clientBody = "";
+	let clientContentType = "";
+	const upstream = await withProxyAndMock(29325, (res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end(rawSse);
+	}, async (port) => {
+		const res = await postJson(port, "/v1/chat/completions", {
+			model: OVH_MODEL,
+			messages: [{ role: "user", content: "hi" }],
+			stream: true,
+			tools: callerTools,
+		});
+		assert.equal(res.status, 200);
+		clientBody = res.body;
+		clientContentType = res.headers["content-type"] ?? "";
+	});
+	assert.ok(upstream);
+	assert.equal(upstream.stream, true);
+	assert.ok((upstream.tools as unknown[]).length === callerTools.length, "ovh adds zero fingerprint tools");
+	assert.ok(clientContentType.includes("text/event-stream"), "a streaming caller receives the SSE stream");
+	assert.ok(clientBody.includes("streamed"), "the streamed body carries the upstream answer");
+});
+
+test("proxy e2e: an ovh short alias reaches the bare upstream id", async () => {
+	// Regression: lane detection resolves the alias, but the on-wire rewrite
+	// used to run on the raw body value, so `llama-3.3-70b` reached OVH
+	// unrecognised and answered 404 model_not_found. Canonicalisation must
+	// happen BEFORE the prefix strip, not only in lane detection.
+	const rawSse = ovhChatSse("Meta-Llama-3_3-70B-Instruct", "hi");
+	const capture: { path?: string } = {};
+	const upstream = await withProxyAndMock(29326, (res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end(rawSse);
+	}, async (port) => {
+		const res = await postJson(port, "/v1/chat/completions", {
+			model: "llama-3.3-70b",
+			messages: [{ role: "user", content: "hi" }],
+			stream: false,
+		});
+		assert.equal(res.status, 200);
+	}, capture);
+	assert.ok(upstream);
+	assert.equal(capture.path, "/v1/chat/completions", "an aliased ovh request is routed to ovh, not zen");
+	assert.equal(upstream.model, "Meta-Llama-3_3-70B-Instruct", "an alias must resolve to the bare upstream id, casing intact");
+});
+
+test("proxy e2e: ovh responses path translates to chat upstream and answers a Responses object", async () => {
+	// OVH's responses endpoint rejects every array `input` shape with 422
+	// "input: data did not match any variant of untagged enum ResponseInput"
+	// and accepts only a bare string, so the lane is chat-only upstream: the
+	// caller's input array must be mapped to chat messages, and /v1/responses
+	// must never be called. Zero fingerprint either way.
+	const callerTools = mixedCallerTools().filter((t) => ["ask", "find"].includes(String((t.function as Record<string, unknown>).name)));
+	const rawSse = ovhChatSse("Qwen3.8-27B", "mapped");
+	let clientBody = "";
+	const capture: { path?: string } = {};
+	const upstream = await withProxyAndMock(29323, (res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end(rawSse);
+	}, async (port) => {
+		const res = await postJson(port, "/v1/responses", {
+			model: "ovh-free/Qwen3.8-27B",
+			input: [{ role: "user", content: [{ type: "input_text", text: "Say OK" }] }],
+			stream: false,
+			tools: callerTools,
+			tool_choice: "auto",
+		});
+		assert.equal(res.status, 200);
+		clientBody = res.body;
+	}, capture);
+	assert.ok(upstream);
+	assert.equal(capture.path, "/v1/chat/completions", "/v1/responses must never be sent upstream for an ovh model");
+	assert.equal(upstream.model, "Qwen3.8-27B", "the ovh-free/ prefix must be stripped for the wire");
+	assert.equal(upstream.stream, true, "ovh upstream always streams for aggregation");
+	assert.ok(!("store" in upstream), "ovh never adds store");
+	assert.ok(!("input" in upstream), "the responses-only input field never reaches the chat endpoint");
+	assert.ok(Array.isArray(upstream.messages), "the caller's input array became chat messages");
+	assert.deepEqual(upstream.messages, [{ role: "user", content: "Say OK" }], "the caller's input text survives the mapping");
+	assert.ok(Array.isArray(upstream.tools));
+	assert.equal((upstream.tools as unknown[]).length, 2, "ovh adds zero fingerprint tools");
+	const names = (upstream.tools as unknown[]).map(upstreamToolName);
+	assert.ok(names.includes("ask"), "ovh keeps caller ask");
+	assert.ok(names.includes("glob"), "ovh reshapes caller find to chat glob");
+	assert.equal(upstream.tool_choice, "auto", "ovh carries tool_choice verbatim");
+	const client = JSON.parse(clientBody) as Record<string, unknown>;
+	assert.equal(client.object, "response", "the chat answer maps back to a Responses object");
+	assert.equal(client.status, "completed");
+	const output = client.output as Array<Record<string, unknown>>;
+	assert.equal(output[0].type, "message");
+	assert.deepEqual(output[0].content, [{ type: "output_text", text: "mapped" }]);
+});
+
+test("proxy e2e: ovh responses streaming caller gets Responses SSE re-emitted", async () => {
+	// A streamed responses caller must still receive a valid Responses event
+	// sequence, because upstream only ever speaks chat SSE.
+	const rawSse = ovhChatSse("Qwen3.8-27B", "streamed-response");
+	let clientBody = "";
+	let clientContentType = "";
+	const capture: { path?: string } = {};
+	const upstream = await withProxyAndMock(29327, (res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end(rawSse);
+	}, async (port) => {
+		const res = await postJson(port, "/v1/responses", {
+			model: "ovh-free/Qwen3.8-27B",
+			input: [{ role: "user", content: [{ type: "input_text", text: "Say OK" }] }],
+			stream: true,
+		});
+		assert.equal(res.status, 200);
+		clientBody = res.body;
+		clientContentType = res.headers["content-type"] ?? "";
+	}, capture);
+	assert.ok(upstream);
+	assert.equal(capture.path, "/v1/chat/completions", "/v1/responses must never be sent upstream for an ovh model");
+	assert.ok(Array.isArray(upstream.messages), "upstream spoke chat, never responses");
+	assert.ok(!("input" in upstream), "the responses-only input field never reaches the chat endpoint");
+	assert.ok(clientContentType.includes("text/event-stream"), "a streaming responses caller receives SSE");
+	assert.ok(clientBody.includes("response.completed"), "the SSE sequence carries a completed Responses event");
+	assert.ok(clientBody.includes("streamed-response"), "the upstream answer survives the round trip");
+	assert.ok(clientBody.includes("[DONE]"), "the stream terminates cleanly");
+});
+

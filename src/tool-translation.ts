@@ -660,8 +660,11 @@ export function responsesInputToChatMessages(input: unknown): Record<string, unk
  * instructions (as the leading system message), input, tools (reshaped to
  * chat via translateToolsForPath), tool_choice, and plain sampling scalars.
  * Stream policy stays with the caller: this maps shape, never behavior.
+ *
+ * Lane-neutral: used by every direct-only lane that serves chat upstream and
+ * answers a responses-path caller (Cline, OVHcloud AI Endpoints).
  */
-export function clineChatBodyFromResponsesBody(body: Record<string, unknown>): Record<string, unknown> {
+export function chatBodyFromResponsesBody(body: Record<string, unknown>): Record<string, unknown> {
  const out: Record<string, unknown> = {};
  if (typeof body.model === "string") out.model = body.model;
  const messages: Record<string, unknown>[] = [];
@@ -733,7 +736,7 @@ export function chatResponsesJsonFromChatCompletion(chat: Record<string, unknown
 /**
  * Wrap a Responses object in the minimal valid Responses SSE sequence
  * (created + completed + DONE) so streamed responses-path clients get a
- * stream even though Cline only serves chat upstream. Round-trips through
+ * stream even though the upstream lane only serves chat. Round-trips through
  * sseToResponsesJson: the completed event carries the full object.
  */
 export function chatResponsesSseFromChatCompletion(resp: Record<string, unknown>): string {

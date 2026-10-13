@@ -3,7 +3,7 @@
  */
 
 export type ProviderApi = "openai-completions" | "openai-responses" | "anthropic-messages";
-export type Upstream = "opencode" | "kilo" | "cline";
+export type Upstream = "opencode" | "kilo" | "cline" | "ovh";
 
 export type ThinkingLevel =
  | "off"

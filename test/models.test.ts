@@ -9,7 +9,11 @@ import {
  OPENCODE_MODELS,
  KILO_MODELS,
  CLINE_MODELS,
+ OVH_MODELS,
+ OVH_MODEL_PREFIX,
+ ovhUpstreamModelId,
  KILO_MODEL_IDS,
+ isOvhModel,
  getModelDef,
  isKiloModel,
  getModelUpstream,
@@ -17,13 +21,14 @@ import {
  getAllRegisteredModels,
 } from "../src/models.ts";
 
-test("catalog composition: OpenCode + Kilo + Cline lists make up the full catalog", () => {
+test("catalog composition: OpenCode + Kilo + Cline + OVH lists make up the full catalog", () => {
  // Composition over hardcoded counts — resilient to catalog growth while
  // still locking the invariant that every model belongs to exactly one source.
  assert.ok(OPENCODE_MODELS.length > 0, "OpenCode list must be non-empty");
  assert.ok(KILO_MODELS.length > 0, "Kilo list must be non-empty");
  assert.ok(CLINE_MODELS.length > 0, "Cline list must be non-empty");
- assert.equal(OPENCODE_MODELS.length + KILO_MODELS.length + CLINE_MODELS.length, ALL_MODELS.length);
+ assert.ok(OVH_MODELS.length > 0, "OVH list must be non-empty");
+ assert.equal(OPENCODE_MODELS.length + KILO_MODELS.length + CLINE_MODELS.length + OVH_MODELS.length, ALL_MODELS.length);
 });
 
 test("all model IDs are unique", () => {
@@ -270,6 +275,20 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   // Cline direct-only (per-user pool — https://api.cline.bot)
   "cline-free/muse-spark-1.3-contributor": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "z-ai/glm-5.3-flash": { ctx: 1_048_576, max: 131_072, reasoning: true },
+  // OVHcloud AI Endpoints, keyless direct-only. Added 2026-10-13: live
+  // /v1/models listing + keyless chat 200 + SSE with real tool_calls. max is
+  // the conservative FLOOR across twin providers (per-provider caps for the
+  // same model range 4K..256K); reasoning read off a populated `reasoning`
+  // field on a non-tool answer.
+  "ovh-free/gpt-oss-120b": { ctx: 131_072, max: 32_768, reasoning: true },
+  "ovh-free/gpt-oss-20b": { ctx: 131_072, max: 32_768, reasoning: true },
+  "ovh-free/Qwen3.5-397B-A17B": { ctx: 262_144, max: 65_536, reasoning: true },
+  "ovh-free/Qwen3.5-9B": { ctx: 262_144, max: 65_536, reasoning: true },
+  "ovh-free/Qwen3.6-27B": { ctx: 262_144, max: 65_536, reasoning: true },
+  "ovh-free/Qwen3.8-27B": { ctx: 262_144, max: 32_768, reasoning: true },
+  "ovh-free/Mistral-Small-3.2-24B-Instruct-2506": { ctx: 131_072, max: 16_384, reasoning: false },
+  "ovh-free/Mistral-7B-Instruct-v0.3": { ctx: 65_536, max: 65_536, reasoning: false },
+  "ovh-free/Meta-Llama-3_3-70B-Instruct": { ctx: 131_072, max: 16_384, reasoning: false },
  };
  for (const [id, { ctx, max, reasoning }] of Object.entries(locked)) {
   const m = getModelDef(id);
@@ -293,4 +312,112 @@ test("new alias map resolves to canonical kilo ids", () => {
 test("union-alpha is pruned from the static catalog", () => {
  assert.equal(MODEL_MAP.get("union-alpha"), undefined, "union-alpha must not be in MODEL_MAP");
  assert.equal(ALL_MODELS.some((m) => m.id === "union-alpha"), false, "union-alpha must not be in ALL_MODELS");
+});
+
+test("2026-10-13 OVH lane: every id routes to the ovh upstream, never Zen", () => {
+ // Lane resolution is the load-bearing assertion: a miss here sends the
+ // request into the Zen branch, where the free-tier fingerprint and the
+ // relay pool would both be applied to a keyless OVH endpoint.
+ for (const m of OVH_MODELS) {
+  assert.equal(getModelUpstream(m.id), "ovh", `${m.id} must resolve to the ovh upstream`);
+  assert.equal(isOvhModel(m.id), true, `${m.id} must be recognized as an OVH id`);
+  assert.equal(isOvhModel(resolveCanonicalModelId(m.id)), true, `${m.id} must be recognized through alias resolution`);
+  assert.equal(isKiloModel(m.id), false, `${m.id} must never resolve to Kilo`);
+ }
+ // A Zen/Kilo/Cline id must never leak into the OVH lane.
+ assert.equal(isOvhModel("muse-spark-1.3-contributor-free"), false);
+ assert.equal(isOvhModel("dots-studio/dots-3-note-preview:free"), false);
+ assert.equal(isOvhModel("z-ai/glm-5.3-flash"), false);
+ assert.equal(getModelUpstream("muse-spark-1.3-contributor-free"), "opencode");
+});
+
+test("2026-10-13 OVH aliases resolve to the ovh-free catalog ids", () => {
+ const aliases: Record<string, string> = {
+  "gpt-oss-120b": "ovh-free/gpt-oss-120b",
+  "gpt-oss-20b": "ovh-free/gpt-oss-20b",
+  "qwen3.5-397b": "ovh-free/Qwen3.5-397B-A17B",
+  "qwen3.5-9b": "ovh-free/Qwen3.5-9B",
+  "qwen3.6-27b": "ovh-free/Qwen3.6-27B",
+  "qwen3.8-27b": "ovh-free/Qwen3.8-27B",
+  "mistral-small-3.2": "ovh-free/Mistral-Small-3.2-24B-Instruct-2506",
+  "mistral-7b-v0.3": "ovh-free/Mistral-7B-Instruct-v0.3",
+  "llama-3.3-70b": "ovh-free/Meta-Llama-3_3-70B-Instruct",
+ };
+ for (const [alias, canonical] of Object.entries(aliases)) {
+  assert.equal(resolveCanonicalModelId(alias), canonical, `${alias} alias`);
+  assert.ok(getModelDef(alias), `${alias} must resolve to a model definition`);
+  assert.equal(getModelUpstream(alias), "ovh", `${alias} must route to OVH`);
+ }
+});
+
+test("2026-10-13 OVH ids resolve to the bare wire id, prefix stripped after canonicalisation", () => {
+ // OVH rejects the namespaced id with 404 model_not_found (live 2026-10-13),
+ // and the suffix is case-sensitive on the wire, so the strip must be
+ // exact-prefix-only and must not lowercase anything.
+ for (const m of OVH_MODELS) {
+  assert.ok(m.id.startsWith(OVH_MODEL_PREFIX), `${m.id} must carry the lane prefix`);
+  const upstream = ovhUpstreamModelId(m.id);
+  assert.ok(upstream.length > 0, `${m.id} must yield a non-empty upstream id`);
+  assert.equal(upstream, upstream.replace(OVH_MODEL_PREFIX, ""), `${m.id}: prefix removed exactly once`);
+  assert.equal(upstream, upstream.trim(), `${m.id}: no whitespace around the upstream id`);
+  assert.ok(!upstream.includes("/"), `${m.id}: the wire id must carry no path separator`);
+ }
+ // Case must survive verbatim: the OVH listing ships these exact spellings.
+ assert.equal(ovhUpstreamModelId("ovh-free/Qwen3.5-397B-A17B"), "Qwen3.5-397B-A17B");
+ assert.equal(ovhUpstreamModelId("ovh-free/Meta-Llama-3_3-70B-Instruct"), "Meta-Llama-3_3-70B-Instruct");
+ // Regression: a short alias must resolve BEFORE the prefix comes off. The
+ // rewrite used to run on the raw body value, so `llama-3.3-70b` reached OVH
+ // unrecognised and answered 404 model_not_found, even though lane detection
+ // had already routed it correctly.
+ assert.equal(ovhUpstreamModelId("llama-3.3-70b"), "Meta-Llama-3_3-70B-Instruct");
+ assert.equal(ovhUpstreamModelId("gpt-oss-120b"), "gpt-oss-120b");
+ assert.equal(ovhUpstreamModelId("qwen3.5-397b"), "Qwen3.5-397B-A17B");
+ assert.equal(ovhUpstreamModelId("mistral-small-3.2"), "Mistral-Small-3.2-24B-Instruct-2506");
+ assert.equal(ovhUpstreamModelId("mistral-7b-v0.3"), "Mistral-7B-Instruct-v0.3");
+ // Every catalog id and every alias must produce a bare, prefix-free id.
+ for (const m of OVH_MODELS) {
+  for (const candidate of [m.id, resolveCanonicalModelId(m.id)]) {
+   assert.equal(ovhUpstreamModelId(candidate), ovhUpstreamModelId(m.id), `${candidate} must resolve to the same wire id`);
+  }
+ }
+});
+
+test("2026-10-13 OVH spec-drift guard: context windows change only with a deliberate edit", () => {
+ // OVH publishes one advertised context per model; a silent change upstream
+ // must fail here so the catalog is edited on purpose instead of drifting.
+ const lockedCtx: Record<string, number> = {
+  "ovh-free/gpt-oss-120b": 131_072,
+  "ovh-free/gpt-oss-20b": 131_072,
+  "ovh-free/Qwen3.5-397B-A17B": 262_144,
+  "ovh-free/Qwen3.5-9B": 262_144,
+  "ovh-free/Qwen3.6-27B": 262_144,
+  "ovh-free/Qwen3.8-27B": 262_144,
+  "ovh-free/Mistral-Small-3.2-24B-Instruct-2506": 131_072,
+  "ovh-free/Mistral-7B-Instruct-v0.3": 65_536,
+  "ovh-free/Meta-Llama-3_3-70B-Instruct": 131_072,
+ };
+ for (const [id, ctx] of Object.entries(lockedCtx)) {
+  const m = getModelDef(id);
+  assert.ok(m, `drift-guard model ${id} exists`);
+  assert.equal(m!.contextWindow, ctx, `${id}: context window drifted — re-probe OVH and edit the catalog deliberately`);
+  // A window that silently grew to the 1M tier would let the host build a
+  // prompt OVH refuses; that is the failure mode this guard exists to stop.
+  assert.ok(m!.contextWindow < 1_000_000, `${id}: no OVH model may claim the 1M tier`);
+ }
+ assert.equal(Object.keys(lockedCtx).length, OVH_MODELS.length, "every OVH model is drift-guarded");
+});
+
+test("2026-10-13 OVH reasoning models lock the two confirmed effort levels", () => {
+ for (const m of OVH_MODELS) {
+  if (!m.reasoning) {
+   assert.equal(m.thinkingLevelMap, undefined, `${m.id} non-reasoning must declare no map`);
+   continue;
+  }
+  const map = m.thinkingLevelMap!;
+  assert.deepEqual(map, { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: null }, `${m.id} effort map`);
+  // An omitted key leaves the level selectable in the host, so every level
+  // must be present explicitly — minimal included.
+  assert.ok("minimal" in map, `${m.id}: minimal must be an explicit null, not omitted`);
+  assert.ok("medium" in map && "xhigh" in map && "max" in map, `${m.id}: unconfirmed levels must be explicit nulls`);
+ }
 });

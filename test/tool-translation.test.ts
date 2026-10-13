@@ -20,7 +20,7 @@ import {
 	apiForPathname,
 	buildFindGlobRestore,
 	canonicalizeTool,
-	clineChatBodyFromResponsesBody,
+	chatBodyFromResponsesBody,
 	injectFingerprintTools,
 	restoreToolChoiceForCaller,
 	restoreToolNameForCaller,
@@ -713,7 +713,7 @@ test("contract: cline body translation reshapes tools with zero fingerprint", ()
 	// Kilo/Cline paths bypass the fingerprint entirely: tools are only
 	// reshaped to chat, never injected, and the stream policy is untouched.
 	const caller = [richCallerTool("ask", "omp"), richCallerTool("find", "pi")];
-	const out = clineChatBodyFromResponsesBody({
+	const out = chatBodyFromResponsesBody({
 		model: "cline-free/deepseek-v4.1-flash",
 		input: [{ role: "user", content: "hi" }],
 		tools: JSON.parse(JSON.stringify(caller)),
