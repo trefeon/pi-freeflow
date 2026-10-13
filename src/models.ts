@@ -1,10 +1,10 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 30 verified free models (live-verified 2026-10-09):
+ * Defines the 27 verified free models (live-verified 2026-10-13):
  * - 10 OpenCode Zen models (2 Responses API + 8 Chat Completions)
  * - 15 KiloCode Keyless Gateway models (OpenRouter format)
- * - 5 Cline direct-only models (per-user pool)
+ * - 2 Cline direct-only models (per-user pool)
  */
 
 import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
@@ -378,24 +378,10 @@ export const KILO_MODELS: ModelDef[] = [
 ];
 
 /**
- * Full-range effort map (Solar Pro 4 — reference lists none..max; off stays
- * null per repo convention). The proxy passes effort through verbatim and
- * upstream serves the levels it supports.
- */
-const CLINE_REASONING_MAP: ThinkingLevelMap = {
- off: null,
- minimal: "minimal",
- low: "low",
- medium: "medium",
- high: "high",
- xhigh: "xhigh",
- max: "max",
-};
-/**
- * Narrow effort map for DeepSeek V4 Flash + GLM Flash + Kimi K3 — reference
- * reasoningOptions list effort values [low, high, max] only (no toggle
- * on GLM); minimal/medium/xhigh are not offered so the host never sends
- * an unsupported level (the proxy forwards effort verbatim).
+ * Narrow effort map for the Cline flash models still in the catalog (GLM 5.3
+ * Flash) — the reference reasoningOptions list effort values [low, high, max]
+ * only (no toggle on GLM); minimal/medium/xhigh are not offered so the host
+ * never sends an unsupported level (the proxy forwards effort verbatim).
  */
 const CLINE_FLASH_REASONING_MAP: ThinkingLevelMap = {
  off: null,
@@ -415,15 +401,6 @@ const CLINE_FLASH_REASONING_MAP: ThinkingLevelMap = {
  * Endpoint: https://api.cline.bot/api/v1/chat/completions
  */
 export const CLINE_MODELS: ModelDef[] = [
- {
-  id: "cline-free/deepseek-v4.1-flash",
-  name: "DeepSeek V4.1 Flash [Cline]",
-  reasoning: true,
-  contextWindow: 1_000_000,
-  maxTokens: 384_000,
-  input: ["text", "image"],
-  thinkingLevelMap: CLINE_FLASH_REASONING_MAP,
- },
  {
   id: "cline-free/muse-spark-1.3-contributor",
   name: "Muse Spark 1.3 [Cline]",
@@ -450,28 +427,6 @@ export const CLINE_MODELS: ModelDef[] = [
   maxTokens: 131_072,
  input: ["text", "image", "video"],
   thinkingLevelMap: CLINE_FLASH_REASONING_MAP,
- },
- {
-  // Cline advertises this sixth free model only to its desktop client
-  // identity (see CLINE_CLIENT_HEADERS). Specs follow the vendored Cline
-  // catalog; maxTokens keeps the tighter chat value so a request can never
-  // overrun what the chat endpoint accepts.
-  id: "cline-free/kimi-k3",
-  name: "Kimi K3 [Cline]",
-  reasoning: true,
-  contextWindow: 1_048_576,
-  maxTokens: 131_072,
- input: ["text", "image", "video"],
-  thinkingLevelMap: CLINE_FLASH_REASONING_MAP,
- },
- {
-  id: "cline-free/solar-pro4",
-  name: "Solar Pro4 [Cline]",
-  reasoning: true,
-  contextWindow: 524_288,
-  maxTokens: 131_072,
-  input: ["text"],
-  thinkingLevelMap: CLINE_REASONING_MAP,
  },
 ];
 
@@ -534,7 +489,7 @@ export const CLINE_MODEL_IDS = new Set<string>([
   .map(([alias]) => alias),
 ]);
 /**
- * Combined list of all 30 static free models (canonical)
+ * Combined list of all 27 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS];
 

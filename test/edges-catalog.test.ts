@@ -257,6 +257,9 @@ test("isFreeCatalogId accepts -free, :free, /free and known ids, rejects paid an
  assert.equal(isFreeCatalogId("z-ai/glm-5.2:free"), false);
  assert.equal(isFreeCatalogId("hy3-free"), false);
  assert.equal(isFreeCatalogId("thinkingmachines/inkling:free"), false);
+	assert.equal(isFreeCatalogId("cline-free/deepseek-v4.1-flash"), false);
+	assert.equal(isFreeCatalogId("cline-free/kimi-k3"), false);
+	assert.equal(isFreeCatalogId("cline-free/solar-pro4"), false);
  assert.equal(isFreeCatalogId(""), false);
 });
 

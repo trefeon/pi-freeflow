@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **30 curated free models** across three upstream providers: **OpenCode Zen**, **KiloCode Gateway**, and **Cline**.
+pi-freeflow provides unified access to **27 curated free models** across three upstream providers: **OpenCode Zen**, **KiloCode Gateway**, and **Cline**.
 
 ## Upstream Protocol Distinction
 
@@ -30,7 +30,7 @@ pi-freeflow provides unified access to **30 curated free models** across three u
 - **Models**: 5 models from Cline's rotating free promo; requests roll across saved logins on the daily free limit
 - **Routing**: direct only, never through the relay pool
 
-## 30 Model Specifications
+## 27 Model Specifications
 
 ### OpenCode Zen (10 models)
 
@@ -46,7 +46,7 @@ pi-freeflow provides unified access to **30 curated free models** across three u
 | `longcat-2.5-preview-free` | 1,000,000 | 131,072 | minimal..max | ✅ |
 | `step-5-preview-free` | 1,000,000 | 65,536 | low..high | ✅ |
 | `ling-3.1-flash-free` | 262,144 | 32,768 | minimal..max | ❌ |
-### KiloCode Gateway (16 models)
+### KiloCode Gateway (15 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -66,17 +66,14 @@ pi-freeflow provides unified access to **30 curated free models** across three u
 | `step-5-preview:kilo` | 1,000,000 | 64,000 | OpenRouter | ✅ |
 | `ling-3.1-flash-kilo` | 262,144 | 32,768 | OpenRouter | ❌ |
 
-### Cline (5 models)
+### Cline (2 models)
 
 Cline free models come from a rotating per-account promo and need a browser login (`/freeflow cline login`; manage with `/freeflow cline accounts` and `/freeflow cline logout`). They run direct only, never through the relay pool.
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
-| `cline-free/deepseek-v4.1-flash` | 1,000,000 | 384,000 | `low`, `high`, `max` | ✅ |
 | `cline-free/muse-spark-1.3-contributor` | 1,048,576 | 131,072 | `minimal`..`xhigh` | ✅ |
 | `z-ai/glm-5.3-flash` | 1,000,000 | 131,072 | `low`, `high`, `max` | ✅ |
-| `cline-free/kimi-k3` | 1,048,576 | 131,072 | `low`, `high`, `max` | ✅ |
-| `cline-free/solar-pro4` | 524,288 | 131,072 | `minimal`..`max` | ❌ |
 
 \* MiMo collapses `minimal→low` and `xhigh→high` upstream — 5 labels, 3 effective effort values (low/medium/high).
 
@@ -85,7 +82,7 @@ Cline free models come from a rotating per-account promo and need a browser logi
 | Upstream | Models | Host | Wire Protocol | Auth |
 | **OpenCode Zen** | 10 | `opencode.ai/zen` | `/zen/v1` (Responses + Chat) | Keyless |
 | **KiloCode Gateway** | 16 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
-| **Cline** | 5 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
+| **Cline** | 2 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 
 ## Stealth previews
 

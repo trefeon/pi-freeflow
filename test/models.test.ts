@@ -54,8 +54,6 @@ test("1M context window models are properly configured", () => {
 		"muse-spark-1.2-contributor-free",
 		"muse-spark-1.3-contributor-free",
 		"cline-free/muse-spark-1.3-contributor",
-		"cline-free/deepseek-v4.1-flash",
-		"cline-free/kimi-k3",
 		"z-ai/glm-5.3-flash",
 		"mimo-v2.6-flash-free",
 		"step-5-preview-free",
@@ -270,12 +268,8 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 		// Added 2026-10-07 (live: Kilo free list isFree:true + keyless chat 200; 262K ctx)
 		"inclusionai/ling-3.1-flash": { ctx: 262_144, max: 32_768, reasoning: true },
   // Cline direct-only (per-user pool — https://api.cline.bot)
-  "cline-free/deepseek-v4.1-flash": { ctx: 1_000_000, max: 384_000, reasoning: true },
   "cline-free/muse-spark-1.3-contributor": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "z-ai/glm-5.3-flash": { ctx: 1_048_576, max: 131_072, reasoning: true },
-  // Added 2026-09-22 (live: desktop-identity free list + chat probe)
-  "cline-free/kimi-k3": { ctx: 1_048_576, max: 131_072, reasoning: true },
-  "cline-free/solar-pro4": { ctx: 524_288, max: 131_072, reasoning: true },
  };
  for (const [id, { ctx, max, reasoning }] of Object.entries(locked)) {
   const m = getModelDef(id);

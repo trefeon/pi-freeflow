@@ -116,15 +116,17 @@ export const CLINE_CLIENT_VERSION = "3.5.54";
  * mirror reference/cline providers/request-headers.ts
  * (DEFAULT_CLINE_REQUEST_HEADERS) — no credential is derived from them.
  *
- * `X-CLIENT-TYPE` is the Cline desktop app's identity, and it is what the
- * free-model feed keys on (measured live 2026-09-22). The recommended-models
- * endpoint returns five free entries for `cline-sdk` / `cline-cli` / the
- * `VSCode Extension` label, but six for `cline-desktop` — the extra one being
- * `cline-free/kimi-k3`. The identity header alone flips that list
- * (`X-PLATFORM: Cline Desktop` does not; `X-CLIENT-TYPE` decides), and the
- * sixth model serves live chat completions (HTTP 200 + SSE) for the saved
- * per-user login under either identity. Version and User-Agent stay as-is:
- * the feed serves the six-model list with them unchanged.
+ * `X-CLIENT-TYPE` is the Cline desktop app's identity, and it gates the
+ * `cline-free/*` id space (measured live 2026-09-22: that prefix answers 403
+ * "only available via Cline product surfaces" with a bare bearer, and 200 with
+ * this set; every non-prefixed id answers 200 either way). The header is kept
+ * because one catalog id still depends on it — after the 2026-10-13 prune,
+ * `cline-free/muse-spark-1.3-contributor` is the last prefixed model in the
+ * catalog. It also decided the free-model feed at the time: five entries for
+ * `cline-sdk` / `cline-cli` / the `VSCode Extension` label against six for
+ * `cline-desktop`, the extra one being `cline-free/kimi-k3`. That sixth model
+ * is retired upstream and no longer requested. Version and User-Agent stay
+ * as-is: the feed served the desktop list with them unchanged.
  */
 export const CLINE_CLIENT_HEADERS: Record<string, string> = {
  "HTTP-Referer": "https://cline.bot",
@@ -138,12 +140,12 @@ export const CLINE_CLIENT_HEADERS: Record<string, string> = {
 /**
  * Free-limit report carried by a Cline 429 body, e.g.
  * {"error":{"code":"INFERENCE_CAP_ERROR","message":"Error 429: Daily free limit
- * reached on model deepseek/deepseek-v4.1-flash. Try again in 20h 4m"}}.
+ * reached on model meta/muse-spark-1.3-contributor. Try again in 20h 4m"}}.
  *
  * `modelId` is the name Cline spells in its own body, which is a different
- * namespace from the id this proxy requests (measured live 2026-09-22: we ask
- * for `cline-free/deepseek-v4.1-flash`, Cline answers about
- * `deepseek/deepseek-v4.1-flash`). The limit cache is therefore keyed by the
+ * namespace from the id this proxy requests (measured live 2026-10-13: we ask
+ * for `cline-free/muse-spark-1.3-contributor`, Cline answers about
+ * `meta/muse-spark-1.3-contributor`). The limit cache is therefore keyed by the
  * requested id; `modelId` is diagnostics only.
  */
 export interface ClineFreeLimit {

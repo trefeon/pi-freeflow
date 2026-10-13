@@ -14,12 +14,12 @@ function extractResolveRelayTarget(worker: string): string {
  return worker;
 }
 
-test("catalog 30 = 10 OpenCode + 15 Kilo + 5 Cline", () => {
+test("catalog 27 = 10 OpenCode + 15 Kilo + 2 Cline", () => {
 	assert.equal(OPENCODE_MODELS.length, 10);
 	assert.equal(KILO_MODELS.length, 15);
-	assert.equal(CLINE_MODELS.length, 5);
-	assert.equal(ALL_MODELS.length, 30);
-	assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 30);
+	assert.equal(CLINE_MODELS.length, 2);
+	assert.equal(ALL_MODELS.length, 27);
+	assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 27);
 });
 
 test("aliases deduplicated and wrong removed", () => {

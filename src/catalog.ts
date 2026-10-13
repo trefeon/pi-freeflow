@@ -66,6 +66,15 @@ import type {
  *   and responses from LLMs", not a chat model. Same exclusion class as
  *   jev-1.13-free: live, wrong shape for an agentic harness, so it must never
  *   re-enter the picker via disk cache or upstream merge.
+ * - cline-free/deepseek-v4.1-flash, cline-free/kimi-k3, cline-free/solar-pro4:
+ *   retired upstream (2026-10-13) — probed live twice each against the real
+ *   Cline pool, every attempt answered HTTP 404 `{"error":"model not found",
+ *   "success":false,"hint":"Cline has no such model. Refresh the model list and
+ *   retry."}`, while the two Cline models that survive (cline-free/
+ *   muse-spark-1.3-contributor and z-ai/glm-5.3-flash) answered 200 with the
+ *   same account and request shape. The lane is healthy; these three ids are
+ *   gone, so they must never re-enter the picker from disk cache or an
+ *   upstream merge.
  */
 export const DEAD_MODEL_IDS = new Set<string>([
  "jev-1.13-free",
@@ -93,6 +102,9 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "fledge-alpha-free",
  "inclusionai/ling-3.0-flash-sante:free",
  "stepfun/step-3.7-flash:free",
+ "cline-free/deepseek-v4.1-flash",
+ "cline-free/kimi-k3",
+ "cline-free/solar-pro4",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.
@@ -132,7 +144,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 30 verified models for 0ms instant availability.
+ * Initialized with all 27 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
  ...m,
