@@ -90,7 +90,7 @@ async function run() {
     const burstPromises = Array.from({ length: burstCount }, async (_, i) => {
       const res = await relayFetch("https://opencode.ai/zen/v1/chat/completions", {
         method: "POST",
-        body: JSON.stringify({ model: "mimo-v2.5-free", messages: [{ role: "user", content: `msg ${i}` }] }),
+        body: JSON.stringify({ model: "mimo-v2.6-flash-free", messages: [{ role: "user", content: `msg ${i}` }] }),
       });
       if (res.status !== 200) throw new Error(`Burst request ${i} failed with ${res.status}`);
       return res.json();

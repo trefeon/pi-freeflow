@@ -205,7 +205,11 @@ try {
    continue;
   }
   const override = process.env.FF_PATH;
-  const endpoint = override ?? (MODEL_MAP.get(model)?.api === "openai-chat" ? "/v1/chat/completions" : "/v1/responses");
+  // Catalog chat models carry no api field (undefined = chat completions); only
+  // the responses family declares api: "openai-responses". Mirror the proxy's
+  // registration rule instead of inverting it, or every chat model is probed
+  // on the responses protocol and 400s ModelProtocolUnsupported.
+  const endpoint = override ?? (MODEL_MAP.get(model)?.api === "openai-responses" ? "/v1/responses" : "/v1/chat/completions");
   // FF_FULL=1 mirrors the real caller: every OMP host tool plus the six
   // injected fingerprint slots, which is the tool-set density that triggers
   // the malformation (a lone todo tool stays canonical).

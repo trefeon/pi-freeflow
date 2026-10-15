@@ -30,6 +30,8 @@ import {
  ALL_HOST_TOOL_NAMES,
  OMP_HIDDEN_TOOL_NAMES,
  OPENCODE_FINGERPRINT_TOOLS,
+ buildFindGlobRestore,
+ restoreToolNameForCaller,
  translateToolsForPath,
 } from "../src/tool-translation.ts";
 import { enforceOpencodeFingerprint } from "../src/opencode-fingerprint.ts";
@@ -118,9 +120,11 @@ function phaseA(): number {
   // Exercise rename paths too: Pi find + capital Bash ride along.
   const translated = translateToolsForPath(caller, path);
   const got = new Set(translated.map((t) => upstreamName(t as Record<string, unknown>)?.toLowerCase()));
-  const missing = names
-   .map((n) => (n === "find" ? "glob" : n.toLowerCase()))
-   .filter((n) => !got.has(n));
+  // The translator renames find->glob only when the caller declared no glob of
+  // its own; mirror that rule, or the expectations compare unrelated tools.
+  const callerDeclaresGlob = names.some((n) => n.toLowerCase() === "glob");
+  const upstreamNameForCaller = (n: string): string => (n === "find" && !callerDeclaresGlob ? "glob" : n.toLowerCase());
+  const missing = names.map(upstreamNameForCaller).filter((n) => !got.has(n));
   if (missing.length > 0) {
    failures++;
    console.log(`  ✗ ${path}: dropped upstream: ${missing.join(",")}`);
@@ -157,7 +161,7 @@ function phaseA(): number {
     .filter((t) => paramsOf(t as Record<string, unknown>) !== null && "additionalProperties" in (paramsOf(t as Record<string, unknown>) as Record<string, unknown>))
     .map((t) => {
      const n = upstreamName(t as Record<string, unknown>)?.toLowerCase() ?? "";
-     return n === "find" ? "glob" : n;
+     return n === "find" && !callerDeclaresGlob ? "glob" : n;
     }),
   );
   const outAP = new Set(
@@ -172,6 +176,25 @@ function phaseA(): number {
    console.log(`  ✗ ${path}: additionalProperties added=[${addedAP.join(",")}] stripped=[${strippedAP.join(",")}]`);
   }
   if (failures === 0) console.log(`  ✓ ${path}: ${out.length} tools upstream, sextet once each, stream:true`);
+ }
+ // Rename matrix: without a caller glob (Pi inventory) find must fill the
+ // gate's glob slot upstream and restore to find downstream.
+ const piNames = names.filter((n) => n.toLowerCase() !== "glob");
+ const piCaller = piNames.map((n, i) => callerTool(n, "/v1/chat/completions", i));
+ const piOut = translateToolsForPath(piCaller, "/v1/chat/completions", { forFingerprint: true });
+ const piUp = new Set(piOut.map((t) => upstreamName(t as Record<string, unknown>)?.toLowerCase()));
+ if (!piUp.has("glob") || piUp.has("find")) {
+  failures++;
+  console.log(`  ✗ rename: Pi find must ride upstream as glob (got: ${piNames.filter((n) => piUp.has(n.toLowerCase())).join(",") || "neither"})`);
+ } else {
+  const restore = buildFindGlobRestore(piCaller);
+  const back = restoreToolNameForCaller("glob", restore);
+  if (back !== "find") {
+   failures++;
+   console.log(`  ✗ rename: upstream glob restored as ${back}, expected find`);
+  } else {
+   console.log("  ✓ rename: Pi find -> upstream glob -> caller find");
+  }
  }
  // Hidden OMP tools explicitly visible in the matrix.
  console.log(`  hidden: ${[...OMP_HIDDEN_TOOL_NAMES].join(",")} covered above`);
@@ -202,18 +225,18 @@ function liveSpec(only: string): LiveSpec {
  }
  if (only === "messages") {
   return {
-   only, path: "/v1/messages", model: "union-alpha", verdict: "info",
+   only, path: "/v1/messages", model: "mimo-v2.6-flash-free", verdict: "info",
    body: {
-    model: "union-alpha", max_tokens: 64,
+    model: "mimo-v2.6-flash-free", max_tokens: 64,
     messages: [{ role: "user", content: "Reply with exactly: OK" }],
     tools: msgTools, stream: false,
    },
   };
  }
  return {
-  only: "chat", path: "/v1/chat/completions", model: "mimo-v2.5-free", verdict: "hard",
+  only: "chat", path: "/v1/chat/completions", model: "mimo-v2.6-flash-free", verdict: "hard",
   body: {
-   model: "mimo-v2.5-free",
+   model: "mimo-v2.6-flash-free",
    messages: [{ role: "user", content: "Reply with exactly: OK" }],
    tools: chatTools, tool_choice: "auto", max_tokens: 64, stream: false,
   },
@@ -282,10 +305,14 @@ async function phaseB(spec: LiveSpec): Promise<number> {
    console.log(`  ~ HTTP 429 — gate passed (no FreeTierError), shared-IP quota hit: ${excerpt}`);
    return 0;
   }
-  // Messages-probe rule (union-alpha has no serving backend yet): 403/400
-  // prove the gate/shape path and hard-fail; 401/404/5xx mean the model is
-  // unserved and stay info-only. Hard probes fail on any other non-200/429.
-  const hardFail = spec.verdict === "hard" || res.status === 403 || res.status === 400;
+  // Messages-probe rule: 403 FreeTierError and shape 400s prove the
+  // gate/payload path and hard-fail. A 400 that is upstream's own protocol or
+  // model gate (ModelProtocolUnsupported — Zen serves chat models on the chat
+  // protocol only, ModelDeprecated/ModelNotFound/unavailable) says nothing
+  // about the tool payload, so an info probe stays info-only. Hard probes
+  // still fail on any non-200/429 so a dead spec model is caught loudly.
+  const protocolGated = spec.verdict === "info" && /ModelProtocolUnsupported|Model is unavailable|ModelNotFound|ModelDeprecated/i.test(text);
+  const hardFail = spec.verdict === "hard" || res.status === 403 || (res.status === 400 && !protocolGated);
   console.log(`  ${hardFail ? "✗" : "~"} HTTP ${res.status}${gate ? " FreeTierError" : ""}: ${excerpt}`);
   return hardFail ? 1 : 0;
  } catch (e) {
