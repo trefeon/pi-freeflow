@@ -12,7 +12,7 @@
  */
 
 import { startProxy } from "../src/proxy.ts";
-import { OPENCODE_MODELS, KILO_MODELS, ALL_MODELS } from "../src/models.ts";
+import { OPENCODE_MODELS, KILO_MODELS, ALL_MODELS, MODEL_MAP} from "../src/models.ts";
 import { opencodeHeaders } from "../src/config.ts";
 import type { ModelDef } from "../src/types.ts";
 
@@ -20,7 +20,7 @@ const TEST_PORT = 29480;
 /** Slow free models (nemotron 3.5 lightning) legitimately need minutes. */
 const REQUEST_TIMEOUT_MS = 300_000;
 /** Agent harnesses always budget generously; reasoning eats from this. */
-const MAX_OUTPUT_TOKENS = 8_000;
+const MAX_OUTPUT_TOKENS = Number(process.env.FF_MAX_TOKENS ?? 8_000);
 
 const TOOLS = [
  {
@@ -343,7 +343,12 @@ async function main(): Promise<void> {
   `spoof headers: UA=${opencodeHeaders()["User-Agent"]} session=${opencodeHeaders()["x-opencode-session"]?.slice(0, 12)}…\n`,
  );
 
- const targets: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS];
+ // Optional CLI targets: pass model ids to scope a run (e.g. the Cline and
+ // OVH lanes); default keeps the historical Zen+Kilo matrix.
+ const argvIds = process.argv.slice(2).filter((a) => !a.startsWith("-"));
+ const targets: ModelDef[] = argvIds.length > 0
+  ? argvIds.map((id) => MODEL_MAP.get(id)).filter((m): m is ModelDef => m !== undefined)
+  : [...OPENCODE_MODELS, ...KILO_MODELS];
  const rows: Array<{ id: string; vendor: string; cap: Capability }> = [];
 
  for (const model of targets) {
