@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getClientPort, isJsRuntimeExecutable, resolveDaemonRuntime } from "./client.ts";
+import { getClientPort, isJsRuntimeExecutable, materializeDaemonSources, resolveDaemonRuntime } from "./client.ts";
 import { refreshCatalog, setAliveCatalog } from "./catalog.ts";
 import { DAEMON_SPAWN_ENV, DATA_DIR_ENV, DEBUG_STATE_FILE, HOST, LOG_FILE, PORT, RELAY_STATE_FILE } from "./config.ts";
 import {
@@ -130,13 +130,17 @@ export function getStartupPlan(opts?: {
  const platform = opts?.platform ?? process.platform;
  const home = opts?.homeDir ?? os.homedir();
  const script = daemonEntryForStartup(opts?.scriptPath);
+ // A Node runtime cannot strip types for files under node_modules, so the
+ // hook must point at staged sources when the package is installed (issue #52).
+ // Bun runs TypeScript anywhere — keep its command side-effect free.
+ const nodeEntry = (): string => materializeDaemonSources(script);
  let quoted: string;
  if (opts?.execPath) {
   const type = isJsRuntimeExecutable(opts.execPath);
   if (type === "bun") {
    quoted = `"${opts.execPath}" "${script}"`;
   } else {
-   quoted = `"${opts.execPath}" --experimental-strip-types "${script}"`;
+   quoted = `"${opts.execPath}" --experimental-strip-types "${nodeEntry()}"`;
   }
  } else {
   const runtime = resolveDaemonRuntime({ scriptPath: script });
@@ -144,10 +148,10 @@ export function getStartupPlan(opts?: {
    if (runtime.runtimeType === "bun") {
     quoted = `"${runtime.execPath}" "${script}"`;
    } else {
-    quoted = `"${runtime.execPath}" --experimental-strip-types "${script}"`;
+    quoted = `"${runtime.execPath}" --experimental-strip-types "${nodeEntry()}"`;
    }
   } else {
-   quoted = `"node" --experimental-strip-types "${script}"`;
+   quoted = `"node" --experimental-strip-types "${nodeEntry()}"`;
   }
  }
  if (platform === "win32") {

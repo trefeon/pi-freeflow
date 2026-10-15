@@ -350,3 +350,34 @@ test("ensureDaemon: falls back in-process fast when the spawned child exits (iss
 		_resetClientForTest();
 	}
 });
+
+test("getStartupPlan: stages the daemon entry outside node_modules for node runtimes", () => {
+	const base = fs.mkdtempSync(path.join(os.tmpdir(), "ff-plan-stage-"));
+	try {
+		const pkgRoot = path.join(base, "node_modules", "pi-freeflow");
+		fs.mkdirSync(path.join(pkgRoot, "src"), { recursive: true });
+		fs.writeFileSync(path.join(pkgRoot, "src", "daemon.ts"), "export {};\n");
+		fs.writeFileSync(
+			path.join(pkgRoot, "package.json"),
+			JSON.stringify({ name: "pi-freeflow", version: "9.9.9", type: "module" }),
+		);
+		const script = path.join(pkgRoot, "src", "daemon.ts");
+		const nodePlan = getStartupPlan({
+			platform: "linux",
+			homeDir: base,
+			execPath: path.join(base, "bin", isWin ? "node.exe" : "node"),
+			scriptPath: script,
+		});
+		assert.ok(nodePlan.fileContent.includes("--experimental-strip-types"), "node runtime must keep the strip-types flag");
+		assert.ok(!nodePlan.fileContent.includes("node_modules"), "hook must not point node at a node_modules TypeScript file");
+		const bunPlan = getStartupPlan({
+			platform: "linux",
+			homeDir: base,
+			execPath: path.join(base, "bin", isWin ? "bun.exe" : "bun"),
+			scriptPath: script,
+		});
+		assert.ok(bunPlan.fileContent.includes(script), "bun runs TypeScript anywhere — hook keeps the installed path");
+	} finally {
+		fs.rmSync(base, { recursive: true, force: true });
+	}
+});
