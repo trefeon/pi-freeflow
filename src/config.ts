@@ -298,19 +298,29 @@ export const STRIP_HEADERS = new Set([
  *  Unset → pi's agent dir (PI_CODING_AGENT_DIR, else ~/.pi/agent). */
 export const DATA_DIR_ENV = "PI_FREEFLOW_DATA_DIR";
 
-/** Env var pi itself uses to re-root its config dir (default ~/.pi/agent).
- *  Freeflow data files follow it so CI/containers only need to relocate one
- *  root instead of granting write access to a hardcoded home path. */
+/** Env var pi itself uses to re-root its config dir: pi names it
+ *  `<APP_NAME>_CODING_AGENT_DIR` (stock pi → PI_CODING_AGENT_DIR, else
+ *  ~/.pi/agent). Freeflow data files follow it so CI/containers only need to
+ *  relocate one root instead of granting write access to a hardcoded home
+ *  path; when another host (e.g. the omp plugin loader) does not set it, the
+ *  ~/.pi/agent default keeps the shared daemon/log location. */
 export const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+
+/** Expand a leading ~ the way pi expands its own agent-dir value. */
+function expandHome(value: string): string {
+ if (value === "~") return homedir();
+ if (value.startsWith("~/") || value.startsWith("~\\")) return path.join(homedir(), value.slice(2));
+ return value;
+}
 
 function dataDirOverride(): string | null {
  const d = process.env[DATA_DIR_ENV];
- return typeof d === "string" && d.trim() !== "" ? d : null;
+ return typeof d === "string" && d.trim() !== "" ? expandHome(d) : null;
 }
 
 function defaultAgentDir(): string {
  const d = process.env[AGENT_DIR_ENV];
- if (typeof d === "string" && d.trim() !== "") return d;
+ if (typeof d === "string" && d.trim() !== "") return expandHome(d);
  return path.join(homedir(), ".pi", "agent");
 }
 
@@ -352,9 +362,7 @@ export function resolveLogFilePath(): string {
  */
 export function resolveDaemonSrcCacheDir(): string {
  try {
-  const override = dataDirOverride();
-  if (override) return path.join(override, "pi-freeflow-daemon-src");
-  return path.join(homedir(), ".pi", "agent", "pi-freeflow-daemon-src");
+  return dataFilePath("pi-freeflow-daemon-src");
  } catch {
   return path.join(
    path.dirname(fileURLToPath(import.meta.url)),

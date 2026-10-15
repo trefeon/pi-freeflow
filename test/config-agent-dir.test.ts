@@ -11,9 +11,14 @@ import { homedir } from "node:os";
 import {
 	AGENT_DIR_ENV,
 	DATA_DIR_ENV,
+	resolveCatalogCachePath,
+	resolveDaemonSrcCacheDir,
+	resolveDebugStatePath,
 	resolveLogFilePath,
+	resolveOnboardedFlagPath,
 	resolveRelayStatePath,
 	resolveSessionPinPath,
+	resolveUpdateCachePath,
 	resolveUpstreamHealthPath,
 } from "../src/config.ts";
 
@@ -86,6 +91,42 @@ test("unset overrides fall back to ~/.pi/agent", () => {
 		assert.equal(
 			resolveRelayStatePath(),
 			path.join(homedir(), ".pi", "agent", "pi-freeflow-relay-state.json"),
+		);
+	});
+});
+
+test("every data file resolves under PI_CODING_AGENT_DIR", () => {
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "ff-agent-"));
+	try {
+		withRoots(agentDir, undefined, () => {
+			const files = [
+				resolveRelayStatePath(),
+				resolveLogFilePath(),
+				resolveCatalogCachePath(),
+				resolveDebugStatePath(),
+				resolveUpdateCachePath(),
+				resolveOnboardedFlagPath(),
+				resolveUpstreamHealthPath(),
+				resolveSessionPinPath(),
+			];
+			for (const file of files) {
+				assert.equal(path.dirname(file), agentDir, file);
+			}
+			assert.equal(
+				resolveDaemonSrcCacheDir(),
+				path.join(agentDir, "pi-freeflow-daemon-src"),
+			);
+		});
+	} finally {
+		fs.rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("~ in an override root expands to the home dir", () => {
+	withRoots("~/pi-agent-tilde", undefined, () => {
+		assert.equal(
+			resolveLogFilePath(),
+			path.join(homedir(), "pi-agent-tilde", "pi-freeflow.log"),
 		);
 	});
 });
