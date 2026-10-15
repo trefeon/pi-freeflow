@@ -10,6 +10,7 @@ import fs from "node:fs";
 import { execSync } from "node:child_process";
 import * as http from "node:http";
 import * as https from "node:https";
+import net from "node:net";
 import { handleHealthRequest, isLoopbackIP } from "./health.ts";
 import type { DaemonHealthSnapshot } from "./health.ts";
 import { registerClient, renewClient, touchActivity, unregisterClient } from "./lease.ts";
@@ -827,6 +828,31 @@ export async function isProxyAlive(port: number, timeoutMs = 600): Promise<boole
   return false;
  }
 }
+
+/**
+ * True when a TCP connection to the loopback port succeeds — something holds
+ * the port (our daemon, a stale daemon, or an unrelated process). A free port
+ * refuses the connection immediately; the dark-holder reclaim path uses this
+ * to tell "nothing bound" apart from "bound but unresponsive" (issue #52: the
+ * blind kill-and-poll cost ~2s on every cold start).
+ */
+export async function isPortBound(port: number, timeoutMs = 250): Promise<boolean> {
+ if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+ return await new Promise<boolean>((resolve) => {
+  const socket = net.connect({ host: HOST, port });
+  let settled = false;
+  const settle = (value: boolean): void => {
+   if (settled) return;
+   settled = true;
+   socket.destroy();
+   resolve(value);
+  };
+  socket.setTimeout(timeoutMs, () => settle(false));
+  socket.once("connect", () => settle(true));
+  socket.once("error", () => settle(false));
+ });
+}
+
 
 let activeRequests = 0;
 

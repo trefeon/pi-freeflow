@@ -26,12 +26,22 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+ _resetClientForTest,
+ _setDaemonSpawnForTest,
+ ensureDaemon,
  findExecutableOnPath,
+ hasChildExited,
+ hasFallbackServer,
  isJsRuntimeExecutable,
+ materializeDaemonSources,
  resolveDaemonRuntime,
+ waitForReady,
 } from "../src/client.ts";
 import { getStartupPlan } from "../src/commands.ts";
-import { DAEMON_RUNTIME_ENV, DAEMON_SPAWN_ENV } from "../src/config.ts";
+import { DAEMON_RUNTIME_ENV, DAEMON_SPAWN_ENV, PORT } from "../src/config.ts";
+import { EventEmitter, once } from "node:events";
+import { spawn } from "node:child_process";
+import { killPortHolder } from "../src/proxy.ts";
 const isWin = process.platform === "win32";
 
 test("isJsRuntimeExecutable: correctly classifies node binaries", () => {
@@ -234,4 +244,109 @@ test("getStartupPlan: generates correct commands for bun and node runtimes witho
   scriptPath: "/path/to/daemon.ts",
  });
  assert.ok(!autoPlan.fileContent.includes('"omp"'), "startup plan must never embed omp binary");
+});
+
+// ── Issue #52: Node refuses type stripping for files under node_modules ──
+
+test("materializeDaemonSources: stages src, package.json and deps outside node_modules", () => {
+	const base = fs.mkdtempSync(path.join(os.tmpdir(), "ff-stage-"));
+	try {
+		const pkgRoot = path.join(base, "node_modules", "pi-freeflow");
+		fs.mkdirSync(path.join(pkgRoot, "src"), { recursive: true });
+		fs.writeFileSync(path.join(pkgRoot, "src", "daemon.ts"), "export {};\n");
+		fs.writeFileSync(path.join(pkgRoot, "src", "config.ts"), "export const x = 1;\n");
+		fs.writeFileSync(
+			path.join(pkgRoot, "package.json"),
+			JSON.stringify({
+				name: "pi-freeflow",
+				version: "9.9.9",
+				type: "module",
+				dependencies: { undici: "^7.0.0" },
+			}),
+		);
+		const depDir = path.join(base, "node_modules", "undici");
+		fs.mkdirSync(depDir, { recursive: true });
+		fs.writeFileSync(path.join(depDir, "package.json"), JSON.stringify({ name: "undici", version: "7.0.0" }));
+
+		const cacheRoot = path.join(base, "cache");
+		const staged = materializeDaemonSources(path.join(pkgRoot, "src", "daemon.ts"), cacheRoot);
+
+		assert.equal(staged, path.join(cacheRoot, "9.9.9", "src", "daemon.ts"));
+		assert.equal(staged.includes("node_modules"), false, "staged entry must live outside node_modules");
+		assert.ok(fs.existsSync(staged), "staged daemon entry must exist");
+		assert.ok(fs.existsSync(path.join(cacheRoot, "9.9.9", "src", "config.ts")), "whole src tree must be staged");
+		assert.match(fs.readFileSync(path.join(cacheRoot, "9.9.9", "package.json"), "utf8"), /"version":\s*"9\.9\.9"/);
+		assert.ok(
+			fs.existsSync(path.join(cacheRoot, "9.9.9", "node_modules", "undici", "package.json")),
+			"runtime dependency must resolve from the staged tree",
+		);
+
+		// Second call reuses the staged copy and leaves no temp dirs behind.
+		assert.equal(materializeDaemonSources(path.join(pkgRoot, "src", "daemon.ts"), cacheRoot), staged);
+		assert.deepEqual(fs.readdirSync(cacheRoot).filter((entry) => entry.includes(".tmp-")), []);
+	} finally {
+		fs.rmSync(base, { recursive: true, force: true });
+	}
+});
+
+test("materializeDaemonSources: passes a script outside node_modules through unchanged", () => {
+	const base = fs.mkdtempSync(path.join(os.tmpdir(), "ff-stage-plain-"));
+	try {
+		const script = path.join(base, "src", "daemon.ts");
+		fs.mkdirSync(path.dirname(script), { recursive: true });
+		fs.writeFileSync(script, "export {};\n");
+		assert.equal(materializeDaemonSources(script, path.join(base, "cache")), script);
+		assert.equal(fs.existsSync(path.join(base, "cache")), false, "no staging for dev checkouts");
+	} finally {
+		fs.rmSync(base, { recursive: true, force: true });
+	}
+});
+
+test("waitForReady: aborts when the spawned child exits instead of polling the full timeout", async () => {
+	const child = spawn(process.execPath, ["-e", "process.exit(1)"], { stdio: "ignore" });
+	try {
+		await once(child, "exit");
+		assert.equal(hasChildExited(child), true, "exited child must be detected");
+		const t0 = Date.now();
+		const ready = await waitForReady(65533, 5000, child);
+		const elapsed = Date.now() - t0;
+		assert.equal(ready, false);
+		assert.ok(elapsed < 1500, `ready-wait must abort on child exit, took ${elapsed}ms`);
+	} finally {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+	}
+});
+
+test("hasChildExited: false while running, true after exit code or signal", () => {
+	assert.equal(hasChildExited({ exitCode: null, signalCode: null }), false);
+	assert.equal(hasChildExited({ exitCode: 1, signalCode: null }), true);
+	assert.equal(hasChildExited({ exitCode: null, signalCode: "SIGKILL" }), true);
+});
+
+test("ensureDaemon: falls back in-process fast when the spawned child exits (issue #52)", async () => {
+	await killPortHolder(PORT);
+	_resetClientForTest();
+	const spawnCalls: string[][] = [];
+	const fakeChild = Object.assign(new EventEmitter(), {
+		pid: 424242,
+		exitCode: 1,
+		signalCode: null,
+		unref() {},
+	});
+	_setDaemonSpawnForTest((command, args) => {
+		spawnCalls.push([command, ...args]);
+		return fakeChild;
+	});
+	try {
+		const t0 = Date.now();
+		const port = await ensureDaemon();
+		const elapsed = Date.now() - t0;
+		assert.ok(spawnCalls.length >= 1, "the detached spawn must have been attempted");
+		assert.equal(typeof port, "number");
+		assert.equal(hasFallbackServer(), true, "a dead child must fall through to the in-process proxy");
+		assert.ok(elapsed < 1500, `cold start with a dead child must fail fast, took ${elapsed}ms`);
+	} finally {
+		_setDaemonSpawnForTest(null);
+		_resetClientForTest();
+	}
 });

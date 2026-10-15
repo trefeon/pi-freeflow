@@ -331,6 +331,26 @@ export function resolveLogFilePath(): string {
  }
 }
 
+/**
+ * Root directory for staged daemon sources — copies taken outside
+ * node_modules because Node's type stripping refuses files under a
+ * node_modules path (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING, issue #52).
+ * Version subdirectories live inside it.
+ */
+export function resolveDaemonSrcCacheDir(): string {
+ try {
+  const override = dataDirOverride();
+  if (override) return path.join(override, "pi-freeflow-daemon-src");
+  return path.join(homedir(), ".pi", "agent", "pi-freeflow-daemon-src");
+ } catch {
+  return path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "..",
+   ".pi-freeflow-daemon-src",
+  );
+ }
+}
+
 export function resolveCatalogCachePath(): string {
  try {
   const override = dataDirOverride();

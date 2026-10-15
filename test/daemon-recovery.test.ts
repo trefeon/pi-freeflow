@@ -13,10 +13,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { createServer } from "node:http";
 import fs from "node:fs";
 import { HOST, LOG_FILE } from "../src/config.ts";
 import { _resetLeaseStateForTest } from "../src/lease.ts";
-import { startProxy } from "../src/proxy.ts";
+import { isPortBound, startProxy } from "../src/proxy.ts";
 import {
 	ensureProxyReady,
 	isLoopbackRefused,
@@ -60,20 +61,26 @@ test("control /_shutdown leaves an info log line", async () => {
 
 // ── 2. Dark-holder reclaim decision ──────────────────────────────────────
 
-test("dark holder (no models, no health) is reclaimable; live is not", () => {
+test("dark holder (held but answering nothing) is reclaimable; free and live are not", () => {
 	assert.equal(
-		shouldReclaimDarkHolder({ alive: false, health: null }),
+		shouldReclaimDarkHolder({ alive: false, bound: true, health: null }),
 		true,
-		"dark holder must be reclaimable",
+		"a held port answering neither models nor health must be reclaimable",
 	);
 	assert.equal(
-		shouldReclaimDarkHolder({ alive: true, health: null }),
+		shouldReclaimDarkHolder({ alive: false, bound: false, health: null }),
+		false,
+		"a free port is not a dark holder (issue #52: treating it as one cost ~2s per cold start)",
+	);
+	assert.equal(
+		shouldReclaimDarkHolder({ alive: true, bound: true, health: null }),
 		false,
 		"a holder answering /v1/models is live, not dark",
 	);
 	assert.equal(
 		shouldReclaimDarkHolder({
 			alive: false,
+			bound: true,
 			health: {
 				version: "0.0.0",
 				activeRequests: 0,
@@ -85,6 +92,20 @@ test("dark holder (no models, no health) is reclaimable; live is not", () => {
 		false,
 		"a holder answering /_health is owned by the stale-replace path",
 	);
+});
+
+test("isPortBound: true for a held port, false once released (issue #52)", async () => {
+	const server = createServer();
+	await new Promise<void>((resolve) => server.listen(0, HOST, () => resolve()));
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	const port = address.port;
+	try {
+		assert.equal(await isPortBound(port), true, "a listening port must be reported as bound");
+	} finally {
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+	}
+	assert.equal(await isPortBound(port), false, "a released port must not be reported as bound");
 });
 
 // ── 3. Loopback-refused classification ───────────────────────────────────
