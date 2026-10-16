@@ -351,3 +351,58 @@ test("403 gate hint is visible inside error.message", () => {
   assert.ok(hinted.hint.length > 0, "hint sibling kept for compat");
  });
 });
+
+test("health file changed by another process is reloaded on the next read", () => {
+ withIsolatedHealthFiles(() => {
+  // Phase 0: no file yet — this process starts from an empty snapshot.
+  assert.equal(isUpstreamGated("zen"), false, "no file means no gate");
+
+  // Phase 1: another process (the shared daemon) writes a gated state.
+  fs.writeFileSync(
+   HEALTH_FILE,
+   JSON.stringify({
+    version: 1,
+    sessions: {},
+    gates: {
+     zen: { gated: true, consecutiveFreeTier403: 2, firstGatedAt: 1, lastTransitionAt: 1, lastCanaryAt: 0 },
+     kilo: { gated: false, consecutiveFreeTier403: 0, firstGatedAt: 0, lastTransitionAt: 0, lastCanaryAt: 0 },
+    },
+   }),
+   "utf8",
+  );
+  // Pin a distinct mtime so the reload never depends on filesystem timestamp
+  // granularity (two writes could otherwise share a tick).
+  fs.utimesSync(HEALTH_FILE, new Date(1_700_000_000_000), new Date(1_700_000_000_000));
+
+  assert.equal(isUpstreamGated("zen"), true, "an external gate write must be adopted");
+  assert.equal(
+   getUpstreamHealth("zen").consecutiveFreeTier403,
+   2,
+   "counters must be adopted with the gate",
+  );
+
+  // Phase 2: the daemon clears the gate; the stale in-memory copy must not win.
+  fs.writeFileSync(
+   HEALTH_FILE,
+   JSON.stringify({
+    version: 1,
+    sessions: {},
+    gates: {
+     zen: { gated: false, consecutiveFreeTier403: 0, firstGatedAt: 0, lastTransitionAt: 3, lastCanaryAt: 0 },
+     kilo: { gated: false, consecutiveFreeTier403: 0, firstGatedAt: 0, lastTransitionAt: 0, lastCanaryAt: 0 },
+    },
+   }),
+   "utf8",
+  );
+  fs.utimesSync(HEALTH_FILE, new Date(1_600_000_000_000), new Date(1_600_000_000_000));
+
+  assert.equal(isUpstreamGated("zen"), false, "a gate cleared on disk must not be resurrected");
+
+  // Phase 3: a local write built on the reloaded snapshot keeps the disk state.
+  recordUpstreamSuccess("zen", { sessionKey: "ses_reloaded" });
+  const onDisk = JSON.parse(fs.readFileSync(HEALTH_FILE, "utf8"));
+  assert.equal(onDisk.gates.zen.gated, false, "the local write must not restore a stale gate");
+  assert.ok(onDisk.sessions["ses_reloaded"] > Date.now(), "the local write must record its own update");
+ });
+});
+
