@@ -253,7 +253,7 @@ and `muse-spark-1.2-contributor-free` answer `400` below it.
 ## Operational notes
 
 - **A live probe costs free-tier quota.** Every request above is a real
-  inference request. A catalog sweep across 12 models is 12 requests.
+  inference request. A catalog sweep across 14 models is 14 requests.
 - **Probe through the local proxy, not against a relay directly.** Direct
   relay probing drives the relay health machine, and a burst of deliberate
   failures will park relays in cooldown for the duration of their backoff.

@@ -61,6 +61,7 @@ test("1M context window models are properly configured", () => {
 		"cline-free/muse-spark-1.3-contributor",
 		"z-ai/glm-5.3-flash",
 		"glm-5.3-flash-free",
+		"exo-free",
 		"mimo-v2.6-flash-free",
 		"deepseek-v4.1-flash-free",
 		"space-bunny-free",
@@ -141,6 +142,17 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
 		assert.equal(alpha.thinkingLevelMap?.max, "max");
 		assert.equal(getModelUpstream("ll-alpha-free"), "opencode");
 		assert.equal(getModelUpstream("ll-alpha"), "opencode");
+		const exo = getModelDef("exo-free");
+		assert.ok(exo);
+		assert.equal(exo.reasoning, true);
+		assert.equal(exo.contextWindow, 1_048_576);
+		assert.equal(exo.maxTokens, 131_072);
+		assert.deepEqual(exo.input, ["text", "image"]);
+		assert.equal(exo.thinkingLevelMap?.high, "high");
+		assert.equal(exo.thinkingLevelMap?.minimal, null);
+		assert.equal(exo.thinkingLevelMap?.max, null);
+		assert.equal(getModelUpstream("exo-free"), "opencode");
+		assert.equal(getModelUpstream("exo"), "opencode");
 	});
 
 test("2026-09-28 pruned models stay out of the static catalog", () => {
@@ -256,6 +268,11 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 	// Added 2026-10-16 (issue #71): pi.dev + models.dev agree on 262,144/65,536,
 	// text-only; boundary probe matches (recall ~220K words, 400 at ~250K).
 	"ll-alpha-free": { ctx: 262_144, max: 65_536, reasoning: true },
+	// Added 2026-10-16 (recheck): revived upstream the same day - back on
+	// the official free lineup, chat 200 with tools/stream/reasoning/vision;
+	// dual-canary recall at ~520K tokens and the 1.2M-word empty-400 wall
+	// bracket the published 1,048,576.
+	"exo-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // Added 2026-10-15 (live: Zen /v1/models listing + gated-lane 200 carrying the
   // full fingerprint; chat-only, /v1/responses answers 400 ModelProtocolUnsupported).
   // Context measured, NOT published: the catalog entry for this exact free id
@@ -370,6 +387,7 @@ test("new alias map resolves to canonical kilo ids", () => {
 	assert.equal(resolveCanonicalModelId("mimo-v2.6-flash"), "mimo-v2.6-flash-free");
 	assert.equal(resolveCanonicalModelId("glm-5.3-flash"), "glm-5.3-flash-free");
 	assert.equal(resolveCanonicalModelId("ll-alpha"), "ll-alpha-free");
+	assert.equal(resolveCanonicalModelId("exo"), "exo-free");
 });
 
 test("union-alpha is pruned from the static catalog", () => {

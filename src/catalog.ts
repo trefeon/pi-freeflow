@@ -43,8 +43,14 @@ import type {
  * - inclusionai/ling-3.0-flash-fin:free: gone from Kilo (2026-10-01) — keyless chat 404
  *   "The requested model ... does not exist".
  * - mimo-v2.5-free: decommissioned upstream (2026-10-07) — HTTP 401 "Model mimo-v2.5-free is not supported".
- * - exo-free: deprecated upstream (2026-10-09) — HTTP 410 "Model exo-free has
- *   been deprecated." (was 503 "Endpoint is unavailable" on 2026-10-07).
+ *   Re-probed 2026-10-16: 410 "Model mimo-v2.5-free has been deprecated. Use
+ *   mimo-v2.6-flash-free instead." The docs still list it as free; they are stale.
+ * - exo-free: dead-listed 2026-10-09 (410 "Model exo-free has been deprecated")
+ *   but revived upstream on 2026-10-16 — back on the official free lineup and
+ *   answering live through the proxy (chat 200 with tools, stream, reasoning,
+ *   vision; dual-canary recall at ~520K tokens; a 1.2M-word prompt draws the
+ *   empty-bodied 400). Re-registered statically the same day: do NOT add this
+ *   id back to this set unless it dies again.
  * - fledge-alpha-free: withdrawn upstream (2026-10-09) — absent from the live
  *   Zen list, chat 401 "Model fledge-alpha-free is not supported".
  * - inclusionai/ling-3.0-flash-sante:free: demoted to paid on Kilo (2026-10-09) —
@@ -94,7 +100,6 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "ling-3.0-flash-fin-free",
  "inclusionai/ling-3.0-flash-fin:free",
  "mimo-v2.5-free",
- "exo-free",
  "stealth/space-bunny-alpha",
  "qwen/qwen3.8-27b:free",
  "nvidia/nemotron-3.5-content-safety:free",
@@ -158,7 +163,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 36 verified models for 0ms instant availability.
+ * Initialized with all 37 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
  ...m,

@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **36 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
+pi-freeflow provides unified access to **37 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
 
 ## Upstream Protocol Distinction
 
@@ -11,7 +11,7 @@ pi-freeflow provides unified access to **36 curated free models** across four up
 
 ### OpenCode Zen — Chat Completions (`/v1/chat/completions`)
 - **Endpoint**: `https://opencode.ai/inference/v1/chat/completions`
-- **Models**: 10 models (Cat Jam, DeepSeek V4.1 Flash, Space Bunny, LongCat, MiMo, Nemotron, Big Pickle, Step 5 Preview, etc.)
+- **Models**: 12 models (Cat Jam, DeepSeek V4.1 Flash, Space Bunny, LongCat, GLM-5.3 Flash, LL Alpha, Exo, MiMo, Nemotron, Big Pickle, etc.)
 - **Config**: `api: "openai-completions"`, supports reasoning effort
 
 ### OpenCode Zen — Messages API (`/v1/messages`)
@@ -22,7 +22,7 @@ pi-freeflow provides unified access to **36 curated free models** across four up
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: keyless — no `Authorization` header at all (the gateway rejects a placeholder credential with `401 INVALID_TOKEN`; 200 req/hr per IP)
-- **Models**: 14 models with OpenRouter-style thinking format
+- **Models**: 13 models with OpenRouter-style thinking format
 
 ### Cline (`/api/v1/chat/completions`)
 - **Endpoint**: `https://api.cline.bot/api/v1/chat/completions`
@@ -37,9 +37,9 @@ pi-freeflow provides unified access to **36 curated free models** across four up
 - **Routing**: direct only, never through the relay pool
 - **Config**: `api: "openai-completions"`. Chat is the only upstream shape: OVH's responses endpoint rejects every array `input` with `422 input: data did not match any variant of untagged enum ResponseInput` and accepts only a bare string, so a responses-path request is translated to chat upstream and the answer mapped back — the same shape mapping the Cline lane uses.
 
-## 36 Model Specifications
+## 37 Model Specifications
 
-### OpenCode Zen (12 models)
+### OpenCode Zen (14 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -53,10 +53,12 @@ pi-freeflow provides unified access to **36 curated free models** across four up
 | `big-pickle` | 200,000 | 32,000 | high, max | ❌ |
 | `space-bunny-free` | 1,048,576 | 524,288 | low..max | ✅ |
 | `longcat-2.5-preview-free` | 1,000,000 | 131,072 | minimal..max | ✅ |
-| `step-5-preview-free` | 1,000,000 | 65,536 | low..high | ✅ |
+| `glm-5.3-flash-free` | 1,000,000 | 32,000 | minimal..max | ✅ |
+| `ll-alpha-free` | 262,144 | 65,536 | low..max | ❌ |
+| `exo-free` | 1,048,576 | 131,072 | high | ✅ |
 | `deepseek-v4.1-flash-free` | 1,000,000 | 384,000 | minimal..max | ✅ |
 
-### KiloCode Gateway (14 models)
+### KiloCode Gateway (13 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -73,7 +75,6 @@ pi-freeflow provides unified access to **36 curated free models** across four up
 | `openrouter` | 200,000 | 65,536 | OpenRouter (reasoning) | ✅ |
 | `inkling-small` | 1,048,576 | 262,144 | OpenRouter | ✅ |
 | `glyph-cluster` | 256,000 | 256,000 | OpenRouter | ❌ |
-| `step-5-preview:kilo` | 1,000,000 | 65,536 | OpenRouter | ✅ |
 
 ### Cline (2 models)
 
@@ -126,8 +127,8 @@ When a model is available under multiple twin names (e.g. `deepseek-v4.1-flash-f
 
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :---: | :--- | :--- | :--- |
-| **OpenCode Zen** | 12 | `opencode.ai/inference` | `/inference/v1` (Responses + Chat) | `Bearer public` |
-| **KiloCode Gateway** | 14 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
+| **OpenCode Zen** | 14 | `opencode.ai/inference` | `/inference/v1` (Responses + Chat) | `Bearer public` |
+| **KiloCode Gateway** | 13 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
 | **Cline** | 2 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 | **OVHcloud AI Endpoints** | 8 | `oai.endpoints.kepler.ai.cloud.ovh.net` | `/v1/chat/completions` (responses path translated) | Keyless, anonymous |
 ## Stealth previews

@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 36 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 37 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **36 free models** | 12 from OpenCode Zen, 14 from KiloCode Gateway, 2 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
+| **37 free models** | 14 from OpenCode Zen, 13 from KiloCode Gateway, 2 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own Cloudflare Workers, Deno Deploy, and Vercel Edge relays. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`; the two Cline models have no alias and must be typed in full. | **$0** |
@@ -197,14 +197,14 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 36 models, one command
+### 37 models, one command
 
 ```bash
 /model → freeflow → pick
 ```
 
 Every model specification is reconciled against [models.dev](https://models.dev/), [OpenRouter](https://openrouter.ai/), and OMP's built-in catalog, configured with the highest verified context, output ceiling, and reasoning capabilities across twin models.
-#### OpenCode Zen (12 models), Responses and Chat API
+#### OpenCode Zen (14 models), Responses and Chat API
 
 Good defaults for long coding sessions and agentic work.
 
@@ -220,10 +220,12 @@ Good defaults for long coding sessions and agentic work.
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 | `space-bunny-free` | Stealth preview (lab undisclosed) | **1M** (1.048.576) | **512K** (524.288) | `low … max` | ✅ |
 | `longcat-2.5-preview-free` | Meituan LongCat | **1M** (1.000.000) | **131K** (131.072) | `minimal … max` | ✅ |
-| `step-5-preview-free` | StepFun | **1M** (1.000.000) | **64K** (65.536) | `low … high` | ✅ |
+| `glm-5.3-flash-free` | Zhipu AI | **1M** (1.000.000) | **32K** (32.000) | `minimal … max` | ✅ |
+| `ll-alpha-free` | Undisclosed | **262K** (262.144) | **64K** (65.536) | `low … max` | ❌ |
+| `exo-free` | Undisclosed | **1M** (1.048.576) | **131K** (131.072) | `high` | ✅ |
 | `deepseek-v4.1-flash-free` | DeepSeek | **1M** (1.000.000) | **384K** (384.000) | `minimal … max` | ✅ |
 
-#### KiloCode Gateway (14 models), OpenRouter compatible
+#### KiloCode Gateway (13 models), OpenRouter compatible
 
 Keyless access. Short aliases work for every row (the full ID is in parentheses).
 
@@ -241,7 +243,6 @@ Keyless access. Short aliases work for every row (the full ID is in parentheses)
 | `kilo-auto` (`kilo-auto/free`) | Kilo Gateway Auto | **256K** (256.000) | **10K** (10.000) | `minimal…xhigh`\* | ❌ |
 | `openrouter` (`openrouter/free`) | OpenRouter Free | **200K** (200.000) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
 | `glyph-cluster` (`stealth/glyph-cluster`) | Stealth preview (lab undisclosed) | **256K** (256.000) | **256K** (256.000) | `minimal…xhigh`\* | ❌ |
-| `step-5-preview:kilo` (`stepfun/...:free`) | StepFun | **1M** (1.000.000) | **64K** (65.536) | `minimal…xhigh`\* | ✅ |
 | `inkling-small` (`thinkingmachines/inkling-small:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
 
 \* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.
@@ -367,7 +368,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 #### Project structure
 
 ```
-├── models.ts                # 36-model catalog definitions
+├── models.ts                # 37-model catalog definitions
 ├── index.ts                 # extension entry, lifecycle hooks
 ├── catalog.ts               # model catalog cache (24h disk)
 ├── proxy.ts                 # local proxy server (127.0.0.1:28180)

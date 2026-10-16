@@ -1,8 +1,8 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 36 verified free models (live-verified 2026-10-16):
- * - 12 OpenCode Zen models (2 Responses API + 10 Chat Completions)
+ * Defines the 37 verified free models (live-verified 2026-10-16):
+ * - 14 OpenCode Zen models (2 Responses API + 12 Chat Completions)
  * - 14 KiloCode Keyless Gateway models (OpenRouter format)
  * - 2 Cline direct-only models (per-user pool)
  * - 8 OVHcloud AI Endpoints models (keyless, direct-only)
@@ -277,6 +277,38 @@ export const OPENCODE_MODELS: ModelDef[] = [
    high: "high",
    xhigh: "xhigh",
    max: "max",
+  },
+ },
+ {
+  // Added 2026-10-16 (recheck): live free id on the Zen lane, listed on the
+  // official free lineup while models.dev already tags it deprecated — the
+  // tag also sits on ids that still serve (mimo-v2.5-free,
+  // muse-spark-1.2-contributor-free), so the live answer decides: chat 200
+  // with tools + stream, and the tool call round-trips. Chat is the only
+  // native shape (/v1/responses answers 400 "Model does not support this
+  // protocol"), so `api` stays unset. Reasoning: the published ladder lists
+  // `high` only; high streams thinking and the unavailable rungs stay null
+  // so the picker never offers them. Vision verified live (a 1x1 PNG reads
+  // back as "Pink"). Context: published 1,048,576; a dual-canary prompt at
+  // ~400K words (~520K tokens, canaries at ~30%/~97% depth) recalls both
+  // markers, and a 1.2M-word prompt (~1.56M tokens) draws an empty-bodied
+  // 400 — the wall sits between, matching the published figure. maxTokens
+  // 131,072 published; 131,073 accepted (acceptance is not a cap, so the
+  // published figure stays the budget).
+  id: "exo-free",
+  name: "Exo [OpenCode]",
+  reasoning: true,
+  contextWindow: 1_048_576,
+  maxTokens: 131_072,
+  input: ["text", "image"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: null,
+   low: null,
+   medium: null,
+   high: "high",
+   xhigh: null,
+   max: null,
   },
  },
 {
@@ -682,6 +714,7 @@ export const MODEL_ALIASES: Record<string, string> = {
  "north-mini-code": "cohere/north-mini-code:free",
  "lfm-2.5": "liquid/lfm-2.5-2.6b:free",
  "glm-5.3-flash": "glm-5.3-flash-free",
+ "exo": "exo-free",
  "glyph-cluster": "stealth/glyph-cluster",
  "inkling-small": "thinkingmachines/inkling-small:free",
  "mimo-v2.6-flash": "mimo-v2.6-flash-free",
@@ -744,7 +777,7 @@ export const OVH_MODEL_IDS = new Set<string>([
   .map(([alias]) => alias),
 ]);
 /**
- * Combined list of all 36 static free models (canonical)
+ * Combined list of all 37 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS, ...OVH_MODELS];
 
