@@ -67,6 +67,7 @@ test("1M context window models are properly configured", () => {
 		"space-bunny-free",
 		"longcat-2.5-preview-free",
 		"nemotron-3.5-lightning-free",
+		"nemotron-3.5-super-vl-free",
 		"nemotron-3-ultra-free",
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
@@ -228,8 +229,10 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
  // error messages). Change only with a fresh live verification.
  const locked: Record<string, { ctx: number; max: number; reasoning: boolean }> = {
   // OpenCode Zen
-  // Added 2026-10-13 (live: Zen listing + keyless chat 200; efforts low..xhigh
-  // accepted while minimal 400s upstream; chat-only, /v1/responses answers 400).
+  // Added 2026-10-13 (live: Zen listing + keyless chat 200; chat-only,
+  // /v1/responses answers 400). Efforts re-probed 2026-10-16: low..max all
+  // answer 200; minimal/none/bogus answer 400 with the supported set
+  // (max/xhigh/high/medium/low) enumerated in the error.
   // Context is 262_144 — the published value, matching where recall actually
   // fails: the needle is recalled at 248,232 prompt tokens and lost at 250,272,
   // while the gateway keeps answering 200 all the way to ~1M and truncates
@@ -245,6 +248,11 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "longcat-2.5-preview-free": { ctx: 1_000_000, max: 131_072, reasoning: true },
   "nemotron-3-ultra-free": { ctx: 1_000_000, max: 128_000, reasoning: true },
   "nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 262_144, reasoning: true },
+  // Added 2026-10-16 (issue #62): live Zen /v1/models listing + chat 200 through
+  // the fingerprint path; context per the models.dev opencode twin and the
+  // NVIDIA family origin (declared 1,000,000, round and conservative), output
+  // 131,072 per models.dev.
+  "nemotron-3.5-super-vl-free": { ctx: 1_000_000, max: 131_072, reasoning: true },
   "big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
 	// Added 2026-10-09 (live: Zen listing + gated-lane 403 matching working models;
 	// specs per models.dev opencode/step-5-preview-free + StepFun docs: 1M ctx / 64K max,
@@ -322,6 +330,41 @@ test("2026-10-15 Zen DeepSeek V4.1 Flash carries probe-measured specs", () => {
  }
  assert.equal(ds.thinkingLevelMap?.off, null);
  assert.equal(getModelUpstream("deepseek-v4.1-flash-free"), "opencode");
+});
+
+test("2026-10-16 issue #62: cat-jam exposes the live max effort; Nemotron 3.5 Super VL is a locked static entry", () => {
+ // (a) cat-jam-free: the gateway accepts reasoning_effort "max" (200 with a
+ // populated reasoning stream) and rejects minimal/none/bogus with a 400 that
+ // enumerates max/xhigh/high/medium/low as the supported set. A null `max`
+ // in the map hid a real, selectable level from the picker.
+ const catJam = getModelDef("cat-jam-free");
+ assert.ok(catJam);
+ assert.equal(catJam.thinkingLevelMap?.max, "max", "max is accepted upstream and must be selectable");
+ assert.equal(catJam.thinkingLevelMap?.xhigh, "xhigh");
+ assert.equal(catJam.thinkingLevelMap?.minimal, null, "minimal 400s upstream and must stay hidden");
+
+ // (b) nemotron-3.5-super-vl-free: on the live Zen free list but absent from
+ // the static catalog, so the dynamic merge registered it through the
+ // enrichModelDef heuristic — reasoning:false, no effort map, no picker levels.
+ const superVl = getModelDef("nemotron-3.5-super-vl-free");
+ assert.ok(superVl, "nemotron-3.5-super-vl-free must be a static catalog entry");
+ assert.equal(superVl.reasoning, true);
+ assert.deepEqual(superVl.input, ["text", "image"]);
+ assert.deepEqual(superVl.thinkingLevelMap, {
+  off: null,
+  minimal: "minimal",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: null,
+ });
+ assert.equal(superVl.contextWindow, 1_000_000);
+ assert.equal(superVl.maxTokens, 131_072);
+ assert.equal(getModelUpstream("nemotron-3.5-super-vl-free"), "opencode");
+ assert.equal(resolveCanonicalModelId("nemotron-3.5-super-vl"), "nemotron-3.5-super-vl-free");
+ // Chat is the only native shape (/v1/responses answers 400 protocol error).
+ assert.equal(superVl.api, undefined);
 });
 
 test("new alias map resolves to canonical kilo ids", () => {

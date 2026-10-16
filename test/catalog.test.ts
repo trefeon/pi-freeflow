@@ -244,3 +244,25 @@ test("deepseek-v4-flash-free stays excluded while served models are untouched", 
 	assert.equal(merged.some((m) => m.id === "deepseek-v4-flash-free"), false);
 	assert.equal(merged.length, base.length);
 });
+
+test("nemotron-3.5-super-vl-free repairs a reasoning-less dynamic entry (issue #62)", () => {
+	// Before the static entry existed, the runtime merge registered this id
+	// through enrichModelDef, which guesses reasoning:false and no effort map —
+	// the picker then offered no thinking levels. A stale disk cache can still
+	// carry that row, so a merge must repair it against the static definition.
+	const stale: RegisteredModel = {
+		id: "nemotron-3.5-super-vl-free",
+		name: "Nemotron 3.5 Super Vl",
+		reasoning: false,
+		contextWindow: 262_144,
+		maxTokens: 65_536,
+		input: ["text", "image"],
+		source: "opencode",
+	};
+	const merged = mergeCatalog([], [stale]);
+	const repaired = merged.find((m) => m.id === "nemotron-3.5-super-vl-free");
+	assert.ok(repaired, "the stale row must survive as the repaired static entry");
+	assert.equal(repaired.reasoning, true);
+	assert.equal(repaired.thinkingLevelMap?.xhigh, "xhigh");
+	assert.equal(repaired.maxTokens, 131_072);
+});

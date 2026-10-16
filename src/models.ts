@@ -1,8 +1,8 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 35 verified free models (live-verified 2026-10-15):
- * - 11 OpenCode Zen models (2 Responses API + 9 Chat Completions)
+ * Defines the 36 verified free models (live-verified 2026-10-16):
+ * - 12 OpenCode Zen models (2 Responses API + 10 Chat Completions)
  * - 14 KiloCode Keyless Gateway models (OpenRouter format)
  * - 2 Cline direct-only models (per-user pool)
  * - 8 OVHcloud AI Endpoints models (keyless, direct-only)
@@ -26,6 +26,11 @@ export const OPENCODE_MODELS: ModelDef[] = [
   contextWindow: 262_144,
   maxTokens: 131_072,
   input: ["text"],
+  // Effort ladder live-probed 2026-10-16: the gateway enumerates
+  // max/xhigh/high/medium/low as the supported set for this model — a probe
+  // with `minimal`, `none`, or a bogus value answers 400 naming exactly
+  // that list, and `max` answers 200 with a populated reasoning stream. So
+  // `max` is a real level here, not a silent clamp.
   thinkingLevelMap: {
    off: null,
    minimal: null,
@@ -33,7 +38,7 @@ export const OPENCODE_MODELS: ModelDef[] = [
    medium: "medium",
    high: "high",
    xhigh: "xhigh",
-   max: null,
+   max: "max",
   },
  },
  {
@@ -113,6 +118,42 @@ export const OPENCODE_MODELS: ModelDef[] = [
   contextWindow: 1_000_000,
   maxTokens: 262_144,
   input: ["text"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: "minimal",
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: null,
+  },
+ },
+ {
+  // Added 2026-10-16 (issue #62). Listed on the live Zen /v1/models free list
+  // and served through the fingerprint path (chat 200 with the tool sextet +
+  // stream:true); absent from the static catalog until now, so the dynamic
+  // merge registered it via the enrichModelDef heuristic, which guesses
+  // reasoning:false and no effort map for this id (no magic substring) — that
+  // is why the picker offered no thinking levels at all.
+  // Context: models.dev's opencode twin and the NVIDIA family origin both
+  // publish 1,048,576; declared 1,000,000 like its Zen siblings, and no
+  // recall probe has raised it. maxTokens 131,072 per models.dev — the
+  // gateway accepted 131,072 through 524,288 on probe, and acceptance is not
+  // a cap, so the published figure stays the budget.
+  // Effort ladder probed level-by-level 2026-10-16: minimal/low/medium/high/
+  // xhigh all answer 200 with reasoning (an unsupported value answers 400, so
+  // the gateway validates per model); `max` also 200s but stays hidden
+  // because the published ladder caps at xhigh. `none` disables reasoning
+  // upstream but maps nowhere here, like `off` on every entry.
+  // Vision verified live: a 1x1 PNG reads back as "red". Chat is the only
+  // native shape — /v1/responses answers 400 "Model does not support this
+  // protocol", so `api` stays unset.
+  id: "nemotron-3.5-super-vl-free",
+  name: "Nemotron 3.5 Super VL [OpenCode]",
+  reasoning: true,
+  contextWindow: 1_000_000,
+  maxTokens: 131_072,
+  input: ["text", "image"],
   thinkingLevelMap: {
    off: null,
    minimal: "minimal",
@@ -619,6 +660,7 @@ export const MODEL_ALIASES: Record<string, string> = {
  "glyph-cluster": "stealth/glyph-cluster",
  "inkling-small": "thinkingmachines/inkling-small:free",
  "mimo-v2.6-flash": "mimo-v2.6-flash-free",
+ "nemotron-3.5-super-vl": "nemotron-3.5-super-vl-free",
  "space-bunny": "space-bunny-free",
  "longcat-2.5-preview": "longcat-2.5-preview-free",
  "longcat": "longcat-2.5-preview-free",
