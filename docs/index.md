@@ -4,7 +4,7 @@ layout: home
 
 hero:
   name: "pi-freeflow"
-  text: "35 free models. Up to 1M context. Zero API keys."
+  text: "36 free models. Up to 1M context. Zero API keys."
   tagline: "Thin OMP/Pi provider: model list + dumb relay proxy + log. Host pi-ai owns thinking & normalization."
   actions:
     - theme: brand
@@ -15,8 +15,8 @@ hero:
       link: git+https://github.com/trefeon/pi-freeflow
 
 features:
-  - title: "35 Curated Free Models"
-    details: 11 OpenCode Zen + 14 KiloCode Gateway + 2 Cline + 8 OVHcloud AI Endpoints — up to 1M context, 512K output, vision support, no API keys.
+  - title: "36 Curated Free Models"
+    details: 12 OpenCode Zen + 14 KiloCode Gateway + 2 Cline + 8 OVHcloud AI Endpoints — up to 1M context, 512K output, vision support, no API keys.
   - title: "BYO Relay Pool"
     details: Round-robin across your Cloudflare Workers, Vercel Edge, and Deno Deploy for zero upstream rate limits.
   - title: "Adaptive Failover"

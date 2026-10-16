@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 35 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 36 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **35 free models** | 11 from OpenCode Zen, 14 from KiloCode Gateway, 2 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
+| **36 free models** | 12 from OpenCode Zen, 14 from KiloCode Gateway, 2 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own Cloudflare Workers, Deno Deploy, and Vercel Edge relays. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`; the two Cline models have no alias and must be typed in full. | **$0** |
@@ -197,24 +197,25 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 35 models, one command
+### 36 models, one command
 
 ```bash
 /model → freeflow → pick
 ```
 
 Every model specification is reconciled against [models.dev](https://models.dev/), [OpenRouter](https://openrouter.ai/), and OMP's built-in catalog, configured with the highest verified context, output ceiling, and reasoning capabilities across twin models.
-#### OpenCode Zen (11 models), Responses and Chat API
+#### OpenCode Zen (12 models), Responses and Chat API
 
 Good defaults for long coding sessions and agentic work.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `cat-jam-free` | Cat Jam | **256K** (262.144) | **131K** (131.072) | `low … xhigh` | ❌ |
+| `cat-jam-free` | Cat Jam | **256K** (262.144) | **131K** (131.072) | `low … max` | ❌ |
 | `muse-spark-1.2-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
 | `muse-spark-1.3-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
 | `mimo-v2.6-flash-free` | Xiaomi MiMo | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh`\* | ✅ |
 | `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `minimal … xhigh` | ❌ |
+| `nemotron-3.5-super-vl-free` | NVIDIA | **1M** (1.000.000) | **131K** (131.072) | `minimal … xhigh` | ✅ |
 | `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **128K** (128.000) | `minimal … xhigh` | ❌ |
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
 | `space-bunny-free` | Stealth preview (lab undisclosed) | **1M** (1.048.576) | **512K** (524.288) | `low … max` | ✅ |
@@ -258,13 +259,11 @@ Each account can only be saved once: an extra login for an account you already h
 | `cline-free/muse-spark-1.3-contributor` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal…xhigh`\* | ✅ |
 | `z-ai/glm-5.3-flash` | Zhipu AI | **1M** (1.048.576) | **131K** (131.072) | `low/high/max` | ✅ |
 #### OVHcloud AI Endpoints (8 models), OpenAI compatible
-#### OVHcloud AI Endpoints (9 models), OpenAI compatible
 
 Anonymous access — no account, no key, nothing to sign in to. Direct only (never through the relay pool), because OVH has no per-IP gate for relays to route around. OVH rate-limits anonymous callers per IP, so a burst of parallel subagents can hit `429 API rate limit exceeded`; the model list itself never costs anything.
 
 Pick them with the slash-free short name (the full ID is in parentheses). Only `low` and `high` thinking levels are offered, because those are the two OVH confirmed.
 All eight talk the normal chat API. Hosts that prefer the responses API work too — the proxy maps that shape to chat and maps the answer back, so tool calls and streamed output behave exactly as they do on the other providers.
-All nine talk the normal chat API. Hosts that prefer the responses API work too — the proxy maps that shape to chat and maps the answer back, so tool calls and streamed output behave exactly as they do on the other providers.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -274,7 +273,7 @@ All nine talk the normal chat API. Hosts that prefer the responses API work too 
 | `qwen3.5-9b` (`ovh-free/Qwen3.5-9B`) | Alibaba Qwen | **256K** (262.144) | **64K** (65.536) | `low/high` | ✅ |
 | `qwen3.6-27b` (`ovh-free/Qwen3.6-27B`) | Alibaba Qwen | **256K** (262.144) | **64K** (65.536) | `low/high` | ✅ |
 | `qwen3.8-27b` (`ovh-free/Qwen3.8-27B`) | Alibaba Qwen | **256K** (262.144) | **32K** (32.768) | `low/high` | ✅ |
-| `mistral-7b-v0.3` (`ovh-free/Mistral-7B-Instruct-v0.3`) | Mistral AI | **64K** (65.536) | **64K** (65.536) | ❌ | ❌ |
+| `mistral-small-3.2` (`ovh-free/Mistral-Small-3.2-24B-Instruct-2506`) | Mistral AI | **128K** (131.072) | **16K** (16.384) | ❌ | ✅ |
 | `llama-3.3-70b` (`ovh-free/Meta-Llama-3_3-70B-Instruct`) | Meta | **128K** (131.072) | **16K** (16.384) | ❌ | ❌ |
 
 ---
@@ -295,7 +294,7 @@ cat ~/.pi/agent/pi-freeflow.log | tail -n 50
 
 This package stays thin. It ships three things: a model catalog, a relay proxy, and a log. There is no build step and one runtime dependency (`undici`). Thinking and prompt normalization stay with the host (`pi-ai`).
 
-About 43k lines including tests: `src/` is roughly 17k across 27 files, and the 78 test files add roughly 26k more. The full suite (sandboxed, network-mocked) and typecheck pass before every release. See CHANGELOG.md.
+About 45k lines including tests: `src/` is roughly 17.7k across 27 files, and the 82 test files add roughly 27k more. The full suite (sandboxed, network-mocked) and typecheck pass before every release. See CHANGELOG.md.
 
 ---
 
@@ -368,9 +367,8 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 #### Project structure
 
 ```
-├── models.ts                # 34-model catalog definitions
+├── models.ts                # 36-model catalog definitions
 ├── index.ts                 # extension entry, lifecycle hooks
-├── models.ts                # 37-model catalog definitions
 ├── catalog.ts               # model catalog cache (24h disk)
 ├── proxy.ts                 # local proxy server (127.0.0.1:28180)
 ├── client.ts                # session-side daemon attach/spawn and heartbeat

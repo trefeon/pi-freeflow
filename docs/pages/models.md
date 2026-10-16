@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **35 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
+pi-freeflow provides unified access to **36 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
 
 ## Upstream Protocol Distinction
 
@@ -11,7 +11,7 @@ pi-freeflow provides unified access to **35 curated free models** across four up
 
 ### OpenCode Zen — Chat Completions (`/v1/chat/completions`)
 - **Endpoint**: `https://opencode.ai/inference/v1/chat/completions`
-- **Models**: 9 models (Cat Jam, DeepSeek V4.1 Flash, Space Bunny, LongCat, MiMo, Nemotron, Big Pickle, Ling, etc.)
+- **Models**: 10 models (Cat Jam, DeepSeek V4.1 Flash, Space Bunny, LongCat, MiMo, Nemotron, Big Pickle, Step 5 Preview, etc.)
 - **Config**: `api: "openai-completions"`, supports reasoning effort
 
 ### OpenCode Zen — Messages API (`/v1/messages`)
@@ -22,7 +22,7 @@ pi-freeflow provides unified access to **35 curated free models** across four up
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: keyless — no `Authorization` header at all (the gateway rejects a placeholder credential with `401 INVALID_TOKEN`; 200 req/hr per IP)
-- **Models**: 15 models with OpenRouter-style thinking format
+- **Models**: 14 models with OpenRouter-style thinking format
 
 ### Cline (`/api/v1/chat/completions`)
 - **Endpoint**: `https://api.cline.bot/api/v1/chat/completions`
@@ -33,21 +33,22 @@ pi-freeflow provides unified access to **35 curated free models** across four up
 ### OVHcloud AI Endpoints (`/v1/chat/completions`)
 - **Endpoint**: `https://oai.endpoints.kepler.ai.cloud.ovh.net/v1`
 - **Auth**: keyless — no account and no `Authorization` header at all
-- **Models**: 9 open-weight models (GPT-OSS, Qwen 3.5/3.6/3.8, Mistral, Llama)
+- **Models**: 8 open-weight models (GPT-OSS, Qwen 3.5/3.6/3.8, Mistral, Llama)
 - **Routing**: direct only, never through the relay pool
 - **Config**: `api: "openai-completions"`. Chat is the only upstream shape: OVH's responses endpoint rejects every array `input` with `422 input: data did not match any variant of untagged enum ResponseInput` and accepts only a bare string, so a responses-path request is translated to chat upstream and the answer mapped back — the same shape mapping the Cline lane uses.
 
-## 35 Model Specifications
+## 36 Model Specifications
 
-### OpenCode Zen (11 models)
+### OpenCode Zen (12 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
-| `cat-jam-free` | 262,144 | 131,072 | low..xhigh | ❌ |
+| `cat-jam-free` | 262,144 | 131,072 | low..max | ❌ |
 | `muse-spark-1.2-contributor-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `muse-spark-1.3-contributor-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `mimo-v2.6-flash-free` | 1,048,576 | 131,072 | minimal..xhigh (3 values)* | ✅ |
 | `nemotron-3.5-lightning-free` | 1,000,000 | 262,144 | minimal..xhigh | ❌ |
+| `nemotron-3.5-super-vl-free` | 1,000,000 | 131,072 | minimal..xhigh | ✅ |
 | `nemotron-3-ultra-free` | 1,000,000 | 128,000 | minimal..xhigh | ❌ |
 | `big-pickle` | 200,000 | 32,000 | high, max | ❌ |
 | `space-bunny-free` | 1,048,576 | 524,288 | low..max | ✅ |
@@ -125,7 +126,7 @@ When a model is available under multiple twin names (e.g. `deepseek-v4.1-flash-f
 
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :---: | :--- | :--- | :--- |
-| **OpenCode Zen** | 11 | `opencode.ai/inference` | `/inference/v1` (Responses + Chat) | `Bearer public` |
+| **OpenCode Zen** | 12 | `opencode.ai/inference` | `/inference/v1` (Responses + Chat) | `Bearer public` |
 | **KiloCode Gateway** | 14 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
 | **Cline** | 2 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 | **OVHcloud AI Endpoints** | 8 | `oai.endpoints.kepler.ai.cloud.ovh.net` | `/v1/chat/completions` (responses path translated) | Keyless, anonymous |
