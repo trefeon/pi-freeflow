@@ -8,8 +8,9 @@
  * pattern-matched against the file text.
  *
  * Everything runs in temp directories with local-only tools: no network and no
- * listening sockets. Tests needing a shell (and PATH-resolved shell stubs, which
- * Git Bash provides) skip on hosts where that capability is missing.
+ * listening sockets. A test skips — never fails — when a capability it needs is
+ * missing, whether that is the workflow parser (js-yaml), a shell, or PATH-resolved
+ * shell stubs (which Git Bash provides).
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -38,10 +39,10 @@ type Workflow = { concurrency?: unknown; permissions?: unknown; jobs?: Record<st
 type YamlLoad = (source: string) => unknown;
 
 /**
- * Opportunistic loader for the workflow documents: js-yaml reaches this repo as a
- * transitive dependency of the docs toolchain, so strict (pnpm) installs may not
- * have it at all — the specifier is genuinely runtime-selected, which is why a
- * static import cannot work here.
+ * Opportunistic loader for the workflow documents: js-yaml is a devDependency, but an
+ * install that never linked it must still be able to load this file and skip — a static
+ * import would take the whole suite down with it, so the specifier is resolved at
+ * runtime instead.
  */
 const JS_YAML_SPECIFIER: string = "js-yaml";
 const yamlLoad: YamlLoad | null = await (async (): Promise<YamlLoad | null> => {
@@ -96,6 +97,9 @@ const SHELL_STUBS = probeShellStubs();
 const SKIP_NO_STUBS = SHELL_STUBS ? undefined : "bash with PATH-resolved shell stubs is unavailable on this host";
 const SKIP_NO_SHELL = probe("bash", ["-c", "echo ok"]) ? undefined : "bash is unavailable on this host";
 const SKIP_NO_GIT = probe("git", ["--version"]) ? undefined : "git is unavailable on this host";
+// Probed once at module load. Every test that reads a workflow document — directly or
+// through scriptOf — gates on this, combined with any other capability it needs, so a
+// parser-less install skips the whole set instead of asserting.
 const SKIP_NO_YAML = yamlLoad ? undefined : "js-yaml is not resolvable in this install";
 
 // ------------------------------------------------------------------- fixtures
@@ -204,7 +208,7 @@ test("opencode-watch.yml serializes watcher runs instead of overlapping them", {
 	assert.deepEqual(doc.concurrency, { group: "opencode-watch", "cancel-in-progress": false });
 });
 
-test("opencode-watch.yml files the drift issue body when the report is missing", { skip: SKIP_NO_STUBS }, () => {
+test("opencode-watch.yml files the drift issue body when the report is missing", { skip: SKIP_NO_YAML ?? SKIP_NO_STUBS }, () => {
 	withTempDir("pff-drift-", (dir) => {
 		const gh = makeStub(dir, "gh", GH_STUB);
 		const result = runShell(scriptOf("opencode-watch.yml", WATCH_JOB, DRIFT_ISSUE_STEP), dir, {
@@ -228,7 +232,7 @@ test("opencode-watch.yml files the drift issue body when the report is missing",
 	});
 });
 
-test("opencode-watch.yml comments the open drift issue with the report file", { skip: SKIP_NO_STUBS }, () => {
+test("opencode-watch.yml comments the open drift issue with the report file", { skip: SKIP_NO_YAML ?? SKIP_NO_STUBS }, () => {
 	withTempDir("pff-drift-comment-", (dir) => {
 		const report = "# Drift\n\n- upstream file changed\n";
 		fs.writeFileSync(path.join(dir, "drift-report.md"), report);
@@ -251,7 +255,7 @@ test("opencode-watch.yml comments the open drift issue with the report file", { 
 
 test(
 	"opencode-watch.yml state push rebases over a commit that lands on main first",
-	{ skip: SKIP_NO_STUBS ?? SKIP_NO_GIT },
+	{ skip: SKIP_NO_YAML ?? SKIP_NO_STUBS ?? SKIP_NO_GIT },
 	() => {
 		withTempDir("pff-state-push-", (dir) => {
 			const origin = path.join(dir, "origin.git");
@@ -310,7 +314,7 @@ test("release.yml reaches for the GitHub Release only on a tag", { skip: SKIP_NO
 	assert.equal(publish.run, "pnpm changeset publish");
 });
 
-test("release.yml tag validation rejects a tag that disagrees with the version", { skip: SKIP_NO_SHELL }, () => {
+test("release.yml tag validation rejects a tag that disagrees with the version", { skip: SKIP_NO_YAML ?? SKIP_NO_SHELL }, () => {
 	withTempDir("pff-tag-", (dir) => {
 		fs.writeFileSync(path.join(dir, "package.json"), `${JSON.stringify({ name: "pi-freeflow", version: "1.38.0" }, null, 2)}\n`);
 		const script = scriptOf("release.yml", RELEASE_JOB, TAG_VALIDATION_STEP);

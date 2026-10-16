@@ -54,6 +54,7 @@
   "devDependencies": {
     "@changesets/cli": "^2.27.0",
     "@types/node": "^22.13.9",
+    "js-yaml": "^4.1.0",
     "typescript": "^5.8.2",
     "vitepress": "^1.6.4"
   },
