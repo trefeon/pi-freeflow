@@ -13,6 +13,11 @@
  * 9. SSE stream truncation resilience (substantial >100KB -> incomplete vs small -> failed)
  * 10. Security & edge guardrails (SSRF, path traversal, header denylist, method whitelist)
  */
+// MUST be literal first import: it disables detached-daemon spawn before
+// src/config.ts is evaluated and supplies the fetch stub whose daemon answer
+// keeps activation attached (and the registry offline) during the two tests
+// below that boot the real extension.
+import { harnessFetchHandler } from "./user-flow-env.ts";
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -58,7 +63,10 @@ import type {
 
 // ── 1. Fresh Bootstrap & Static Catalog Registration ─────────────────────────
 
-test("E2E [1/10] fresh new user bootstrap registers 35 models with zero-latency catalog", async () => {
+test("E2E [1/10] fresh new user bootstrap registers 35 models with zero-latency catalog", async (t) => {
+ // Phantom daemon + offline registry: no detached daemon is spawned and no
+ // registry.npmjs.org request leaves the machine.
+ t.mock.method(globalThis, "fetch", harnessFetchHandler());
  let registeredProviderName = "";
  let registeredProviderConfig: ProviderConfig | undefined;
  const registeredCommands: Record<string, Omit<RegisteredCommand, "name">> = {};
@@ -384,7 +392,10 @@ test("E2E [10/10] proxy security whitelist strictly guards API paths and rejects
 
 // ── 11. Widget Status-Bar Click Opens Relay Picker ───────────────────────
 
-test("E2E [11/11] widget click on status bar triggers select relay picker via onStatusClick", async () => {
+test("E2E [11/11] widget click on status bar triggers select relay picker via onStatusClick", async (t) => {
+ // session_start drives the real extension: keep the daemon probe and the
+ // update check off the wire (no spawn, no port bind, no registry call).
+ t.mock.method(globalThis, "fetch", harnessFetchHandler());
  const existed = fs.existsSync(RELAY_STATE_FILE);
  const backup = existed ? fs.readFileSync(RELAY_STATE_FILE, "utf8") : "";
  const bakExisted = fs.existsSync(`${RELAY_STATE_FILE}.bak`);

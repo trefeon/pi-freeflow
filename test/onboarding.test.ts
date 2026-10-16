@@ -4,6 +4,10 @@
  * Drives the real `session_start` handler captured from the default export,
  * isolating the real disk state (flag + relay state + backup) for the test.
  */
+// MUST be literal first import: it disables detached-daemon spawn and points
+// the extension at TEST_PROXY_PORT before src/config.ts is evaluated, and
+// supplies the fetch stub that keeps the registry/daemon probes off the wire.
+import { harnessFetchHandler } from "./user-flow-env.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -82,8 +86,11 @@ function makeCtx(notifyMessages: string[]): ExtensionContext {
  } as ExtensionContext;
 }
 
-test("first run notifies once and persists the flag; later sessions stay silent", async () => {
+test("first run notifies once and persists the flag; later sessions stay silent", async (t) => {
  await withIsolatedFiles(async () => {
+  // Phantom daemon + offline registry: activation must neither bind a real
+  // port nor reach registry.npmjs.org via checkForUpdateInBackground.
+  t.mock.method(globalThis, "fetch", harnessFetchHandler());
   clearFiles();
   const handler = await captureSessionStart();
   const notifyMessages: string[] = [];
@@ -123,8 +130,9 @@ test("first run notifies once and persists the flag; later sessions stay silent"
  });
 });
 
-test("first run with a pre-configured relay pool reports the pool size", async () => {
+test("first run with a pre-configured relay pool reports the pool size", async (t) => {
  await withIsolatedFiles(async () => {
+  t.mock.method(globalThis, "fetch", harnessFetchHandler());
   clearFiles();
   const seed = resolveRelayState();
   ensureRelay(seed, "https://relay-a.example.com", "relay-a");

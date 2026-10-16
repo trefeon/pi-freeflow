@@ -1,12 +1,19 @@
 /**
  * Integration test for complete extension lifecycle
  */
+// MUST be literal first import: it disables detached-daemon spawn before
+// src/config.ts is evaluated, and supplies the fetch stub whose daemon answer
+// keeps activation attached instead of binding an in-process fallback.
+import { harnessFetchHandler } from "./user-flow-env.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import defaultExtension from "../src/index.ts";
 import type { ExtensionAPI, ProviderConfig, RegisteredCommand } from "../src/types.ts";
 import { hasFallbackServer } from "../src/client.ts";
-test("extension registers provider, commands, and lifecycle hooks", async () => {
+test("extension registers provider, commands, and lifecycle hooks", async (t) => {
+	// Phantom daemon + offline registry: activation spawns no detached daemon,
+	// binds no real port, and never reaches registry.npmjs.org.
+	t.mock.method(globalThis, "fetch", harnessFetchHandler());
 	let registeredProviderName = "";
 	let registeredProviderConfig: ProviderConfig | undefined;
 	const registeredCommands = new Map<string, Omit<RegisteredCommand, "name">>();
@@ -45,7 +52,10 @@ test("extension registers provider, commands, and lifecycle hooks", async () => 
 	}
 });
 
-test("session_shutdown does not stop heartbeat when connected to a daemon (fallbackServer is null)", async () => {
+test("session_shutdown does not stop heartbeat when connected to a daemon (fallbackServer is null)", async (t) => {
+	// The assertion below is about a DAEMON connection: the stub daemon keeps
+	// activation attached, so no in-process fallback server is ever bound.
+	t.mock.method(globalThis, "fetch", harnessFetchHandler());
 	const registeredEvents = new Map<string, Function>();
 	const mockPi: ExtensionAPI = {
 		registerProvider() {},
