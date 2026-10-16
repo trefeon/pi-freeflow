@@ -218,3 +218,51 @@ test(
 	{ skip: "killPortHolder is a direct named import; no module-mock flag in the test script" },
 	() => {},
 );
+test("command spec: /freeflow url with a rejected URL warns instead of throwing", async () => {
+	await withSavedDiskState(async () => {
+		setActiveRelayState(
+			{
+				enabled: true,
+				url: "https://relay1.example.com",
+				relays: [{ url: "https://relay1.example.com", label: "relay1" }],
+			},
+			false,
+		);
+		const spec = createCommandSpec(mockApi);
+		const { ctx, notifications } = createMockContext();
+
+		await spec.handler("url http://127.0.0.1:9999", ctx);
+
+		const warn = notifications.find((n) => n.type === "warning");
+		assert.ok(warn, "a rejected relay URL must notify a warning, not throw at the host");
+		assert.match(warn.message, /Relay URL rejected/);
+		const after = getActiveRelayState();
+		assert.equal(after.url, "https://relay1.example.com", "active relay must not change");
+		assert.equal(after.relays.length, 1, "a rejected URL must not be saved");
+	});
+});
+
+test("command spec: /freeflow add (interactive) warns on a rejected URL", async () => {
+	await withSavedDiskState(async () => {
+		setActiveRelayState({ enabled: true, url: "", relays: [] }, false);
+		const spec = createCommandSpec(mockApi);
+		const notifications: Array<{ message: string; type?: string }> = [];
+		const answers = ["http://127.0.0.1:9999", "loopback"];
+		const ui: ExtensionUIContext = {
+			notify(message, type) {
+				notifications.push({ message, type });
+			},
+			setStatus() {},
+			input: () => Promise.resolve(answers.shift() ?? ""),
+			select: (_prompt, options) => Promise.resolve(options[0]),
+		};
+
+		await spec.handler("add", { ui });
+
+		const warn = notifications.find((n) => n.type === "warning");
+		assert.ok(warn, "the interactive picker must surface the rejection as a warning");
+		assert.match(warn.message, /Relay URL rejected/);
+		assert.equal(getActiveRelayState().relays.length, 0, "a rejected URL must not be saved");
+	});
+});
+

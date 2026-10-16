@@ -628,12 +628,17 @@ export function createCommandSpec(
      )
     )?.trim() || defaultLabel;
 
-    applyRelayState((s) => {
-     const added = ensureRelay(s, inputUrl, inputLabel);
-     s.enabled = true;
-     s.url = added.url;
-     return s;
-    });
+    try {
+     applyRelayState((s) => {
+      const added = ensureRelay(s, inputUrl, inputLabel);
+      s.enabled = true;
+      s.url = added.url;
+      return s;
+     });
+    } catch (e) {
+     ctx.ui.notify((e as Error).message, "warning");
+     return;
+    }
     persist();
     flash();
     ctx.ui.notify(
@@ -1850,13 +1855,18 @@ export function createCommandSpec(
       relayState.url || "",
      ));
     const cleanInput = (input || "").trim() || "";
-    applyRelayState((s) => {
-     s.url = cleanInput;
-     if (cleanInput) {
-      ensureRelay(s, cleanInput, shortRelayLabel(cleanInput, s.relays));
-     }
-     return s;
-    });
+    try {
+     applyRelayState((s) => {
+      s.url = cleanInput;
+      if (cleanInput) {
+       ensureRelay(s, cleanInput, shortRelayLabel(cleanInput, s.relays));
+      }
+      return s;
+     });
+    } catch (e) {
+     ctx.ui.notify((e as Error).message, "warning");
+     return;
+    }
     persist();
     flash();
    } else if (sub === "deploy") {
