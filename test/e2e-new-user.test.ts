@@ -2,7 +2,7 @@
  * Comprehensive End-to-End (E2E) Test Suite: New User Lifecycle & System Contracts
  *
  * Covers:
- * 1. Fresh bootstrap & provider registration (33 models on default port 28180)
+ * 1. Fresh bootstrap & provider registration (full static catalog on the resolved port)
  * 2. CLI exit safety (server.unref() allows installer/CLI commands to exit cleanly)
  * 3. Multi-session daemon reuse (zero-duplicate single-port architecture)
  * 4. Single-port architecture (default port 28180)
@@ -63,7 +63,7 @@ import type {
 
 // ── 1. Fresh Bootstrap & Static Catalog Registration ─────────────────────────
 
-test("E2E [1/10] fresh new user bootstrap registers 35 models with zero-latency catalog", async (t) => {
+test("E2E [1/10] fresh new user bootstrap registers the full static catalog with zero latency", async (t) => {
  // Phantom daemon + offline registry: no detached daemon is spawned and no
  // registry.npmjs.org request leaves the machine.
  t.mock.method(globalThis, "fetch", harnessFetchHandler());
