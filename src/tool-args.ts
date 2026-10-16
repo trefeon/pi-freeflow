@@ -57,6 +57,18 @@ function schemaType(schema: Record<string, unknown>): string {
     for (const entry of declared) if (entry === "object" || entry === "array") return entry;
     if (typeof declared[0] === "string") return declared[0];
   }
+  // Strict-mode hosts wrap every optional property as
+  // `anyOf: [<schema>, { type: "null" }]` with no top-level `type` (OMP
+  // packages/ai/src/utils/schema/CONSTRAINTS.md:34-49; Pi
+  // api/constrained-sampling.ts:118-123), so the declared shape lives on the
+  // non-null branch. Without descending, every shape walker below sees such a
+  // property as untyped — repairValue early-returns, promoteStringArray skips the
+  // target, adoptDeclaredKeys finds no candidates — which left the whole repair
+  // family inert on exactly the strict tools it exists for: OMP `todo` is
+  // strict=true, every payload property is optional and therefore wrapped, and
+  // the reported phases promotion never fired.
+  const branch = nonNullBranch(schema);
+  if (branch !== null) return schemaType(branch);
   return "";
 }
 
@@ -122,20 +134,25 @@ function isNullableProperty(prop: unknown): boolean {
  */
 function matchesSchema(value: unknown, schema: Record<string, unknown>, depth: number): boolean {
  if (depth > MAX_DEPTH) return false;
+ // A value the declaration explicitly allows is a match before any shape is
+ // read: the walkers now descend through the strict-mode nullable wrapper, so
+ // a legitimately-null value would otherwise be REJECTED by that descent.
+ if (value === null && isNullableProperty(schema)) return true;
+ const resolved = effectiveSchema(schema);
  const type = schemaType(schema);
  if (type === "array") {
   if (!Array.isArray(value)) return false;
-  const items = schema.items;
+  const items = resolved.items;
   if (items === null || typeof items !== "object" || Array.isArray(items)) return true;
   return value.every((element) => matchesSchema(element, items as Record<string, unknown>, depth + 1));
  }
  if (type === "object") {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const rec = value as Record<string, unknown>;
-  const props = schema.properties;
+  const props = resolved.properties;
   const declared = props !== null && typeof props === "object" && !Array.isArray(props) ? (props as Record<string, unknown>) : null;
-  if (Array.isArray(schema.required)) {
-   for (const key of schema.required) {
+  if (Array.isArray(resolved.required)) {
+   for (const key of resolved.required) {
     if (typeof key !== "string" || key in rec) continue;
     // Strict-mode hosts list every key here and mark the optional ones nullable,
     // so a nullable key that is absent is correct, not a violation.
@@ -154,7 +171,7 @@ function matchesSchema(value: unknown, schema: Record<string, unknown>, depth: n
  if (type === "string") return typeof value === "string";
  if (type === "number") return typeof value === "number" && Number.isFinite(value);
  if (type === "boolean") return typeof value === "boolean";
- if (Array.isArray(schema.enum)) return schema.enum.some((member) => member === value);
+ if (Array.isArray(resolved.enum)) return resolved.enum.some((member) => member === value);
  return true;
 }
 
@@ -179,6 +196,19 @@ function nonNullBranch(prop: Record<string, unknown>): Record<string, unknown> |
 }
 
 /**
+ * The node a shape keyword (`properties`, `items`, …) lives on. Strict hosts
+ * wrap an optional property as `anyOf: [<schema>, { type: "null" }]` — a
+ * wrapper node with no `type` of its own — so shape reads must descend to its
+ * non-null branch. A node that declares its own `type` keeps it: any `anyOf`
+ * beside it is conjunctive, not a wrapper.
+ */
+function effectiveSchema(schema: Record<string, unknown>): Record<string, unknown> {
+	if (schema.type !== undefined || schema.anyOf === undefined) return schema;
+	const branch = nonNullBranch(schema);
+	return branch === null ? schema : effectiveSchema(branch);
+}
+
+/**
  * Repair one value against its declared schema: decode a JSON-string object or
  * array, unwrap a single-key envelope around an array, then recurse into array
  * items and object properties. Returns the input untouched when nothing
@@ -190,6 +220,7 @@ function repairValue(
   depth: number,
 ): { value: unknown; changed: boolean } {
   if (depth > MAX_DEPTH) return { value, changed: false };
+  const resolved = effectiveSchema(schema);
   const type = schemaType(schema);
   if (type !== "array" && type !== "object") return { value, changed: false };
 
@@ -222,7 +253,7 @@ function repairValue(
     return { value: inner.value, changed: true };
    }
    if (!Array.isArray(value)) return { value, changed: false };
-   const items = schema.items;
+   const items = resolved.items;
    if (items === null || typeof items !== "object" || Array.isArray(items)) return { value, changed: false };
    let changed = false;
    const out = value.map((element) => {
@@ -236,7 +267,7 @@ function repairValue(
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
    return { value, changed: false };
   }
-  const props = schema.properties;
+  const props = resolved.properties;
   if (props === null || typeof props !== "object" || Array.isArray(props)) {
    return { value, changed: false };
   }
@@ -288,7 +319,7 @@ function adoptDeclaredKeys(
   value: Record<string, unknown>,
   schema: Record<string, unknown>,
  ): Record<string, unknown> | null {
-  const props = schema.properties;
+  const props = effectiveSchema(schema).properties;
   if (props === null || typeof props !== "object" || Array.isArray(props)) return null;
   const declared = props as Record<string, Record<string, unknown>>;
   const unknownKeys = Object.keys(value).filter((key) => !(key in declared));
@@ -313,7 +344,7 @@ function adoptDeclaredKeys(
 
 /** True when every key on the object is declared by the schema. */
 function elementKeysDeclared(value: Record<string, unknown>, schema: Record<string, unknown>): boolean {
-  const props = schema.properties;
+  const props = effectiveSchema(schema).properties;
   if (props === null || typeof props !== "object" || Array.isArray(props)) return false;
   return Object.keys(value).every((key) => key in (props as Record<string, unknown>));
 }
@@ -334,17 +365,18 @@ function promoteStringArray(
   depth: number,
 ): Record<string, unknown> {
   if (depth > MAX_DEPTH) return args;
-  const props = schema.properties;
+  const resolved = effectiveSchema(schema);
+  const props = resolved.properties;
   if (props === null || typeof props !== "object" || Array.isArray(props)) return args;
   const declared = props as Record<string, Record<string, unknown>>;
   const required = new Set(
-   Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === "string") : [],
+   Array.isArray(resolved.required) ? resolved.required.filter((key): key is string => typeof key === "string") : [],
   );
   const out = { ...args };
   let moved = false;
   for (const [targetName, targetSchema] of Object.entries(declared)) {
    if (schemaType(targetSchema) !== "array") continue;
-   const targetItems = targetSchema.items;
+   const targetItems = effectiveSchema(targetSchema).items;
    if (targetItems === null || typeof targetItems !== "object" || Array.isArray(targetItems)) continue;
    if (schemaType(targetItems as Record<string, unknown>) !== "object") continue;
    if (targetName in out) continue;
@@ -356,7 +388,7 @@ function promoteStringArray(
     // source is the invented-vocabulary shape and is accepted as emitted.
     if (sourceSchema !== undefined) {
      if (schemaType(sourceSchema) !== "array") continue;
-     const sourceItems = sourceSchema.items;
+     const sourceItems = effectiveSchema(sourceSchema).items;
      if (sourceItems !== null && typeof sourceItems === "object" && !Array.isArray(sourceItems) &&
       schemaType(sourceItems as Record<string, unknown>) === "object") continue;
     }
@@ -411,7 +443,12 @@ function promoteStringArray(
     if (!usable) continue;
     out[targetName] = promoted;
     moved = true;
-    if (!required.has(sourceName)) delete out[sourceName];
+    // The consumed source goes unless its absence would violate the schema.
+    // Strict mode puts EVERY key in `required` ("must be addressable", not
+    // "must be present"), so raw membership cannot pin it: a nullable listing
+    // is optional and the consumed source is dropped. A genuinely required
+    // source is kept — and the matchesSchema gate below would refuse the drop.
+    if (!required.has(sourceName) || isNullableProperty(declared[sourceName])) delete out[sourceName];
     break;
    }
   }

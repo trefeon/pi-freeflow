@@ -62,7 +62,30 @@ function todoTool(): Record<string, unknown> {
 	return { type: "function", name: "todo", description: "apply a single todo operation", parameters: todoParameters() };
 }
 
+/**
+ * The same parameters in the strict-mode wire form both hosts emit for
+ * `strict: true`: `required` lists every property key and each optional one is
+ * wrapped in `anyOf: [<schema>, { type: "null" }]` (OMP src/utils/schema/
+ * CONSTRAINTS.md:34-49; Pi api/constrained-sampling.ts:118-123). OMP declares
+ * todo strict=true, so this — not the bare schema above — is the form the
+ * reported malformation actually arrived in.
+ */
+function todoStrictParameters(): Record<string, unknown> {
+	const params = todoParameters();
+	const props = params.properties as Record<string, Record<string, unknown>>;
+	for (const [key, prop] of Object.entries(props)) {
+		if (key === "op") continue; // required in the source, so never wrapped
+		props[key] = { anyOf: [prop, { type: "null" }] };
+	}
+	return { ...params, properties: props, required: Object.keys(props), additionalProperties: false };
+}
+
 const schemas = buildArgRepairSchemas([todoTool()]);
+
+/** `todo` schemas in that same strict form, keyed for the repair. */
+const strictSchemas = buildArgRepairSchemas([
+	{ type: "function", name: "todo", description: "apply a single todo operation", parameters: todoStrictParameters() },
+]);
 
 /** The reported failure: phases JSON-encoded into the flat string list. */
 const REPORTED = JSON.stringify({
@@ -91,6 +114,49 @@ test("reported malformation: JSON-encoded phases promote into the declared list"
 	for (const phase of parsed.list) {
 		for (const task of phase.items) assert.equal(typeof task, "string");
 	}
+});
+
+test("strict-wrapped todo: the reported malformation promotes through the anyOf list prop", () => {
+	// At strict=true every optional payload prop — `list` included — arrives
+	// wrapped as `anyOf: [T, { type: "null" }]`, so its array shape lives on the
+	// wrapper's non-null branch. Reading only a top-level `type` saw an untyped
+	// prop and skipped it, which made the exact payload this module exists for
+	// unrepairable on the tool that reported it.
+	const out = repairToolArguments("todo", REPORTED, strictSchemas);
+	assert.notEqual(out, REPORTED, "the reported payload must change");
+	assert.deepEqual(JSON.parse(out), {
+		op: "init",
+		list: [
+			{ phase: "Research", items: ["Map repo structure and entrypoints", "Trace auth and login flow"] },
+			{ phase: "Synthesis", items: ["Write how-it-works explanation"] },
+		],
+	});
+	// The consumed source is nullable-listed by the strict rewrite, so a working
+	// repair leaves the payload with the declared slot filled and the junk gone.
+	assert.equal("items" in (JSON.parse(out) as Record<string, unknown>), false);
+	// The streaming responses path repairs through the same core; the strict cloak
+	// must fire there too, because that is where the live failure was seen.
+	const state = createSseStreamCloakState();
+	const cloak: StreamCloakOptions = { callerHadTools: true, injected: ["edit"], pathname: "/v1/responses", argSchemas: strictSchemas };
+	const streamed = [
+		`event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "function_call", id: "fc_1", name: "todo", arguments: "" } })}`,
+		`event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { type: "function_call", id: "fc_1", name: "todo", arguments: REPORTED } })}`,
+	]
+		.map((block) => rewriteSseBlock(block, state, cloak))
+		.filter((block): block is string => block !== null)
+		.join("\n\n");
+	const done = streamed.split("\n\n").find((block) => block.includes("output_item.done")) ?? "";
+	const streamedArgs = JSON.parse(JSON.parse(done.slice(done.indexOf("data: ") + 6)).item.arguments) as { list: Array<{ phase: string }> };
+	assert.deepEqual(streamedArgs.list.map((p) => p.phase), ["Research", "Synthesis"], "the streamed responses path promotes under the strict schema");
+});
+
+test("strict-wrapped todo: canonical and flat shapes still ride through untouched", () => {
+	// The unwrap must not turn the strict schema loose: a canonical call stays
+	// byte-identical, and the legitimate flat single-phase init is still left for
+	// the host's own flattening (plain labels never promote, strict or not).
+	assert.equal(repairToolArguments("todo", CANONICAL, strictSchemas), CANONICAL);
+	const flat = '{"op":"init","items":["Map repo","Run tests"]}';
+	assert.equal(repairToolArguments("todo", flat, strictSchemas), flat);
 });
 
 test("inner array envelope unwraps: items: { item: [...] } becomes a real array", () => {
