@@ -701,7 +701,7 @@ function rewriteMessagesBlock(
    delta: { type: "input_json_delta", partial_json: repairToolArguments(name, buffered, cloak.argSchemas) },
   };
   const stopBlock = emitSseBlock(event, JSON.stringify(parsed), hadEventPrefix);
-  return `${emitSseBlock("content_block_delta", JSON.stringify(flushed), false)}\n\n${stopBlock}`;
+  return `${emitSseBlock("content_block_delta", JSON.stringify(flushed), true)}\n\n${stopBlock}`;
  }
  // A `message` frame carries a whole finished message mid-stream. It needs the
  // same treatment the aggregate path gives it — injected tool_use dropped,

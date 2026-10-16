@@ -314,3 +314,61 @@ test("chat stream: caller-owned same-name call survives with restored casing", a
  assert.ok(!body.includes("call_grep_k"), "injected call id never leaks");
  assert.ok(!body.includes("SECRET_GREP_TAIL"), "dropped call continuations never reach the host");
 });
+
+test("messages stream: synthesized flush carries its content_block_delta event line", async () => {
+ // Both hosts filter SSE frames by their `event:` field, so a synthesized
+ // frame emitted data-only was dropped and the repaired arguments never
+ // reached the tool call.
+ const todoSchema = {
+  type: "object",
+  properties: {
+   list: {
+    type: "array",
+    items: {
+     type: "object",
+     properties: {
+      phase: { type: "string" },
+      items: { type: "array", items: { type: "string" } },
+     },
+     required: ["phase", "items"],
+    },
+   },
+  },
+  required: ["list"],
+ };
+ const cloak: StreamCloakOptions = {
+  callerHadTools: true,
+  caseRestore: {},
+  findGlob: { renamedFindToGlob: false },
+  injected: [],
+  argSchemas: new Map([["todo", todoSchema]]),
+  pathname: "/v1/messages",
+ };
+ const malformed = JSON.stringify({ list: { item: [{ phase: "R", items: ["a"] }] } });
+ const sse = [
+  'data: {"type":"message_start","message":{"id":"msg_stream_3","model":"m"}}',
+  `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tu_todo", name: "todo" } })}`,
+  `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: malformed } })}`,
+  'data: {"type":"content_block_stop","index":0}',
+  'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}',
+ ].join("\n\n");
+
+ const body = await runStreamed(sse, "/v1/messages", cloak, thirds(sse));
+
+ // The upstream deltas were buffered (they carry no name), so the only frame
+ // bearing the repaired input is the one synthesized ahead of the stop block.
+ const flushed = body.split("\n\n").find((block) => block.includes("input_json_delta"));
+ assert.ok(flushed, "repaired arguments are re-emitted when the block stops");
+ assert.ok(
+  flushed!.startsWith("event: content_block_delta\ndata: "),
+  "the synthesized delta must carry its event line for event-filtering hosts",
+ );
+ const parsed = JSON.parse(flushed!.slice(flushed!.indexOf("data: ") + 6)) as {
+  delta: { partial_json: string };
+ };
+ assert.deepEqual(
+  JSON.parse(parsed.delta.partial_json),
+  { list: [{ phase: "R", items: ["a"] }] },
+  "the frame carries the repaired (envelope-unwrapped) arguments",
+ );
+});
