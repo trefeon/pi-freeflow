@@ -802,3 +802,45 @@ test("multi-byte UTF-8 split across TCP chunks reaches the host intact", async (
 		"no replacement character may leak into the forwarded stream",
 	);
 });
+
+test("refire: a partial sequence from the cut stream never prefixes the replacement", async () => {
+	resetAllRelayHealth();
+	const cut = new PassThrough();
+	const replacement = new PassThrough();
+	const res = new FakeResponse();
+	const req = new FakeRequest("/v1/chat/completions");
+	pipeUpstreamStream(
+		cut,
+		res as unknown as http.ServerResponse,
+		req as unknown as http.IncomingMessage,
+		"test",
+		RELAY_URL,
+		undefined,
+		{ refire: async () => replacement },
+	);
+
+	// The cut stream dies mid-character and without a terminal marker, so the
+	// decoder still holds a byte that belongs to the discarded stream only.
+	const opened = once(cut, "data");
+	cut.push(Buffer.from('data: {"a":"', "utf8"));
+	await opened;
+	const pending = once(cut, "data");
+	cut.push(Buffer.from([0xe4]));
+	await pending;
+	cut.destroy();
+	// The replacement stream carries the real turn, and its first block must
+	// arrive byte-intact: a decoder carried across the swap would prefix it.
+	replacement.push(Buffer.from('data: {"b":"x"}\n\ndata: [DONE]\n\n', "utf8"));
+	replacement.end();
+	await once(replacement, "close");
+
+	const body = res.body();
+	assert.ok(
+		body.includes('data: {"b":"x"}'),
+		"the replacement stream's first block must reach the host intact",
+	);
+	assert.ok(
+		!body.includes("\uFFFD"),
+		"the cut stream's pending byte must never leak into the replacement",
+	);
+});
