@@ -27,6 +27,14 @@ import { repairToolArguments } from "./tool-args.ts";
  */
 export const SUBSTANTIAL_MIN_CHUNKS = 50;
 export const SUBSTANTIAL_MIN_BYTES = 100 * 1024;
+// Bounded lookahead for a streaming response whose upstream omitted the
+// content-type: the pipe holds at most this many bytes while it waits for SSE
+// evidence, then classifies the body itself (raw passthrough on overflow —
+// a genuine SSE body opens with its first field line long before this).
+const SNIFF_WINDOW_BYTES = 8192;
+// SSE field line at a line start (`data:`/`event:`), CRLF-tolerant. Consulted
+// only while the body kind is undecided (upstream sent no content-type).
+const SSE_START_RE = /(^|\n)(data|event):/;
 // Wire markers proving the forwarded bytes already contain a tool call the
 // host may execute (responses + chat shapes). A re-fired turn would
 // regenerate those calls, so their presence vetoes the silent resume and
@@ -757,6 +765,15 @@ export interface StreamPipeOptions {
   * Client aborts and clean terminal markers never reach this hook.
   */
  refire?: () => Promise<Readable | null>;
+ /**
+  * Content-type the upstream sent for this response, passed through verbatim.
+  * A value that is present and not an SSE type (text/event-stream) switches
+  * the pipe to byte-for-byte passthrough: no SSE scanner, no synthetic
+  * terminal, no re-fire — a JSON answer or error page on a streaming request
+  * must reach the client exactly as received. Absent, null, or empty means
+  * upstream omitted it; the pipe then classifies the buffered start itself.
+  */
+ upstreamContentType?: string | null;
 }
 /**
  * Pipes an upstream readable stream to a client HTTP response.
@@ -770,6 +787,9 @@ export interface StreamPipeOptions {
  * - Optional `opts.refire`: one silent mid-stream resume on upstream
  *   truncation (see StreamPipeOptions); without it the turn ends with a
  *   synthetic terminal event exactly as before.
+ * - `opts.upstreamContentType` (see StreamPipeOptions): a non-SSE body is
+ *   forwarded byte-for-byte — scanner, synthetic terminals, and re-fire only
+ *   ever apply to real event streams.
  */
 export function pipeUpstreamStream(
  nodeStream: Readable,
@@ -816,6 +836,20 @@ export function pipeUpstreamStream(
  // across two TCP chunks must decode as one, never as replacement
  // characters. `end()` flushes a trailing partial sequence at stream end.
  let sseDecoder = new StringDecoder("utf8");
+ // Body-kind gate. "sse" runs the event-stream pipeline; "raw" forwards bytes
+ // verbatim (a non-SSE body answered on a streaming request — see
+ // StreamPipeOptions.upstreamContentType); "undecided" (upstream omitted the
+ // content-type) holds a bounded lookahead until SSE proves itself.
+ const upstreamCt = (opts?.upstreamContentType ?? "").trim().toLowerCase();
+ let bodyGate: "sse" | "raw" | "undecided" =
+  upstreamCt === ""
+   ? "undecided"
+   : upstreamCt.includes("text/event-stream")
+    ? "sse"
+    : "raw";
+ // Held lookahead while the gate is undecided, bounded by SNIFF_WINDOW_BYTES.
+ let gateChunks: Buffer[] = [];
+ let gateBytes = 0;
  // Watchdog outcome: recorded exactly once per stream. Client disconnects
  // and proxy-internal aborts set clientAborted first, so the ensure path
  // below skips them and the window only reflects upstream-side results.
@@ -940,6 +974,41 @@ export function pipeUpstreamStream(
   log("debug", "mid-stream model-fault refire: continuing turn on replacement stream", { totalChunks, totalBytes }, rid);
  };
  /**
+  * Write one payload to the client with the shared backpressure/flush
+  * handling, so the SSE and raw paths keep identical delivery guarantees.
+  */
+ const deliver = (data: string | Buffer): void => {
+  const canContinue = res.write(data);
+  if (canContinue === false && !nodeStream.destroyed) {
+   nodeStream.pause();
+   const onDrain = () => {
+    res.off("drain", onDrain);
+    if (!nodeStream.destroyed) nodeStream.resume();
+   };
+   res.once("drain", onDrain);
+  }
+  const maybeFlush = res as unknown as { flush?: () => void };
+  if (typeof maybeFlush.flush === "function") {
+   maybeFlush.flush();
+  }
+ };
+ /**
+  * Verbatim passthrough for a non-SSE body: the exact bytes upstream sent —
+  * no scanner, no synthetic terminal, no re-fire (a complete document, not an
+  * event stream).
+  */
+ const forwardRaw = (chunk: Buffer): void => {
+  lastForwardedByteAt = Date.now();
+  deliver(chunk);
+ };
+ /** Release the held lookahead into the raw path and close the gate. */
+ const flushGateRaw = (): void => {
+  const held = gateChunks;
+  gateChunks = [];
+  gateBytes = 0;
+  for (const buffered of held) forwardRaw(buffered);
+ };
+ /**
   * Forward one rewritten SSE block: terminal-marker scan plus the shared
   * backpressure/flush handling, so cloaked streams keep the raw path's
   * delivery guarantees.
@@ -960,19 +1029,7 @@ export function pipeUpstreamStream(
    hasTerminalEvent = true;
   }
   terminalScanCarry = Buffer.from(scanBuf.subarray(Math.max(0, scanBuf.length - 32)));
-  const canContinue = res.write(text);
-  if (canContinue === false && !nodeStream.destroyed) {
-   nodeStream.pause();
-   const onDrain = () => {
-    res.off("drain", onDrain);
-    if (!nodeStream.destroyed) nodeStream.resume();
-   };
-   res.once("drain", onDrain);
-  }
-  const maybeFlush = res as unknown as { flush?: () => void };
-  if (typeof maybeFlush.flush === "function") {
-   maybeFlush.flush();
-  }
+  deliver(text);
  };
  const sseBoundary = /\r?\n\r?\n/;
  const ensureTerminalEvent = (
@@ -1061,6 +1118,49 @@ export function pipeUpstreamStream(
    res.flushHeaders();
   }
  } catch { }
+ /**
+  * SSE pipeline for one received chunk: thinking sniff plus the
+  * double-newline block scanner. Only reached once the body is known to be
+  * an event stream (upstream content-type, or sniffed `data:`/`event:`
+  * evidence).
+  */
+ const processSseChunk = (chunk: Buffer | string): void => {
+  const chunkSize =
+   typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
+  if (sniffThinking(chunk)) {
+   thinkingChunks++;
+   thinkingBytes += chunkSize;
+   if (isDebugEnabled() && thinkingChunks <= 3) {
+    const preview =
+     typeof chunk === "string"
+      ? chunk.slice(0, 600)
+      : chunk.toString("utf8", 0, 600);
+    log(
+     "debug",
+     `thinking chunk #${thinkingChunks}`,
+     { preview: preview.slice(0, 400) },
+     rid,
+    );
+   }
+  }
+  // Buffer across chunks into complete SSE blocks delimited by double-newline.
+  // Forwarding only complete blocks guarantees that network chunk boundaries
+  // never split JSON strings on the wire or leave unterminated syntax when
+  // mid-stream refire or truncation occurs.
+  sseBuffer += typeof chunk === "string" ? chunk : sseDecoder.write(chunk);
+  let boundary = sseBoundary.exec(sseBuffer);
+  while (boundary) {
+   const block = sseBuffer.slice(0, boundary.index);
+   sseBuffer = sseBuffer.slice(boundary.index + boundary[0].length);
+   if (cloakState && cloak) {
+    const rewritten = rewriteSseBlock(block, cloakState, cloak);
+    if (rewritten !== null) forwardText(`${rewritten}\n\n`);
+   } else {
+    forwardText(`${block}\n\n`);
+   }
+   boundary = sseBoundary.exec(sseBuffer);
+  }
+ };
  const onData = (chunk: Buffer | string): void => {
   try {
    // While a replacement stream is being fetched the cut stream is stale:
@@ -1077,39 +1177,33 @@ export function pipeUpstreamStream(
    totalBytes += chunkSize;
    lastForwardedByteAt = Date.now();
 
-   if (sniffThinking(chunk)) {
-    thinkingChunks++;
-    thinkingBytes += chunkSize;
-    if (isDebugEnabled() && thinkingChunks <= 3) {
-     const preview =
-      typeof chunk === "string"
-       ? chunk.slice(0, 600)
-       : chunk.toString("utf8", 0, 600);
-     log(
-      "debug",
-      `thinking chunk #${thinkingChunks}`,
-      { preview: preview.slice(0, 400) },
-      rid,
-     );
+   if (bodyGate === "undecided") {
+    // Upstream sent no content-type: classify the body from its start. SSE
+    // evidence switches to the normal pipeline and replays the held
+    // lookahead into it; the bounded window filling with no evidence
+    // classifies the body as raw passthrough.
+    const buf = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+    gateChunks.push(buf);
+    gateBytes += buf.length;
+    const isSse = SSE_START_RE.test(Buffer.concat(gateChunks, gateBytes).toString("utf8"));
+    if (!isSse && gateBytes < SNIFF_WINDOW_BYTES) return;
+    if (!isSse) {
+     bodyGate = "raw";
+     flushGateRaw();
+     return;
     }
+    bodyGate = "sse";
+    const held = gateChunks;
+    gateChunks = [];
+    gateBytes = 0;
+    for (const buffered of held) processSseChunk(buffered);
+    return;
    }
-   // Buffer across chunks into complete SSE blocks delimited by double-newline.
-   // Forwarding only complete blocks guarantees that network chunk boundaries
-   // never split JSON strings on the wire or leave unterminated syntax when
-   // mid-stream refire or truncation occurs.
-   sseBuffer += typeof chunk === "string" ? chunk : sseDecoder.write(chunk);
-   let boundary = sseBoundary.exec(sseBuffer);
-   while (boundary) {
-    const block = sseBuffer.slice(0, boundary.index);
-    sseBuffer = sseBuffer.slice(boundary.index + boundary[0].length);
-    if (cloakState && cloak) {
-     const rewritten = rewriteSseBlock(block, cloakState, cloak);
-     if (rewritten !== null) forwardText(`${rewritten}\n\n`);
-    } else {
-     forwardText(`${block}\n\n`);
-    }
-    boundary = sseBoundary.exec(sseBuffer);
+   if (bodyGate === "raw") {
+    forwardRaw(typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk);
+    return;
    }
+   processSseChunk(chunk);
   } catch { }
  };
 
@@ -1137,6 +1231,16 @@ export function pipeUpstreamStream(
   try {
    if (!res.headersSent) {
     res.writeHead(502, { "content-type": "application/json" });
+   } else if (bodyGate !== "sse") {
+    // Non-SSE passthrough: no event-stream contract to terminate — release
+    // the held lookahead and end without a synthetic terminal. A genuine
+    // upstream-side failure still marks the relay exactly like the SSE
+    // truncation path, so health keeps attributing cut streams.
+    flushGateRaw();
+    if (!isInternalAbort && relayUrl && relayUrl !== "direct") {
+     midStreamRelayTruncations += 1;
+     markRelayFailure(relayUrl, 0, errorMsg || "stream failed mid-body");
+    }
    } else if (isInternalAbort) {
     clientAborted = true;
     sseBuffer = "";
@@ -1159,6 +1263,26 @@ export function pipeUpstreamStream(
   // must neither inject a terminal nor end res mid-rescue.
   if (refirePending) return;
   upstreamEnded = true;
+  if (bodyGate !== "sse") {
+   // Non-SSE passthrough ("undecided" here means upstream sent no
+   // content-type and no SSE field line ever appeared): the held lookahead
+   // is the tail of a complete non-SSE body — flush it verbatim, then end.
+   // No synthetic terminal, no re-fire, no watchdog sample: this was never
+   // an event stream.
+   try {
+    flushGateRaw();
+   } catch { }
+   try {
+    if (!res.writableEnded) res.end();
+   } catch { }
+   log(
+    "debug",
+    `non-SSE upstream body passed through verbatim — ${totalChunks} chunks (${(totalBytes / 1024).toFixed(1)}KB)`,
+    undefined,
+    rid,
+   );
+   return;
+  }
   // The final chunk may end mid-character: only the decoder knows whether
   // bytes are still pending, and those bytes are part of the last block.
   sseBuffer += sseDecoder.end();
@@ -1234,7 +1358,16 @@ export function pipeUpstreamStream(
    const flushed = flushBufferedToolArgs(cloakState, cloak);
    if (flushed !== null) forwardText(flushed);
   }
-   if (!hasTerminalEvent && totalChunks > 0) {
+   if (bodyGate !== "sse") {
+    // Non-SSE passthrough: same relay-fault accounting as the SSE path's
+    // mid-body close (a genuine upstream socket death, not a client
+    // disconnect), but no terminal is owed on raw bytes.
+    flushGateRaw();
+    if (!clientAborted && !upstreamEnded && relayUrl && relayUrl !== "direct") {
+     midStreamRelayTruncations += 1;
+     markRelayFailure(relayUrl, 0, "stream closed prematurely");
+    }
+   } else if (!hasTerminalEvent && totalChunks > 0) {
     if (clientAborted || upstreamEnded) {
      // Client disconnect teardown or post-end cleanup — the relay
      // is not at fault; still give the host a terminal event.

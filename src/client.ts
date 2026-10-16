@@ -62,6 +62,11 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let watchdogTimer: ReturnType<typeof setInterval> | null = null;
 let heartbeatPort = 0;
 let ensuring = false;
+/**
+ * In-flight ensureDaemon() attempt. Every concurrent caller awaits this same
+ * promise instead of guessing a port; ensureDaemon clears it on settle.
+ */
+let ensureInFlight: Promise<number> | null = null;
 let fallbackServer: http.Server | null = null;
 /** First tick (Date.now()) the daemon has looked continuously busy; 0 = idle. */
 let busySince = 0;
@@ -627,22 +632,72 @@ export type DarkHolderProbe = {
  alive: boolean;
  /** True when a TCP connection to the port succeeds (something holds it). */
  bound: boolean;
- /** Full /_health snapshot, or null when the holder answers nothing. */
- health: HealthForRecovery;
+ /**
+  * True when GET /_health answers in OUR daemon's shape. A stranger squatting
+  * the loopback port can answer `{}` or arbitrary JSON: that is not a daemon
+  * of ours, whatever it claims.
+  */
+ healthOurs: boolean;
 };
 
 /**
+ * True when a /_health response body carries OUR daemon's shape: a JSON object
+ * whose numeric `port` names the port it is bound to (src/health.ts builds it
+ * from the listening socket). Anything else is a stranger on the loopback port
+ * — attaching to it would route the user's prompts into a process we do not
+ * own, so it must never be read as a daemon.
+ */
+export function isOurDaemonHealthBody(port: number, body: unknown): boolean {
+ if (!body || typeof body !== "object") return false;
+ const reported = (body as { port?: unknown }).port;
+ return typeof reported === "number" && reported === port;
+}
+
+/**
+ * Probe whatever holds `port` for the three facts the reclaim decision needs.
+ * Ordered cheap-to-expensive and short-circuiting exactly like the inline
+ * sequence it replaces: a models-answering daemon is live, a refused port is
+ * free, and only a bound-but-model-silent holder is asked for /_health.
+ */
+export async function probeDarkHolder(port: number): Promise<DarkHolderProbe> {
+ if (await isProxyAlive(port)) return { alive: true, bound: true, healthOurs: false };
+ if (!(await isPortBound(port))) return { alive: false, bound: false, healthOurs: false };
+ return { alive: false, bound: true, healthOurs: await probeOurHealth(port) };
+}
+
+/**
+ * Fetch /_health and keep the verdict only when the body is OUR daemon's
+ * shape. Same request and budget as proxy.getDaemonHealth, minus its snapshot
+ * mapping — which drops `port`, the one field that tells our daemon apart
+ * from a stranger answering arbitrary JSON.
+ */
+async function probeOurHealth(port: number): Promise<boolean> {
+ if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+ try {
+  const res = await fetch(`http://${HOST}:${port}/_health`, {
+   signal: AbortSignal.timeout(2500),
+  });
+  if (!res.ok) return false;
+  return isOurDaemonHealthBody(port, await res.json());
+ } catch {
+  return false;
+ }
+}
+
+/**
  * Pure decision: reclaim a base port that is actually held (TCP connect
- * succeeds) yet answers neither /v1/models nor /_health. A live daemon —
- * stale, busy, even mid-stream — always answers both from its event loop, so
- * a dark holder cannot be serving traffic and replacing it cannot interrupt a
- * real stream. A FREE port is not a dark holder: treating it as one cost a
- * blind ~2s kill-and-poll on every cold start (issue #52).
+ * succeeds) yet answers neither /v1/models nor /_health in OUR shape. A live
+ * daemon — stale, busy, even mid-stream — always answers both from its event
+ * loop, so a dark holder cannot be serving traffic and replacing it cannot
+ * interrupt a real stream. A FREE port is not a dark holder: treating it as
+ * one cost a blind ~2s kill-and-poll on every cold start (issue #52). A holder
+ * answering /_health with anything but our shape (a stranger's `{}`) is dark:
+ * it is not a daemon of ours, so it is reclaimed rather than attached to.
  */
 export function shouldReclaimDarkHolder(probe: DarkHolderProbe): boolean {
  if (probe.alive) return false;
  if (!probe.bound) return false;
- if (probe.health !== null) return false;
+ if (probe.healthOurs) return false;
  return true;
 }
 
@@ -654,18 +709,17 @@ export function shouldReclaimDarkHolder(probe: DarkHolderProbe): boolean {
  * stale-replace path owns versioned daemons.
  */
 async function reclaimDarkHolder(port: number): Promise<boolean> {
- const alive = await isProxyAlive(port);
- if (alive) return true;
- if (!(await isPortBound(port))) return false; // port is free — spawn fresh
- const health = await getDaemonHealth(port);
- if (!shouldReclaimDarkHolder({ alive, bound: true, health })) return true;
+ const probe = await probeDarkHolder(port);
+ if (probe.alive) return true;
+ if (!probe.bound) return false; // port is free — spawn fresh
+ if (!shouldReclaimDarkHolder(probe)) return true;
  if (NO_KILL_ENV && process.env[NO_KILL_ENV] === "1") {
   logInfo(
-   `proxy on :${port} answers neither health nor models — leaving it alone (replacement disabled by env)`,
+   `proxy on :${port} answers neither our health nor models — leaving it alone (replacement disabled by env)`,
   );
   return false;
  }
- logWarn(`proxy on :${port} holds the port but answers nothing — replacing dark holder`);
+ logWarn(`proxy on :${port} holds the port but answers nothing of ours — replacing dark holder`);
  await killPortHolder(port);
  for (let i = 0; i < 10; i++) {
   await new Promise<void>((r) => setTimeout(r, 200));
@@ -993,9 +1047,27 @@ async function probeAndMaybeReplace(
  * Returns the port the caller should use for its ProviderConfig.
  */
 export async function ensureDaemon(): Promise<number> {
+ if (ensureInFlight) return ensureInFlight;
  if (ensuring) return attachedPort || PORT;
  ensuring = true;
+ const attempt = ensureDaemonAttempt();
+ ensureInFlight = attempt;
  try {
+  return await attempt;
+ } finally {
+  if (ensureInFlight === attempt) ensureInFlight = null;
+  ensuring = false;
+ }
+}
+
+/**
+ * One ensure/attach attempt: probe → attach → spawn → dark-holder reclaim →
+ * in-process fallback. Split out of ensureDaemon so concurrent callers share
+ * the same promise instead of reading a half-settled port. Keeps `ensuring`
+ * latched for the whole attempt so the heartbeat/watchdog/recovery ticks stay
+ * out of the way (they early-return on it).
+ */
+async function ensureDaemonAttempt(): Promise<number> {
   const primary = await probeAndMaybeReplace(PORT, "proxy daemon");
   if (primary !== null) {
    await attachTo(primary);
@@ -1067,9 +1139,6 @@ export async function ensureDaemon(): Promise<number> {
    logWarn("in-process fallback bind failed", { error: String(e) });
    return PORT;
   }
- } finally {
-  ensuring = false;
- }
 }
 
 export function getClientPort(): number {
@@ -1094,6 +1163,7 @@ export function _resetClientForTest(): void {
  heartbeatPort = 0;
  attachedPort = 0;
  ensuring = false;
+ ensureInFlight = null;
  lastSpawnAt = 0;
  daemonSpawner = spawn;
  _resetUaRefreshForTest();

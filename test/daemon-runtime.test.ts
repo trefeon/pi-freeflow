@@ -38,7 +38,7 @@ import {
  waitForReady,
 } from "../src/client.ts";
 import { getStartupPlan } from "../src/commands.ts";
-import { DAEMON_RUNTIME_ENV, DAEMON_SPAWN_ENV, PORT } from "../src/config.ts";
+import { DAEMON_RUNTIME_ENV, DAEMON_SPAWN_ENV, HOST, PORT } from "../src/config.ts";
 import { EventEmitter, once } from "node:events";
 import { spawn } from "node:child_process";
 import { killPortHolder } from "../src/proxy.ts";
@@ -345,6 +345,47 @@ test("ensureDaemon: falls back in-process fast when the spawned child exits (iss
 		assert.equal(typeof port, "number");
 		assert.equal(hasFallbackServer(), true, "a dead child must fall through to the in-process proxy");
 		assert.ok(elapsed < 1500, `cold start with a dead child must fail fast, took ${elapsed}ms`);
+	} finally {
+		_setDaemonSpawnForTest(null);
+		_resetClientForTest();
+	}
+});
+
+
+test("ensureDaemon: concurrent callers share one in-flight attempt (single-flight)", async () => {
+	await killPortHolder(PORT);
+	_resetClientForTest();
+	const fakeChild = Object.assign(new EventEmitter(), {
+		pid: 424243,
+		exitCode: 1,
+		signalCode: null,
+		unref() {},
+	});
+	_setDaemonSpawnForTest(() => fakeChild);
+	try {
+		// No await between the two calls: the second one runs while the first
+		// attempt is still in flight, so it must join that attempt instead of
+		// being handed `attachedPort || PORT` (the pre-single-flight guess).
+		const first = ensureDaemon();
+		const second = ensureDaemon();
+		const settled: string[] = [];
+		void first.then(() => settled.push("first"));
+		void second.then(() => settled.push("second"));
+
+		// Probing the second caller's port the moment its own promise resolves is
+		// the observable defect of the old early return: it answered with a port
+		// nothing had bound yet.
+		const secondPort = await second;
+		const secondHealth = await fetch(`http://${HOST}:${secondPort}/_health`).then(
+			(res) => res.status,
+			() => 0,
+		);
+		const firstPort = await first;
+
+		assert.equal(secondHealth, 200, `the port the second caller resolved to (:${secondPort}) must answer GET /_health`);
+		assert.equal(settled.join(","), "first,second", "a concurrent caller must await the in-flight attempt, never resolve ahead of it");
+		assert.equal(secondPort, firstPort, "concurrent ensureDaemon() calls must resolve to the same port");
+		assert.equal(hasFallbackServer(), true, "the shared attempt must land on the in-process fallback");
 	} finally {
 		_setDaemonSpawnForTest(null);
 		_resetClientForTest();

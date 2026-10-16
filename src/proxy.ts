@@ -346,6 +346,7 @@ async function handleClineRequest(opts: {
    findGlob.renamedFindToGlob || findGlob.renamed !== undefined || argSchemas.size > 0
     ? { callerHadTools: true, argSchemas, findGlob, pathname: "/v1/chat/completions" }
     : undefined,
+   { upstreamContentType: upstreamRes.headers.get("content-type") },
   );
   return;
  }
@@ -517,6 +518,7 @@ async function handleOvhRequest(opts: {
    findGlob.renamedFindToGlob || findGlob.renamed !== undefined || argSchemas.size > 0
     ? { callerHadTools: true, argSchemas, findGlob, pathname: "/v1/chat/completions" }
     : undefined,
+   { upstreamContentType: upstreamRes.headers.get("content-type") },
   );
   return;
  }
@@ -674,6 +676,7 @@ async function handleKiloRequest(opts: {
      pathname: pathname.endsWith("/responses") ? "/v1/responses" : "/v1/chat/completions",
     }
     : undefined,
+   { upstreamContentType: response.headers.get("content-type") },
   );
  } else {
   let rawText = await response.text();
@@ -1653,6 +1656,7 @@ export function startProxy(
           servedIssuer ?? "direct",
           streamCloak,
           {
+           upstreamContentType: response.headers.get("content-type"),
            refire: async () => {
             if (midStreamRefires >= 1) return null;
             midStreamRefires += 1;
@@ -1899,6 +1903,7 @@ export function startProxy(
         reqId,
         "direct",
         streamCloak,
+        { upstreamContentType: upstreamRes.headers.get("content-type") },
        );
       } else if (upstreamRes.body) {
        let rawText = await upstreamRes.text();

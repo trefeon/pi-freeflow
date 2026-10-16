@@ -9,6 +9,8 @@
  *  3. Loopback-refused errors classify explicitly (vs per-model connect noise).
  *  4. The pre-request readiness probe retries after one respawn, then reports
  *     proxy-down explicitly instead of failing silently per model.
+ *  5. A /_health answer is OUR daemon only when it carries our shape (numeric
+ *     `port`); a stranger answering `{}` is reclaimed, never attached to.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -21,6 +23,8 @@ import { isPortBound, startProxy } from "../src/proxy.ts";
 import {
 	ensureProxyReady,
 	isLoopbackRefused,
+	isOurDaemonHealthBody,
+	probeDarkHolder,
 	proxyDownMessage,
 	shouldReclaimDarkHolder,
 } from "../src/client.ts";
@@ -63,34 +67,24 @@ test("control /_shutdown leaves an info log line", async () => {
 
 test("dark holder (held but answering nothing) is reclaimable; free and live are not", () => {
 	assert.equal(
-		shouldReclaimDarkHolder({ alive: false, bound: true, health: null }),
+		shouldReclaimDarkHolder({ alive: false, bound: true, healthOurs: false }),
 		true,
 		"a held port answering neither models nor health must be reclaimable",
 	);
 	assert.equal(
-		shouldReclaimDarkHolder({ alive: false, bound: false, health: null }),
+		shouldReclaimDarkHolder({ alive: false, bound: false, healthOurs: false }),
 		false,
 		"a free port is not a dark holder (issue #52: treating it as one cost ~2s per cold start)",
 	);
 	assert.equal(
-		shouldReclaimDarkHolder({ alive: true, bound: true, health: null }),
+		shouldReclaimDarkHolder({ alive: true, bound: true, healthOurs: false }),
 		false,
 		"a holder answering /v1/models is live, not dark",
 	);
 	assert.equal(
-		shouldReclaimDarkHolder({
-			alive: false,
-			bound: true,
-			health: {
-				version: "0.0.0",
-				activeRequests: 0,
-				sseRate: 0,
-				sseDegraded: false,
-				lastBytesAt: 0,
-			},
-		}),
+		shouldReclaimDarkHolder({ alive: false, bound: true, healthOurs: true }),
 		false,
-		"a holder answering /_health is owned by the stale-replace path",
+		"a holder answering /_health in OUR shape is a daemon (stale/live path owns it), not dark",
 	);
 });
 
@@ -106,6 +100,127 @@ test("isPortBound: true for a held port, false once released (issue #52)", async
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 	}
 	assert.equal(await isPortBound(port), false, "a released port must not be reported as bound");
+});
+
+// ── 2b. Only an OUR-shape /_health answer counts as a daemon ─────────────
+
+/**
+ * Minimal loopback holder: /_health answers `body(port)`, everything else
+ * (including /v1/models) 404s, so only the /_health shape can identify it.
+ */
+async function listenHolder(
+	body: (port: number) => Record<string, unknown> | null,
+): Promise<{ port: number; close: () => Promise<void> }> {
+	let port = 0;
+	const server = createServer((req, res) => {
+		const payload = body(port);
+		if (payload !== null && (req.url === "/_health" || req.url === "/health")) {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify(payload));
+			return;
+		}
+		res.writeHead(404, { "content-type": "application/json" });
+		res.end("{}");
+	});
+	await new Promise<void>((resolve) => server.listen(0, HOST, () => resolve()));
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	port = address.port;
+	return {
+		port,
+		close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+	};
+}
+
+test("a stranger answering /_health with {} is not our daemon and stays reclaimable", async () => {
+	const holder = await listenHolder(() => ({}));
+	try {
+		assert.equal(
+			isOurDaemonHealthBody(holder.port, {}),
+			false,
+			"arbitrary JSON is not our /_health shape",
+		);
+		assert.equal(isOurDaemonHealthBody(holder.port, null), false, "no body at all is not our shape");
+		assert.equal(
+			isOurDaemonHealthBody(holder.port, { version: "9.9.9", activeRequests: 0 }),
+			false,
+			"a version-answering stranger is still a stranger",
+		);
+		assert.equal(
+			isOurDaemonHealthBody(holder.port, { port: holder.port + 1 }),
+			false,
+			"a port field naming a different port is not this holder",
+		);
+		const probe = await probeDarkHolder(holder.port);
+		assert.deepEqual(
+			probe,
+			{ alive: false, bound: true, healthOurs: false },
+			"a foreign holder is bound but neither alive nor one of ours",
+		);
+		assert.equal(
+			shouldReclaimDarkHolder(probe),
+			true,
+			"a stranger must stay reclaimable: the client walks on instead of attaching to it",
+		);
+	} finally {
+		await holder.close();
+	}
+});
+
+test("our /_health shape (numeric port) is accepted as ours", async () => {
+	const holder = await listenHolder((port) => ({
+		port,
+		active: "auto",
+		mode: "auto",
+		enabled: true,
+		version: "9.9.9",
+	}));
+	try {
+		const res = await fetch(`http://${HOST}:${holder.port}/_health`);
+		assert.equal(res.status, 200);
+		const body: unknown = await res.json();
+		assert.equal(
+			isOurDaemonHealthBody(holder.port, body),
+			true,
+			"our shape (object carrying the listening port) is accepted",
+		);
+		const probe = await probeDarkHolder(holder.port);
+		assert.deepEqual(probe, { alive: false, bound: true, healthOurs: true });
+		assert.equal(
+			shouldReclaimDarkHolder(probe),
+			false,
+			"a holder answering in our shape is owned by the stale/live path, not reclaimed as dark",
+		);
+	} finally {
+		await holder.close();
+	}
+});
+
+test("a real daemon's /_health body satisfies the shape predicate", async () => {
+	await withIsolatedSandboxFiles(async () => {
+		_resetLeaseStateForTest();
+		const r = await startProxy(0);
+		assert.ok(r.server);
+		const server = r.server;
+		try {
+			const res = await fetch(`http://${HOST}:${r.port}/_health`);
+			assert.equal(res.status, 200);
+			const body: unknown = await res.json();
+			assert.equal(
+				isOurDaemonHealthBody(r.port, body),
+				true,
+				"src/health.ts must keep reporting the bound port — the shape gate depends on it",
+			);
+			const probe = await probeDarkHolder(r.port);
+			assert.equal(probe.alive, true, "a real daemon answers /v1/models");
+			assert.equal(shouldReclaimDarkHolder(probe), false);
+		} finally {
+			_resetLeaseStateForTest();
+			try {
+				server.close();
+			} catch { }
+		}
+	});
 });
 
 // ── 3. Loopback-refused classification ───────────────────────────────────
