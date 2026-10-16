@@ -135,6 +135,53 @@ test("cline pool: a non-transient rename error is not retried", async () => {
  });
 });
 
+test("cline pool: a pool rewritten across the read is not latched stale", async () => {
+ await withIsolatedPool(() => {
+  addAccount("main", SLOT_A);
+  const rewritten = JSON.stringify({ accounts: [{ slot: "second", token: SLOT_B }] }, null, 2);
+  _resetClinePoolCacheForTest();
+  const realReadFileSync = fs.readFileSync.bind(fs);
+  const realStatSync = fs.statSync.bind(fs);
+  const fsp = fs as unknown as {
+   readFileSync: typeof fs.readFileSync; // monkey-patch of CJS default-export object
+   statSync: typeof fs.statSync;
+  };
+  let injected = false;
+  let ticks = 0;
+  fsp.statSync = ((p: unknown, ...rest: unknown[]) => {
+   if (String(p) !== CLINE_POOL_FILE) return (realStatSync as (...a: unknown[]) => unknown)(p, ...rest);
+   // Deterministic mtime sequence: two writes this close together can land on
+   // the same filesystem timestamp, which would mask the race under test.
+   return { mtimeMs: (ticks += 10) };
+  }) as unknown as typeof fs.statSync;
+  fsp.readFileSync = ((...args: unknown[]) => {
+   const out = (realReadFileSync as (...a: unknown[]) => unknown)(...args);
+   if (!injected && String(args[0]) === CLINE_POOL_FILE) {
+    injected = true;
+    // A concurrent login lands the moment this read returned: the caller holds
+    // the pre-write pool while the file on disk already moved on.
+    fs.writeFileSync(CLINE_POOL_FILE, rewritten, "utf8");
+   }
+   return out;
+  }) as unknown as typeof fs.readFileSync;
+  try {
+   const pool = loadPool();
+   assert.equal(injected, true, "the interleaved write must have been exercised");
+   assert.deepEqual(
+    pool.accounts.map((a) => a.slot),
+    ["second"],
+    "the pool written across the read must be visible, not latched stale",
+   );
+   // The latched mtime has to belong to the content returned: with nothing
+   // further written, the next load must still see the same pool.
+   assert.deepEqual(loadPool().accounts.map((a) => a.slot), ["second"]);
+  } finally {
+   fsp.readFileSync = realReadFileSync;
+   fsp.statSync = realStatSync;
+  }
+ });
+});
+
 test("cline pool: corrupt file reads back empty", async () => {
  await withIsolatedPool(() => {
   fs.writeFileSync(CLINE_POOL_FILE, "{not json", "utf8");

@@ -362,10 +362,20 @@ function diskMtime(): number {
  * file (mtime moved). Never throws; corrupt reads come back empty.
  */
 export function loadPool(): ClinePoolState {
- const m = diskMtime();
- if (cached && m === cachedMtime) return cached;
- cached = readPoolFile();
- cachedMtime = diskMtime();
+ const before = diskMtime();
+ if (cached && before === cachedMtime) return cached;
+ let loaded = readPoolFile();
+ let stamp = diskMtime();
+ // The read is only trustworthy when the file did not move across it. Reading
+ // first and stamping afterwards latches pre-read content under the post-write
+ // mtime, which hides the change until the next write. Re-read once; the mtime
+ // observed after that read is the one the returned pool is cached under.
+ if (stamp !== before) {
+  loaded = readPoolFile();
+  stamp = diskMtime();
+ }
+ cached = loaded;
+ cachedMtime = stamp;
  return cached;
 }
 
