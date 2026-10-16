@@ -309,3 +309,15 @@ test("command spec: /freeflow debug reports the effective level, not the raw fie
 	}
 });
 
+test("command spec: description and completions list every implemented subcommand", () => {
+	const spec = createCommandSpec(mockApi);
+	const description = String(spec.description);
+	const completions = (spec.getArgumentCompletions?.("") ?? []).map((c) => c.value);
+	for (const sub of ["kill", "stop", "shutdown", "url", "models", "reload", "trace", "cline signout", "cline switch"]) {
+		assert.ok(completions.includes(sub), `completions must offer '${sub}'`);
+	}
+	for (const syntax of ["kill|stop|shutdown", "url [value]", "models|reload", "trace [reqId]", "debug on|off|level <level>", "cline signout|switch"]) {
+		assert.ok(description.includes(syntax), `description must document '${syntax}'`);
+	}
+});
+

@@ -520,7 +520,7 @@ export function createCommandSpec(
 ): Omit<RegisteredCommand, "name"> {
  return {
   description:
-   "Relay egress: auto | spread | on | off | hide | show | widget hide/show | status | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | debug on|off | refresh | update [auto on|off] | autoupdate [on|off] | deploy cloudflare | deploy deno | deploy vercel | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot]",
+   "Relay egress: auto | spread | on | off | hide | show | widget hide/show | status | kill|stop|shutdown | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | url [value] | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | trace [reqId] | debug on|off|level <level> | refresh | models|reload | update [auto on|off] | autoupdate [on|off] | deploy cloudflare | deploy deno | deploy vercel | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot] | cline signout|switch",
   getArgumentCompletions: (prefix: string) =>
    [
     "auto",
@@ -531,6 +531,9 @@ export function createCommandSpec(
     "widget hide",
     "widget show",
     "status",
+    "kill",
+    "stop",
+    "shutdown",
     "add",
     "list",
     "use",
@@ -559,10 +562,19 @@ export function createCommandSpec(
     "cline login --key",
     "cline accounts",
     "cline logout",
+    "cline signout",
+    "cline switch",
     "refresh",
     "models",
+    "reload",
     "logs",
     "debug",
+    "debug on",
+    "debug off",
+    "debug level debug",
+    "debug level info",
+    "debug level warn",
+    "debug level error",
     "trace",
    ]
     .filter((s) => s.startsWith(prefix))
