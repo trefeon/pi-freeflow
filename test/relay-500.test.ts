@@ -220,7 +220,7 @@ test("relay 500-variants: 501/505 surface immediately without rolling", async (t
 	});
 });
 
-test("relay terminal: 400/401/403/404-generic surface without rolling", async (t) => {
+test("relay terminal: 400/403/404-generic surface without rolling", async (t) => {
 	await withIsolatedRelayFiles(async () => {
 		setActiveRelayState(poolState(), false);
 		resetAllRelayHealth();
@@ -234,14 +234,53 @@ test("relay terminal: 400/401/403/404-generic surface without rolling", async (t
 			return stubResponse(nextStatus, cancelled, `{"error":"s${nextStatus}"}`);
 		});
 
-		for (const s of [400, 401, 403, 404]) {
+		for (const s of [400, 403, 404]) {
 			nextStatus = s;
 			const before = fetchMock.mock.callCount();
 			const out = await relayFetch(UPSTREAM_URL, { method: "POST" }, `t-term-${s}`);
 			assert.equal(out.status, s, `${s} must surface immediately`);
 			assert.equal(fetchMock.mock.callCount(), before + 1, `${s} must not roll to a sibling`);
 		}
-		assert.deepEqual(seenUrls, [RELAY_A, RELAY_A, RELAY_A, RELAY_A], "terminal statuses never touch the sibling");
+		assert.deepEqual(seenUrls, [RELAY_A, RELAY_A, RELAY_A], "terminal statuses never touch the sibling");
+	});
+});
+
+test("relay 401: a relay auth rejection rolls once and cools the rejecting relay", async (t) => {
+	await withIsolatedRelayFiles(async () => {
+		setActiveRelayState(poolState(), false);
+		resetAllRelayHealth();
+		_resetRollNotifyForTest();
+
+		const cancelled: number[] = [];
+		const seenUrls: string[] = [];
+		const served: Array<string | null> = [];
+		const fetchMock = t.mock.method(globalThis, "fetch", async (input: unknown) => {
+			seenUrls.push(String(input));
+			// What the deployed worker answers before forwarding when the pool entry's
+			// x-relay-auth no longer matches its RELAY_AUTH secret.
+			if (seenUrls.length === 1) return stubResponse(401, cancelled, '{"error":"unauthorized"}');
+			return stubResponse(200, cancelled, "{}");
+		});
+
+		const out = await relayFetch(UPSTREAM_URL, { method: "POST" }, "t401", {
+			onServed: (relay) => {
+				served.push(relay);
+			},
+		});
+
+		assert.equal(out.status, 200, "the sibling must serve after a relay auth rejection");
+		assert.deepEqual(seenUrls, [RELAY_A, RELAY_B], "401 must roll exactly once, to the sibling");
+		assert.deepEqual(served, [RELAY_B], "the sibling is the relay that served");
+		assert.equal(fetchMock.mock.callCount(), 2, "two relay legs, no direct fallback");
+
+		// A 401 is a relay fault: cooled, and never recorded as a success.
+		const health = getRelayHealth(RELAY_A);
+		assert.ok(health, "the 401-ing relay must carry a health record");
+		assert.equal(health.lastStatus, 401, "the failure must record the 401");
+		assert.equal(health.consecutiveFailures, 1, "401 counts as one relay failure");
+		assert.equal(health.successCount ?? 0, 0, "the 401-ing relay must not be marked successful");
+		assert.equal(isRelayHealthy(RELAY_A), false, "the 401-ing relay must be cooling");
+		assert.equal(isRelayHealthy(RELAY_B), true, "the serving sibling stays healthy");
 	});
 });
 
