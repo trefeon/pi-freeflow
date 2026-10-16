@@ -86,6 +86,55 @@ test("cline pool: file is owner-only", async () => {
  });
 });
 
+test("cline pool: a save survives a transient Windows file lock", async () => {
+ await withIsolatedPool(() => {
+  const realRenameSync = fs.renameSync.bind(fs);
+  const fsp = fs as unknown as { renameSync: (from: string, to: string) => void }; // monkey-patch of CJS default-export object
+  let attempts = 0;
+  fsp.renameSync = (from: string, to: string) => {
+   attempts++;
+   if (attempts <= 2) {
+    const err: NodeJS.ErrnoException = new Error(
+     `EBUSY: resource busy or locked, rename '${from}' -> '${to}'`,
+    );
+    err.code = "EBUSY";
+    throw err;
+   }
+   return realRenameSync(from, to);
+  };
+  try {
+   addAccount("main", SLOT_A);
+   assert.equal(attempts, 3, "two locked renames must be retried before the write lands");
+  } finally {
+   fsp.renameSync = realRenameSync;
+  }
+  // In-memory state is not the contract: the login has to survive a reload.
+  _resetClinePoolCacheForTest();
+  assert.deepEqual(loadPool().accounts.map((a) => a.slot), ["main"]);
+  assert.deepEqual(loadPool().accounts.map((a) => a.token), [SLOT_A]);
+ });
+});
+
+test("cline pool: a non-transient rename error is not retried", async () => {
+ await withIsolatedPool(() => {
+  const realRenameSync = fs.renameSync.bind(fs);
+  const fsp = fs as unknown as { renameSync: (from: string, to: string) => void }; // monkey-patch of CJS default-export object
+  let attempts = 0;
+  fsp.renameSync = () => {
+   attempts++;
+   const err: NodeJS.ErrnoException = new Error("ENOENT: no such file or directory, rename");
+   err.code = "ENOENT";
+   throw err;
+  };
+  try {
+   assert.doesNotThrow(() => addAccount("main", SLOT_A));
+   assert.equal(attempts, 1, "ENOENT must not be retried");
+  } finally {
+   fsp.renameSync = realRenameSync;
+  }
+ });
+});
+
 test("cline pool: corrupt file reads back empty", async () => {
  await withIsolatedPool(() => {
   fs.writeFileSync(CLINE_POOL_FILE, "{not json", "utf8");

@@ -409,6 +409,32 @@ function accountCountIn(raw: string): number {
  }
 }
 
+/** Block synchronously for ms without burning CPU. */
+function sleepSync(ms: number): void {
+ Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Rename with bounded retry: Windows briefly locks the target when another
+ * process holds the pool file open, surfacing as EPERM/EACCES/EBUSY. Three
+ * attempts with a fixed 50ms backoff; any other error fails immediately.
+ */
+function renameWithRetry(from: string, to: string): void {
+ const retryable: Record<string, true> = { EPERM: true, EACCES: true, EBUSY: true };
+ for (let attempt = 1; ; attempt++) {
+  try {
+   fs.renameSync(from, to);
+   return;
+  } catch (e) {
+   const code = (e as NodeJS.ErrnoException | null)?.code;
+   if (!code || !retryable[code] || attempt >= 3) {
+    throw e;
+   }
+   sleepSync(50);
+  }
+ }
+}
+
 /** Atomically persist the pool with owner-only permissions. Never logs secrets. */
 export function savePool(pool: ClinePoolState): void {
  try {
@@ -424,7 +450,7 @@ export function savePool(pool: ClinePoolState): void {
   try {
    fs.chmodSync(tmp, 0o600);
   } catch { }
-  fs.renameSync(tmp, CLINE_POOL_FILE);
+  renameWithRetry(tmp, CLINE_POOL_FILE);
   // Compare the pool just written too, so growth is never the copy that lags.
   keepLargestBackup(serialized);
   cached = pool;
