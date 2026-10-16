@@ -100,6 +100,7 @@ export async function runDaemon(): Promise<void> {
   log("error", "daemon unhandledRejection", { error: String(reason), activeRequests: getActiveRequests() });
  });
  setShutdownShouldExit(true);
+ let boundPort = PORT;
  try {
   const r = await startProxy();
   if (!r.server) {
@@ -109,6 +110,7 @@ export async function runDaemon(): Promise<void> {
    process.exit(0);
   }
   server = r.server;
+  boundPort = r.port;
  } catch (e) {
   log("error", "daemon failed to bind proxy port", { error: String(e) });
   process.exit(1);
@@ -131,7 +133,7 @@ export async function runDaemon(): Promise<void> {
   onIdle: () => retire("no clients"),
  });
 
- logInfo(`pi-freeflow daemon v${PKG_VERSION} listening on http://${HOST}:${PORT}`);
+ logInfo(`pi-freeflow daemon v${PKG_VERSION} listening on http://${HOST}:${boundPort}`);
 }
 
 // Entry guard: run only when executed as the entry script. When imported by
