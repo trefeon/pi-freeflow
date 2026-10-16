@@ -65,3 +65,73 @@ export async function withIsolatedSandboxFiles(fn: () => Promise<void>): Promise
 		}
 	}
 }
+
+export interface IsolatedRelayFilesOptions {
+	/** Also snapshot/restore the relay state LOCK file (cross-process writer tests). */
+	lock?: boolean;
+	/** Also snapshot/restore the session pin mirror (resolveSessionPinPath()). */
+	pin?: boolean;
+	/** Extra cleanup after the disk restore (in-memory state, dispatcher close). May be async. */
+	onRestore?: () => void | Promise<void>;
+}
+
+/**
+ * Snapshot RELAY_STATE_FILE + BAK_FILE (plus the relay LOCK file and/or the
+ * session pin mirror when asked) before `fn` runs, then put every snapshot back
+ * in a finally: the same bytes when the file existed, removed when it did not.
+ *
+ * Call-site styles:
+ *   await withIsolatedRelayFiles(async () => { ... });   // async body: restores after it settles
+ *   withIsolatedRelayFiles(() => { ... });               // sync body: restores before returning
+ *   await withIsolatedRelayFiles(body, { onRestore: () => resetAllRelayHealth() });
+ *
+ * `onRestore` runs after the disk restore; it is awaited on the promise path,
+ * so only the async call style can await a promise-returning `onRestore`.
+ */
+export function withIsolatedRelayFiles(fn: () => void, opts?: IsolatedRelayFilesOptions): void;
+export function withIsolatedRelayFiles(fn: () => Promise<void>, opts?: IsolatedRelayFilesOptions): Promise<void>;
+export function withIsolatedRelayFiles(
+	fn: () => void | Promise<void>,
+	opts: IsolatedRelayFilesOptions = {},
+): void | Promise<void> {
+	const targets = [RELAY_STATE_FILE, BAK_FILE];
+	if (opts.lock) targets.push(LOCK_FILE);
+	if (opts.pin) targets.push(resolveSessionPinPath());
+	const read = (p: string): string | null =>
+		fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
+	const before = targets.map((p) => [p, read(p)] as const);
+	const restore = (): void => {
+		for (const [p, content] of before) {
+			try {
+				if (content !== null) {
+					fs.writeFileSync(p, content, "utf8");
+				} else {
+					fs.rmSync(p, { force: true });
+				}
+			} catch {}
+		}
+	};
+	let returned: Promise<void> | null = null;
+	try {
+		const result = fn();
+		returned = result instanceof Promise ? result : null;
+	} catch (err) {
+		restore();
+		opts.onRestore?.();
+		throw err;
+	}
+	if (returned === null) {
+		restore();
+		opts.onRestore?.();
+		return;
+	}
+	const pending = returned;
+	return (async () => {
+		try {
+			await pending;
+		} finally {
+			restore();
+			await opts.onRestore?.();
+		}
+	})();
+}

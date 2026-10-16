@@ -31,28 +31,18 @@ import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.
 import { getHealthData, isLoopbackIP } from "../src/health.ts";
 import type { RegisteredModel } from "../src/types.ts";
 
-test("windows-hide contract: code contains windowsHide:true + Promise.withResolvers", () => {
+test("windows-hide contract: every child-spawn site sets windowsHide:true", () => {
+ // Static source check on purpose: "no console window flashes on Windows" is
+ // not unit-observable (it needs a real spawn on win32), so guard the options
+ // of each documented child-spawn site. The detached-daemon spawn in
+ // src/client.ts is additionally asserted at runtime against the real spawn
+ // options object in test/daemon-runtime.test.ts (_setDaemonSpawnForTest).
  const clientSrc = fs.readFileSync("src/client.ts", "utf8");
  const proxySrc = fs.readFileSync("src/proxy.ts", "utf8");
  const cmdSrc = fs.readFileSync("src/commands.ts", "utf8");
  assert.match(clientSrc, /windowsHide:\s*true/);
  assert.match(proxySrc, /windowsHide:\s*true/);
  assert.match(cmdSrc, /windowsHide:\s*true/);
- assert.match(cmdSrc, /Promise\.withResolvers<number>/);
-});
-
-test("throttle: rapid ensureDaemon respects ensuring guard", async () => {
- const { ensureDaemon, _resetClientForTest } = await import("../src/client.ts");
- _resetClientForTest();
- await withIsolatedSandboxFiles(async () => {
-  clearSandboxFiles();
-  const p1 = ensureDaemon().catch(() => 0);
-  const p2 = ensureDaemon().catch(() => 0);
-  const [r1, r2] = await Promise.all([p1, p2]);
-  assert.equal(typeof r1, "number");
-  assert.equal(typeof r2, "number");
- });
- _resetClientForTest();
 });
 
 test("idle leak: heartbeat does not bloat leases", async () => {

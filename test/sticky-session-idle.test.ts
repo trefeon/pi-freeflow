@@ -24,8 +24,8 @@ import {
 	rememberIssuerRelay,
 } from "../src/responses.ts";
 import type { RelayState } from "../src/types.ts";
+import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
-const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
 // Mirrors resolveSessionPinPath() in src/config.ts, kept literal on purpose:
 // the test must load against unpatched src too (and fail on ordering, not imports).
 const PIN_FILE = path.join(path.dirname(RELAY_STATE_FILE), "pi-freeflow-session-pins.json");
@@ -38,28 +38,6 @@ const RELAY_B = "https://sticky-b.example.com";
 
 function poolState(): RelayState {
 	return { mode: "auto", enabled: true, url: RELAY_A, relays: [{ url: RELAY_A }, { url: RELAY_B }] };
-}
-
-/** Isolate main + .bak + the pin mirror (relay writes and pin persistence touch disk). */
-async function withIsolatedRelayFiles(fn: () => Promise<void>): Promise<void> {
-	const read = (p: string): string | null =>
-		fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
-	const mainBefore = read(RELAY_STATE_FILE);
-	const bakBefore = read(BAK_FILE);
-	const pinBefore = read(PIN_FILE);
-	try {
-		await fn();
-	} finally {
-		for (const [p, content] of [[RELAY_STATE_FILE, mainBefore], [BAK_FILE, bakBefore], [PIN_FILE, pinBefore]] as const) {
-			if (content === null) {
-				if (fs.existsSync(p)) fs.unlinkSync(p);
-			} else {
-				fs.writeFileSync(p, content);
-			}
-		}
-		resetAllRelayHealth();
-		_resetReasoningStateForTest();
-	}
 }
 
 async function withClockSkewed(ms: number, fn: () => Promise<void>): Promise<void> {
@@ -81,7 +59,10 @@ test("fresh pin hoists its warm relay first", async () => {
 		assert.equal(issuerRelayFor("conv-fresh"), RELAY_B);
 		const order = orderedRelayCandidates(issuerRelayFor("conv-fresh") ?? undefined);
 		assert.equal(order[0], RELAY_B, "an active session stays on its warm relay");
-	});
+	}, { pin: true, onRestore: () => {
+		resetAllRelayHealth();
+		_resetReasoningStateForTest();
+	} });
 });
 
 test("idle past 20min releases the pin to the standing order", async () => {
@@ -99,7 +80,10 @@ test("idle past 20min releases the pin to the standing order", async () => {
 		});
 		// Lazy prune: the stale entry is gone even after the clock returns.
 		assert.equal(issuerRelayFor("conv-idle"), undefined);
-	});
+	}, { pin: true, onRestore: () => {
+		resetAllRelayHealth();
+		_resetReasoningStateForTest();
+	} });
 });
 
 test("unhealthy pinned relay never hoists", async () => {
@@ -113,7 +97,10 @@ test("unhealthy pinned relay never hoists", async () => {
 		const order = orderedRelayCandidates(RELAY_B);
 		assert.notEqual(order[0], RELAY_B, "a cooling relay stays at the tail");
 		assert.equal(order[order.length - 1], RELAY_B);
-	});
+	}, { pin: true, onRestore: () => {
+		resetAllRelayHealth();
+		_resetReasoningStateForTest();
+	} });
 });
 
 test("pins survive a restart via the pin mirror", async () => {
@@ -128,7 +115,10 @@ test("pins survive a restart via the pin mirror", async () => {
 		assert.equal(issuerRelayFor("conv-restart"), RELAY_B, "pin restored from disk");
 		const order = orderedRelayCandidates(issuerRelayFor("conv-restart") ?? undefined);
 		assert.equal(order[0], RELAY_B);
-	});
+	}, { pin: true, onRestore: () => {
+		resetAllRelayHealth();
+		_resetReasoningStateForTest();
+	} });
 });
 
 test("corrupt pin mirror loads empty, never throws", async () => {
@@ -140,5 +130,8 @@ test("corrupt pin mirror loads empty, never throws", async () => {
 		_resetReasoningStateForTest();
 		assert.doesNotThrow(() => issuerRelayFor("conv-ghost"));
 		assert.equal(issuerRelayFor("conv-ghost"), undefined);
-	});
+	}, { pin: true, onRestore: () => {
+		resetAllRelayHealth();
+		_resetReasoningStateForTest();
+	} });
 });

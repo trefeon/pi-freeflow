@@ -33,8 +33,7 @@ import {
 	saveRelayState,
 } from "../src/relay-state.ts";
 import type { RelayState } from "../src/types.ts";
-
-const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
+import { BAK_FILE, withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
 /** Remove both main and .bak so a test starts from a clean slate. */
 function clearRelayFiles(): void {
@@ -42,29 +41,6 @@ function clearRelayFiles(): void {
 		try {
 			fs.rmSync(p, { force: true });
 		} catch {}
-	}
-}
-
-/** Isolate both main and .bak disk files for the duration of a test. */
-function withIsolatedRelayFiles(fn: () => void): void {
-	const read = (p: string): string | null =>
-		fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
-	const mainBefore = read(RELAY_STATE_FILE);
-	const bakBefore = read(BAK_FILE);
-	try {
-		fn();
-	} finally {
-		const restore = (p: string, before: string | null): void => {
-			if (before !== null) {
-				fs.writeFileSync(p, before, "utf8");
-			} else {
-				try {
-					fs.rmSync(p, { force: true });
-				} catch {}
-			}
-		};
-		restore(RELAY_STATE_FILE, mainBefore);
-		restore(BAK_FILE, bakBefore);
 	}
 }
 

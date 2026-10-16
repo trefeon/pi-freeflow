@@ -14,7 +14,6 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import http from "node:http";
 import { startProxy } from "../src/proxy.ts";
 import { relayFetch } from "../src/relay.ts";
@@ -23,7 +22,6 @@ import {
 	deployVercelRelay,
 } from "../src/deploy.ts";
 import { createCommandSpec } from "../src/commands.ts";
-import { RELAY_STATE_FILE } from "../src/config.ts";
 import {
 	getActiveRelayState,
 	getRelayHealth,
@@ -37,33 +35,7 @@ import type {
 	ExtensionUIContext,
 	RelayState,
 } from "../src/types.ts";
-
-const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
-
-/** Isolate both main and .bak disk files (relay auto-switch writes state). */
-function withIsolatedRelayFiles(fn: () => Promise<void>): Promise<void> {
-	const read = (p: string): string | null =>
-		fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
-	const mainBefore = read(RELAY_STATE_FILE);
-	const bakBefore = read(BAK_FILE);
-	return (async () => {
-		try {
-			await fn();
-		} finally {
-			const restore = (p: string, before: string | null): void => {
-				if (before !== null) {
-					fs.writeFileSync(p, before, "utf8");
-				} else {
-					try {
-						fs.rmSync(p, { force: true });
-					} catch {}
-				}
-			};
-			restore(RELAY_STATE_FILE, mainBefore);
-			restore(BAK_FILE, bakBefore);
-		}
-	})();
-}
+import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
 /** Response stub with a proper ReadableStream body (the proxy pipes body). */
 function stubResponse(status: number, body = "{}"): Response {

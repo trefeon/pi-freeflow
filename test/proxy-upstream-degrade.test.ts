@@ -11,7 +11,6 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
 
 import { classifyZenFailover, startProxy } from "../src/proxy.ts";
 import {
@@ -35,10 +34,9 @@ import {
  resetAllRelayHealth,
  setActiveRelayState,
 } from "../src/relay-state.ts";
-import { RELAY_STATE_FILE } from "../src/config.ts";
 import { KILO_MODEL_IDS, resolveCanonicalModelId } from "../src/models.ts";
+import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
-const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
 const TEST_PORT = 19291;
 const ZEN_MODEL = "mimo-v2.6-flash-free";
 const RESPONSES_MODEL = "muse-spark-1.3-contributor-free";
@@ -57,31 +55,6 @@ function requestText(body: unknown): string {
  }
  if (body instanceof ArrayBuffer) return Buffer.from(body).toString("utf8");
  return "";
-}
-
-/** Isolate both main and .bak disk files for the duration of an async test. */
-function withIsolatedRelayFiles(fn: () => Promise<void>): Promise<void> {
- const read = (p: string): string | null =>
-  fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
- const mainBefore = read(RELAY_STATE_FILE);
- const bakBefore = read(BAK_FILE);
- return (async () => {
-  try {
-   await fn();
-  } finally {
-   const restore = (p: string, before: string | null): void => {
-    if (before !== null) {
-     fs.writeFileSync(p, before, "utf8");
-    } else {
-     try {
-      fs.rmSync(p, { force: true });
-     } catch { }
-    }
-   };
-   restore(RELAY_STATE_FILE, mainBefore);
-   restore(BAK_FILE, bakBefore);
-  }
- })();
 }
 
 /** Real Response stub (supports the clone().text() peek the proxy performs). */

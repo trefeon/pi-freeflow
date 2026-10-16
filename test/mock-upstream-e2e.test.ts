@@ -17,41 +17,13 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import { startProxy } from "../src/proxy.ts";
 import {
  resetAllRelayHealth,
  setActiveRelayState,
 } from "../src/relay-state.ts";
-import { RELAY_STATE_FILE } from "../src/config.ts";
 import type { RelayState } from "../src/types.ts";
-
-const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
-
-/** Isolate both main and .bak disk files (relay auto-switch writes state). */
-function withIsolatedRelayFiles(fn: () => Promise<void>): Promise<void> {
- const read = (p: string): string | null =>
-  fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
- const mainBefore = read(RELAY_STATE_FILE);
- const bakBefore = read(BAK_FILE);
- return (async () => {
-  try {
-   await fn();
-  } finally {
-   const restore = (p: string, before: string | null): void => {
-    if (before !== null) {
-     fs.writeFileSync(p, before, "utf8");
-    } else {
-     try {
-      fs.rmSync(p, { force: true });
-     } catch { }
-    }
-   };
-   restore(RELAY_STATE_FILE, mainBefore);
-   restore(BAK_FILE, bakBefore);
-  }
- })();
-}
+import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
 /** Response stub with a proper ReadableStream body (the proxy pipes upstream.body). */
 function stubResponse(status: number, body = "{}"): Response {

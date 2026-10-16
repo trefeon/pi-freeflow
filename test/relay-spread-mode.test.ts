@@ -5,8 +5,6 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import { RELAY_STATE_FILE } from "../src/config.ts";
 import { relayFetch } from "../src/relay.ts";
 import {
  getActiveRelayState,
@@ -18,31 +16,7 @@ import {
  setActiveRelayState,
 } from "../src/relay-state.ts";
 import type { RelayState } from "../src/types.ts";
-
-const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
-
-/** Isolate both main and .bak disk files (relay auto-switch writes state). */
-async function withIsolatedRelayFiles(fn: () => Promise<void>): Promise<void> {
- const read = (p: string): string | null =>
-  fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
- const mainBefore = read(RELAY_STATE_FILE);
- const bakBefore = read(BAK_FILE);
- try {
-  await fn();
- } finally {
-  if (mainBefore === null) {
-   if (fs.existsSync(RELAY_STATE_FILE)) fs.unlinkSync(RELAY_STATE_FILE);
-  } else {
-   fs.writeFileSync(RELAY_STATE_FILE, mainBefore);
-  }
-  if (bakBefore === null) {
-   if (fs.existsSync(BAK_FILE)) fs.unlinkSync(BAK_FILE);
-  } else {
-   fs.writeFileSync(BAK_FILE, bakBefore);
-  }
-  resetAllRelayHealth();
- }
-}
+import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
 const POOL = [
  "https://r1.example.com",
@@ -76,7 +50,7 @@ test("spread: a stable conversation key always shards to the same first relay", 
   const again = orderedRelayCandidates(undefined, "conversation-abc")[0];
   assert.equal(first, again, "same conversation key must map to the same relay");
   assert.ok(POOL.includes(first));
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("spread: without a key successive requests rotate across the whole healthy pool", async () => {
@@ -86,7 +60,7 @@ test("spread: without a key successive requests rotate across the whole healthy 
   const seen = new Set<string>();
   for (let i = 0; i < POOL.length; i++) seen.add(orderedRelayCandidates()[0]);
   assert.equal(seen.size, POOL.length, "round-robin must cover every healthy relay");
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("spread: a rate-limited relay is never preferred and stays at the tail", async () => {
@@ -99,7 +73,7 @@ test("spread: a rate-limited relay is never preferred and stays at the tail", as
    assert.notEqual(order[0], POOL[0], "a cooling relay must not lead");
    assert.equal(order[order.length - 1], POOL[0], "cooling relay stays at the tail");
   }
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("spread: reasoning issuer affinity still hoists the preferred relay", async () => {
@@ -109,7 +83,7 @@ test("spread: reasoning issuer affinity still hoists the preferred relay", async
   const order = orderedRelayCandidates(POOL[3]);
   assert.equal(order[0], POOL[3], "preferred issuer must lead despite spread");
   assert.equal(order.length, POOL.length);
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("spread: a relay that served after a roll does not rewrite the sticky primary", async () => {
@@ -124,7 +98,7 @@ test("spread: a relay that served after a roll does not rewrite the sticky prima
    POOL[0],
    "spread has no single primary, so state.url must stay put",
   );
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("auto: the same roll still rewrites the sticky primary (regression)", async () => {
@@ -137,12 +111,12 @@ test("auto: the same roll still rewrites the sticky primary (regression)", async
   const served = getActiveRelayState().url;
   assert.notEqual(served, POOL[0], "auto mode keeps its sticky-switch behaviour");
   assert.ok(POOL.includes(served));
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("loadRelayState accepts the spread mode from disk", async () => {
  await withIsolatedRelayFiles(async () => {
   saveRelayState(poolState("spread"));
   assert.equal(loadRelayState().mode, "spread");
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });

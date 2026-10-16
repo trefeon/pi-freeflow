@@ -23,33 +23,7 @@ import { pathToFileURL } from "node:url";
 import { RELAY_STATE_FILE } from "../src/config.ts";
 import { loadRelayState, saveRelayState, withRelayState } from "../src/relay-state.ts";
 import type { RelayState } from "../src/types.ts";
-
-const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
-const LOCK_FILE = `${RELAY_STATE_FILE}.lock`;
-
-/** Isolate main + .bak + lock on disk for the duration of a test. */
-function withIsolatedRelayFiles(fn: () => Promise<void> | void): Promise<void> {
-	const read = (p: string): string | null =>
-		fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
-	const mainBefore = read(RELAY_STATE_FILE);
-	const bakBefore = read(BAK_FILE);
-	const lockBefore = read(LOCK_FILE);
-	return Promise.resolve()
-		.then(fn)
-		.finally(() => {
-			for (const [p, before] of [
-				[RELAY_STATE_FILE, mainBefore],
-				[BAK_FILE, bakBefore],
-				[LOCK_FILE, lockBefore],
-			] as const) {
-				if (before === null) {
-					if (fs.existsSync(p)) fs.rmSync(p, { force: true });
-				} else {
-					fs.writeFileSync(p, before, "utf8");
-				}
-			}
-		});
-}
+import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
 const RELAY_A = "https://race-a.example.com";
 const RELAY_B = "https://race-b.example.com";
@@ -146,7 +120,7 @@ test("concurrent cross-process writers never expose a torn state file to a reade
 		// throw, so litter is expected under contention. It is reaped by
 		// cleanupStaleTmpFiles after an hour, and that contract already has its
 		// own test ("stale tmp litter from crashed saves is cleaned up on load").
-	});
+	}, { lock: true });
 });
 
 test("withRelayState: a throwing updater persists nothing and leaves the pool intact", async () => {
@@ -164,5 +138,5 @@ test("withRelayState: a throwing updater persists nothing and leaves the pool in
 		const after = loadRelayState();
 		assert.deepEqual(after.url, RELAY_A);
 		assert.deepEqual(after.relays.map((r) => r.url), [RELAY_A, RELAY_B]);
-	});
+	}, { lock: true });
 });

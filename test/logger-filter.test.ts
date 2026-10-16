@@ -145,12 +145,12 @@ test("explicit off stays off, fresh installs default to debug", () => {
 		assert.equal(getMinLogLevel(), 1, "persisted off must win over the debug default");
 		fs.rmSync(DEBUG_STATE_FILE, { force: true });
 		_resetDebugStateCacheForTest();
-		const loggerSrc = fs.readFileSync(new URL("../src/logger.ts", import.meta.url), "utf8");
-		const levelKey = /process\.env\.([A-Z0-9_]+)_LOG_LEVEL/.exec(loggerSrc)?.[1];
-		const debugKey = /process\.env\.([A-Z0-9_]+)_DEBUG/.exec(loggerSrc)?.[1];
+		// Observable contract: src/logger.ts reads process.env.FREEFLOW_LOG_LEVEL
+		// and process.env.FREEFLOW_DEBUG verbatim — pin those literal keys instead
+		// of regex-scraping the source for them. Clear both so a developer shell
+		// cannot decide the no-state threshold.
 		const saved: Record<string, string | undefined> = {};
-		for (const k of [levelKey, debugKey]) {
-			if (!k) continue;
+		for (const k of ["FREEFLOW_LOG_LEVEL", "FREEFLOW_DEBUG"]) {
 			saved[k] = process.env[k];
 			delete process.env[k];
 		}

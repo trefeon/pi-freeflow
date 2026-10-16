@@ -7,8 +7,6 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import { RELAY_STATE_FILE } from "../src/config.ts";
 import { isRetriableStatus, relayFetch, _resetRollNotifyForTest } from "../src/relay.ts";
 import {
  getRelayHealth,
@@ -17,31 +15,7 @@ import {
  setActiveRelayState,
 } from "../src/relay-state.ts";
 import type { RelayState } from "../src/types.ts";
-
-const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
-
-/** Isolate both main and .bak disk files (relay auto-switch writes state). */
-async function withIsolatedRelayFiles(fn: () => Promise<void>): Promise<void> {
- const read = (p: string): string | null =>
-  fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
- const mainBefore = read(RELAY_STATE_FILE);
- const bakBefore = read(BAK_FILE);
- try {
-  await fn();
- } finally {
-  if (mainBefore === null) {
-   if (fs.existsSync(RELAY_STATE_FILE)) fs.unlinkSync(RELAY_STATE_FILE);
-  } else {
-   fs.writeFileSync(RELAY_STATE_FILE, mainBefore);
-  }
-  if (bakBefore === null) {
-   if (fs.existsSync(BAK_FILE)) fs.unlinkSync(BAK_FILE);
-  } else {
-   fs.writeFileSync(BAK_FILE, bakBefore);
-  }
-  resetAllRelayHealth();
- }
-}
+import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
 const UPSTREAM_URL = "https://opencode.ai/zen/v1/chat/completions";
 const RELAY_A = "https://relay-a.example.com";
@@ -111,7 +85,7 @@ test("relay 402: DEPLOYMENT_DISABLED body rolls to next relay with cooldown", as
   assert.deepEqual(seenUrls, [RELAY_A, RELAY_B], "both candidates must be attempted in order");
   assert.equal(getRelayHealth(RELAY_A)?.consecutiveFailures, 1, "402 roll must record a failure on the disabled relay");
   assert.equal(isRelayHealthy(RELAY_A), false, "disabled relay must cool down after the roll");
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("relay 402: generic payment/quota 402 is terminal on the first relay", async (t) => {
@@ -137,7 +111,7 @@ test("relay 402: generic payment/quota 402 is terminal on the first relay", asyn
   assert.equal(fetchMock.mock.callCount(), 1, "generic 402 must not try the next relay");
   assert.deepEqual(seenUrls, [RELAY_A], "generic 402 must stop at the first relay");
   assert.equal(isRelayHealthy(RELAY_A), true, "generic 402 must not cool down the relay");
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("relay 402: Vercel edge headers roll even when the body is unreadable", async (t) => {
@@ -162,7 +136,7 @@ test("relay 402: Vercel edge headers roll even when the body is unreadable", asy
   assert.equal(fetchMock.mock.callCount(), 2, "edge-marked 402 must roll even with an unreadable body");
   assert.deepEqual(seenUrls, [RELAY_A, RELAY_B], "both candidates must be attempted in order");
   assert.equal(isRelayHealthy(RELAY_A), false, "edge-marked 402 must cool down the relay");
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("relay 402: x-vercel-id alone never rolls a quota 402", async (t) => {
@@ -191,7 +165,7 @@ test("relay 402: x-vercel-id alone never rolls a quota 402", async (t) => {
   assert.equal(fetchMock.mock.callCount(), 1, "routine Vercel headers must not trigger a roll");
   assert.deepEqual(seenUrls, [RELAY_A], "must stop at the first relay");
   assert.equal(isRelayHealthy(RELAY_A), true, "healthy relay must not cool down on a quota 402");
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("relay 402: isRetriableStatus(402) stays false (gated branch, never blanket-retriable)", () => {
@@ -221,7 +195,7 @@ test("relay 402: lowercase plain-text Vercel body rolls to next relay", async (t
   assert.equal(fetchMock.mock.callCount(), 2, "plain-text disabled body must roll to the next candidate");
   assert.deepEqual(seenUrls, [RELAY_A, RELAY_B], "both candidates must be attempted in order");
   assert.equal(isRelayHealthy(RELAY_A), false, "disabled relay must cool down after the roll");
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("relay 402: all-disabled pool returns 503 relay_disabled, never the raw 402", async (t) => {
@@ -252,7 +226,7 @@ test("relay 402: all-disabled pool returns 503 relay_disabled, never the raw 402
   const relayFetches = seenUrls.filter((u) => u !== UPSTREAM_URL);
   assert.deepEqual(relayFetches, [RELAY_A, RELAY_B], "both disabled candidates must be attempted once each");
   assert.equal(fetchMock.mock.callCount(), 3, "2 relay fetches plus the failed direct fallback");
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("relay 402: disabled relay health parks for hours, not seconds", async (t) => {
@@ -283,7 +257,7 @@ test("relay 402: disabled relay health parks for hours, not seconds", async (t) 
   const remaining = (health?.cooldownUntil ?? 0) - Date.now();
   assert.ok(remaining > 3_600_000, `disabled cooldown must exceed 1h (got ${Math.round(remaining / 1000)}s)`);
   assert.equal(isRelayHealthy(RELAY_A), false, "disabled relay must report unhealthy during the long cooldown");
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });
 
 test("relay 402: single disabled relay plus failed direct returns 503 relay_disabled", async (t) => {
@@ -311,5 +285,5 @@ test("relay 402: single disabled relay plus failed direct returns 503 relay_disa
   assert.equal(body.error.code, "relay_disabled");
   assert.ok(body.error.message.includes(RELAY_A), "message must name the disabled relay");
   assert.deepEqual(seenUrls.filter((u) => u !== UPSTREAM_URL), [RELAY_A], "exactly 1 relay fetch before the 503");
- });
+ }, { onRestore: () => resetAllRelayHealth() });
 });

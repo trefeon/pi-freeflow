@@ -6,9 +6,6 @@
 	*/
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
-import { RELAY_STATE_FILE } from "../src/config.ts";
 import { startProxy } from "../src/proxy.ts";
 import {
 	_closeRelayDispatcherForTest,
@@ -21,40 +18,10 @@ import {
 	setActiveRelayState,
 } from "../src/relay-state.ts";
 import type { RelayState } from "../src/types.ts";
-
-const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
-// Mirrors resolveSessionPinPath() in src/config.ts, kept literal on purpose:
-// isolation must hold against unpatched src too.
-const PIN_FILE = path.join(path.dirname(RELAY_STATE_FILE), "pi-freeflow-session-pins.json");
-
-/** Isolate main + .bak + pin mirror on disk; restore the in-memory pool, health, and agent. */
-async function withIsolatedRelayFiles(fn: () => Promise<void>): Promise<void> {
-	const read = (p: string): string | null =>
-		fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
-	const mainBefore = read(RELAY_STATE_FILE);
-	const bakBefore = read(BAK_FILE);
-	const pinBefore = read(PIN_FILE);
-	const memBefore = getActiveRelayState();
-	try {
-		await fn();
-	} finally {
-		const restore = (p: string, before: string | null): void => {
-			if (before !== null) {
-				fs.writeFileSync(p, before, "utf8");
-			} else {
-				try {
-					fs.rmSync(p, { force: true });
-				} catch { }
-			}
-		};
-		restore(RELAY_STATE_FILE, mainBefore);
-		restore(BAK_FILE, bakBefore);
-		restore(PIN_FILE, pinBefore);
-		setActiveRelayState(memBefore, false);
-		resetAllRelayHealth();
-		await _closeRelayDispatcherForTest();
-	}
-}
+// Disk isolation (relay state, .bak, pin mirror) comes from the shared helper,
+// which resolves every path through src/config.ts — setup.mjs re-roots those
+// into the per-run sandbox, so isolation holds against unpatched src too.
+import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
 const STREAM_MODEL = "muse-spark-1.2-contributor-free";
 const SSE_BODY = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n';
@@ -76,6 +43,7 @@ function sseStub(): Response {
 }
 
 test("direct streaming forces anti-buffer headers even when upstream omits them", async () => {
+	const memBefore = getActiveRelayState();
 	await withIsolatedRelayFiles(async () => {
 		const { server, port } = await startProxy(0);
 		const localPrefix = `http://127.0.0.1:${port}`;
@@ -107,10 +75,15 @@ test("direct streaming forces anti-buffer headers even when upstream omits them"
 		} finally {
 			if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
 		}
-	});
+	}, { pin: true, onRestore: () => {
+		setActiveRelayState(memBefore, false);
+		resetAllRelayHealth();
+		return _closeRelayDispatcherForTest();
+	} });
 });
 
 test("relay dispatcher gate matches the bundled-undici rule and legs share one warm agent", async (t) => {
+	const memBefore = getActiveRelayState();
 	await withIsolatedRelayFiles(async () => {
 		const expected = Number((process.versions.undici ?? "0").split(".")[0]) >= 7;
 		assert.equal(canUseRelayDispatcher, expected, "gate must track the bundled undici major (npm undici 7 needs bundled 7+)");
@@ -145,5 +118,9 @@ test("relay dispatcher gate matches the bundled-undici rule and legs share one w
 		} finally {
 			fetchMock.mock.restore();
 		}
-	});
+	}, { pin: true, onRestore: () => {
+		setActiveRelayState(memBefore, false);
+		resetAllRelayHealth();
+		return _closeRelayDispatcherForTest();
+	} });
 });

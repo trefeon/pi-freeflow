@@ -327,14 +327,17 @@ test("ensureDaemon: falls back in-process fast when the spawned child exits (iss
 	await killPortHolder(PORT);
 	_resetClientForTest();
 	const spawnCalls: string[][] = [];
+	/** Real options objects handed to the daemon spawner. */
+	const spawnOptions: unknown[] = [];
 	const fakeChild = Object.assign(new EventEmitter(), {
 		pid: 424242,
 		exitCode: 1,
 		signalCode: null,
 		unref() {},
 	});
-	_setDaemonSpawnForTest((command, args) => {
+	_setDaemonSpawnForTest((command, args, options) => {
 		spawnCalls.push([command, ...args]);
+		spawnOptions.push(options);
 		return fakeChild;
 	});
 	try {
@@ -342,6 +345,12 @@ test("ensureDaemon: falls back in-process fast when the spawned child exits (iss
 		const port = await ensureDaemon();
 		const elapsed = Date.now() - t0;
 		assert.ok(spawnCalls.length >= 1, "the detached spawn must have been attempted");
+		// Runtime counterpart of the static windows-hide contract: the real
+		// options object handed to spawn must hide the console window and
+		// detach, so a Windows daemon start never flashes a console.
+		const opts = spawnOptions[0] as { windowsHide?: boolean; detached?: boolean } | undefined;
+		assert.equal(opts?.windowsHide, true, "the daemon spawn must pass windowsHide:true");
+		assert.equal(opts?.detached, true, "the daemon must be spawned detached");
 		assert.equal(typeof port, "number");
 		assert.equal(hasFallbackServer(), true, "a dead child must fall through to the in-process proxy");
 		assert.ok(elapsed < 1500, `cold start with a dead child must fail fast, took ${elapsed}ms`);

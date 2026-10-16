@@ -66,10 +66,13 @@ test("proxy direct path responds with keep-alive header", async () => {
 	}
 });
 
-test("TTFB with keepAlive is under 10ms on reused connection", async () => {
-	const requests: number[] = [];
+test("keep-alive reuses the client connection for successive relayFetch calls", async () => {
+	// Deterministic reuse proof: the server records the client's remote port per
+	// request, so socket reuse is observable directly instead of via a wall-clock
+	// threshold (the old TTFB<50ms assertion flaked on loaded CI).
+	const ports: (number | undefined)[] = [];
 	const server = http.createServer((req, res) => {
-		requests.push(Date.now());
+		ports.push(req.socket.remotePort);
 		res.writeHead(200, { "content-type": "application/json", "connection": "keep-alive" });
 		res.end(JSON.stringify({ ok: true }));
 	});
@@ -79,14 +82,18 @@ test("TTFB with keepAlive is under 10ms on reused connection", async () => {
 
 	try {
 		setActiveRelayState({ enabled: false, url: "", relays: [], mode: "off" } as unknown as Parameters<typeof setActiveRelayState>[0], false);
-		// warm up
-		await relayFetch(url, { method: "GET" });
-		const t0 = Date.now();
-		const res = await relayFetch(url, { method: "GET" });
-		const ttfb = Date.now() - t0;
-		assert.equal(res.status, 200);
-		// On localhost with keep-alive, TTFB should be single-digit ms
-		assert.ok(ttfb < 50, `TTFB ${ttfb}ms should be <50ms (target 10ms) with keep-alive reuse`);
+		const first = await relayFetch(url, { method: "GET" });
+		assert.equal(first.status, 200);
+		// Drain the body: undici only returns the socket to the pool once the
+		// response stream has ended, on a later macrotask.
+		await first.text();
+		await new Promise<void>((r) => setImmediate(r));
+		await new Promise<void>((r) => setImmediate(r));
+		const second = await relayFetch(url, { method: "GET" });
+		assert.equal(second.status, 200);
+		await second.text();
+		assert.equal(ports.length, 2, "expected exactly one server-side request per relayFetch call");
+		assert.equal(ports[0], ports[1], `keep-alive must reuse the client socket (ports ${ports.join(" vs ")})`);
 	} finally {
 		await new Promise<void>((r) => server.close(() => r()));
 		try { setActiveRelayState({ enabled: true, url: "", relays: [], mode: "auto" } as unknown as Parameters<typeof setActiveRelayState>[0], false); } catch {}

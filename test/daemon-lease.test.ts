@@ -7,6 +7,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { HOST } from "../src/config.ts";
 import {
 	getLastActivityAt,
@@ -20,9 +21,11 @@ import {
 	touchActivity,
 	unregisterClient,
 } from "../src/lease.ts";
-import { getAliveCatalog } from "../src/catalog.ts";
+import { getAliveCatalog, setAliveCatalog, writeCatalogCache } from "../src/catalog.ts";
+import type { RegisteredModel } from "../src/types.ts";
 import { getHealthData } from "../src/health.ts";
 import { getActiveRequests, startProxy } from "../src/proxy.ts";
+import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -369,16 +372,76 @@ test("request-touch: /v1/models updates lastActivityAt", async () => {
 
 // ── 4. Daemon helpers ─────────────────────────────────────────────────
 
-test("daemon entry: isDaemonMain is false when imported", async () => {
+test("daemon entry guard: isDaemonMain matches only the real entry script", async () => {
 	const { isDaemonMain } = await import("../src/daemon.ts");
+	// Imported by the test runner (argv[1] is this suite, not daemon.ts), so the
+	// entry guard must stay off — importing the module binds no proxy port.
+	assert.equal(isDaemonMain(), false);
+	const real = process.argv[1] ?? "";
+	try {
+		process.argv[1] = fileURLToPath(new URL("../src/daemon.ts", import.meta.url));
+		assert.equal(isDaemonMain(), true, "the guard must fire when argv[1] IS daemon.ts");
+	} finally {
+		process.argv[1] = real;
+	}
 	assert.equal(isDaemonMain(), false);
 });
 
-test("daemon seed helpers do not throw when disk files absent", async () => {
-	const { syncRelayStateFromDisk, seedCatalog } = await import("../src/daemon.ts");
-	// Should not throw even with empty/missing files (sandbox dir)
-	syncRelayStateFromDisk();
-	await seedCatalog();
-	// catalog still has at least the static set
-	assert.ok(getAliveCatalog().length >= 26);
+test("daemon seed helpers move disk relay state and catalog cache into process state", async () => {
+	await withIsolatedSandboxFiles(async () => {
+		clearSandboxFiles();
+		const { syncRelayStateFromDisk, seedCatalog } = await import("../src/daemon.ts");
+		const { loadRelayState, saveRelayState, getActiveRelayState, setActiveRelayState } =
+			await import("../src/relay-state.ts");
+
+		// A pool on disk must stay invisible until the sync runs, then appear.
+		const relayUrl = "https://relay.example.com";
+		saveRelayState({
+			mode: "on",
+			enabled: true,
+			url: relayUrl,
+			relays: [{ url: relayUrl, label: "seed", auth: "" }],
+			hideWidget: false,
+			autoUpdate: false,
+		});
+		assert.deepEqual(loadRelayState().relays.map((r) => r.url), [relayUrl], "the pool must round-trip through disk");
+		setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [], hideWidget: false, autoUpdate: false }, false);
+		assert.deepEqual(getActiveRelayState().relays, [], "in-memory state stays authoritative until the sync");
+		syncRelayStateFromDisk();
+		assert.deepEqual(getActiveRelayState().relays.map((r) => r.url), [relayUrl], "the sync must adopt the on-disk pool");
+
+		// Missing files are the default state, not a crash and not a wipe.
+		clearSandboxFiles();
+		syncRelayStateFromDisk();
+		assert.equal(getActiveRelayState().relays.length, 0, "no state file must leave an empty pool");
+		assert.equal(getActiveRelayState().mode, "auto", "no state file must fall back to auto mode");
+
+		// A fresh disk catalog cache must be lifted into the live catalog.
+		clearSandboxFiles();
+		const sentinel = {
+			id: "seed-sentinel-free",
+			name: "seed sentinel",
+			api: "openai-completions",
+			source: "opencode",
+		} as unknown as RegisteredModel;
+		writeCatalogCache({
+			timestamp: Date.now(),
+			opencode: [sentinel.id],
+			kilo: [],
+			models: [sentinel],
+			etag: "w/seed",
+		});
+		const before = getAliveCatalog();
+		setAliveCatalog([]);
+		try {
+			await seedCatalog();
+			assert.ok(
+				getAliveCatalog().some((m) => m.id === "seed-sentinel-free"),
+				"the fresh disk cache must reach the live catalog",
+			);
+			assert.ok(getAliveCatalog().length >= 26, "the static catalog must survive the seed");
+		} finally {
+			setAliveCatalog(before);
+		}
+	});
 });
