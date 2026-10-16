@@ -593,22 +593,6 @@ export function createCommandSpec(
     relayState = withRelayState(updater);
     return relayState;
    };
-   const setRelay = (
-    enabled: boolean,
-    url: string,
-    addLabel?: string,
-   ) => {
-    applyRelayState((s) => {
-     s.enabled = enabled;
-     const cleanUrl = (url || "").trim() || "";
-     s.url = cleanUrl;
-     if (cleanUrl) {
-      ensureRelay(s, cleanUrl, addLabel);
-     }
-     return s;
-    });
-   };
-
    const addRelayInteractive = async () => {
     const inputUrl = (
      await ctx.ui.input(
