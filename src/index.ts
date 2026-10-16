@@ -273,7 +273,7 @@ export default async function(pi: ExtensionAPI): Promise<void> {
       ? `Relay pool ready: ${freshRelayState.relays.length} relay(s). Run /freeflow for pool management.`
       : "Relay pool empty — direct mode. Run /freeflow deploy to add your own egress.";
     ctx.ui?.notify?.(
-     `freeflow ready: ${ALL_MODELS.length} free models via local proxy 127.0.0.1:28180. ${hint}`,
+     `freeflow ready: ${ALL_MODELS.length} free models via local proxy ${HOST}:${actualPort}. ${hint}`,
      "info",
     );
    }

@@ -231,9 +231,12 @@ test("user flow [1/6] fresh install registers 37 models, binds a proxy, and onbo
    assert.equal(msgs.length, 1, "first run must notify exactly once");
    assert.ok(fs.existsSync(ONBOARDED_FLAG_FILE), "onboarded flag must be created");
    assert.equal(fs.readFileSync(ONBOARDED_FLAG_FILE, "utf8"), "1");
-   assert.match(
-    msgs[0],
-			/^freeflow ready: 35 free models via local proxy 127\.0\.0\.1:28180\. /,
+   // The welcome must name the port the proxy is actually bound on —
+   // TEST_PROXY_PORT here, never the hardcoded default.
+   assert.ok(
+    msgs[0].startsWith(
+     `freeflow ready: ${ALL_MODELS.length} free models via local proxy 127.0.0.1:${TEST_PROXY_PORT}. `,
+    ),
     "welcome must announce the local proxy",
    );
 
