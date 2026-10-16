@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { createCommandSpec, updateStatusBar } from "../src/commands.ts";
-import { LOG_FILE, RELAY_STATE_FILE } from "../src/config.ts";
+import { DEBUG_STATE_FILE, LOG_FILE, RELAY_STATE_FILE } from "../src/config.ts";
+import { _resetDebugStateCacheForTest } from "../src/logger.ts";
 import {
 	getActiveRelayState,
 	setActiveRelayState,
@@ -264,5 +265,47 @@ test("command spec: /freeflow add (interactive) warns on a rejected URL", async 
 		assert.match(warn.message, /Relay URL rejected/);
 		assert.equal(getActiveRelayState().relays.length, 0, "a rejected URL must not be saved");
 	});
+});
+
+test("command spec: /freeflow debug reports the effective level, not the raw fields", async () => {
+	const hadState = fs.existsSync(DEBUG_STATE_FILE);
+	const stateBefore = hadState ? fs.readFileSync(DEBUG_STATE_FILE, "utf8") : null;
+	const envDebug = process.env.FREEFLOW_DEBUG;
+	const envLevel = process.env.FREEFLOW_LOG_LEVEL;
+	const report = async (env: { debug?: string; level?: string }): Promise<string> => {
+		if (env.debug === undefined) delete process.env.FREEFLOW_DEBUG;
+		else process.env.FREEFLOW_DEBUG = env.debug;
+		if (env.level === undefined) delete process.env.FREEFLOW_LOG_LEVEL;
+		else process.env.FREEFLOW_LOG_LEVEL = env.level;
+		_resetDebugStateCacheForTest();
+		const spec = createCommandSpec(mockApi);
+		const { ctx, notifications } = createMockContext();
+		await spec.handler("debug", ctx);
+		return notifications[notifications.length - 1].message;
+	};
+	try {
+		// Fresh install: nothing is persisted and the logger runs at debug.
+		fs.rmSync(DEBUG_STATE_FILE, { force: true });
+		const fresh = await report({});
+		assert.match(fresh, /Debug status: debug/, "a fresh install runs at debug");
+		assert.match(fresh, /isDebug=true/);
+		assert.ok(!fresh.includes("Debug status: info"), "the raw-file default must not override the effective level");
+
+		// FREEFLOW_DEBUG opts into debug without any persisted field.
+		assert.match(await report({ debug: "1" }), /Debug status: debug/);
+
+		// An explicit level still wins.
+		const warn = await report({ level: "warn" });
+		assert.match(warn, /Debug status: warn/);
+		assert.match(warn, /isDebug=false/);
+	} finally {
+		if (envDebug === undefined) delete process.env.FREEFLOW_DEBUG;
+		else process.env.FREEFLOW_DEBUG = envDebug;
+		if (envLevel === undefined) delete process.env.FREEFLOW_LOG_LEVEL;
+		else process.env.FREEFLOW_LOG_LEVEL = envLevel;
+		_resetDebugStateCacheForTest();
+		if (stateBefore !== null) fs.writeFileSync(DEBUG_STATE_FILE, stateBefore, "utf8");
+		else fs.rmSync(DEBUG_STATE_FILE, { force: true });
+	}
 });
 

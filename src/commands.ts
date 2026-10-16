@@ -1447,13 +1447,17 @@ export function createCommandSpec(
      }
     } else {
      const st = loadDebugState();
-     const cur = st?.debug
-      ? "debug (ON)"
-      : st?.level ||
-      process.env.FREEFLOW_LOG_LEVEL ||
-      "info";
+     const minLevel = getMinLogLevel();
+     // Report the level the logger actually filters at, not the raw fields: a
+     // fresh install (no state file) and FREEFLOW_DEBUG=1 both run at debug
+     // without either being persisted anywhere.
+     const effective =
+      (Object.keys(LOG_LEVEL_ORDER) as LogLevel[]).find(
+       (level) => LOG_LEVEL_ORDER[level] === minLevel,
+      ) ?? "info";
+     const cur = st?.debug ? "debug (ON)" : effective;
      ctx.ui.notify(
-      `Debug status: ${cur}\nFile: ${DEBUG_STATE_FILE}\nMinLevel: ${getMinLogLevel()} | isDebug=${isDebugEnabled()}\nUsage: /freeflow debug on|off | /freeflow debug level debug`,
+      `Debug status: ${cur}\nFile: ${DEBUG_STATE_FILE}\nMinLevel: ${minLevel} | isDebug=${isDebugEnabled()}\nUsage: /freeflow debug on|off | /freeflow debug level debug`,
       "info",
      );
     }
