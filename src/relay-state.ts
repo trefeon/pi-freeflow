@@ -268,7 +268,7 @@ export function saveRelayState(s: RelayState): void {
 
 /** Block synchronously for ms without burning CPU. */
 function sleepSync(ms: number): void {
- Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, Date.now() + ms);
+ Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /**

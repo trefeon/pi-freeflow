@@ -632,3 +632,42 @@ test("ewmaBadge: shows ~Nms avg with samples, blank without", () => {
   resetAllRelayHealth();
  }
 });
+
+test("saveRelayState backoff is real: two EBUSY renames still land after >= 80ms", () => {
+ withSavedDiskState(() => {
+  const realRenameSync = fs.renameSync.bind(fs);
+  const fsp = fs as unknown as { renameSync: (from: string, to: string) => void };
+  let attempts = 0;
+  fsp.renameSync = (from: string, to: string) => {
+   attempts++;
+   if (attempts <= 2) {
+    const err: NodeJS.ErrnoException = new Error(
+     "EBUSY: resource busy or locked, rename '" + from + "' -> '" + to + "'",
+    );
+    err.code = "EBUSY";
+    throw err;
+   }
+   return realRenameSync(from, to);
+  };
+  try {
+   const started = Date.now();
+   const state: RelayState = {
+    enabled: true,
+    url: "https://backoff.example.com",
+    relays: [{ url: "https://backoff.example.com" }],
+   };
+   saveRelayState(state);
+   const elapsed = Date.now() - started;
+
+   assert.equal(attempts, 3, "two EBUSY failures then success must take exactly 3 attempts");
+   // Lower bound only: the point is that the documented 3x50ms backoff blocks
+   // for real (it used to return from Atomics.wait immediately).
+   assert.ok(elapsed >= 80, "two 50ms backoff sleeps must really block (elapsed " + elapsed + "ms)");
+   const persisted = JSON.parse(fs.readFileSync(RELAY_STATE_FILE, "utf8"));
+   assert.equal(persisted.url, "https://backoff.example.com", "state must land once the rename succeeds");
+  } finally {
+   fsp.renameSync = realRenameSync;
+  }
+ });
+});
+
