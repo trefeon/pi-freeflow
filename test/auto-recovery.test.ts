@@ -114,6 +114,35 @@ test("watchdog matrix: gone/version/sse trigger, healthy does not", () => {
 	);
 });
 
+test("watchdog matrix: only older versions trigger recovery", () => {
+	assert.equal(
+		shouldRecoverOnHealth({ version: "99.0.0", activeRequests: 0 }),
+		false,
+		"a newer daemon is deliberately left running — recovering would loop",
+	);
+	assert.equal(
+		shouldRecoverOnHealth({ version: "0.0.1", activeRequests: 0 }),
+		true,
+		"an older daemon is replaced",
+	);
+	assert.equal(
+		shouldRecoverOnHealth({ version: PKG_VERSION, activeRequests: 0 }),
+		false,
+		"same version is not stale",
+	);
+	assert.equal(
+		shouldRecoverOnHealth({ version: null, activeRequests: 0 }),
+		false,
+		"unknown version never triggers on version grounds",
+	);
+	assert.equal(shouldRecoverOnHealth(null), true, "gone daemon is recovered");
+	assert.equal(
+		shouldRecoverOnHealth({ version: "99.0.0", sseDegraded: true }),
+		true,
+		"the failed-SSE window still recovers regardless of version",
+	);
+});
+
 // ── busy bypass ──────────────────────────────────────────────────────────
 
 test("busy bypass only after 5min continuous busy with 60s+ quiet bytes", () => {

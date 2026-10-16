@@ -435,13 +435,24 @@ export function _resetRecoveryForTest(): void {
 export type HealthForRecovery = DaemonHealthSnapshot;
 
 /**
+ * Older-version guard: only a daemon strictly older than this build is worth
+ * recovering. shouldReplaceDaemon deliberately leaves a NEWER daemon running,
+ * so recovering from one could never succeed (watchdog → recover → refused →
+ * reattach → watchdog, until the breaker parks into the in-process fallback).
+ * Null/undefined version (pre-version daemon) is not older on its own.
+ */
+function isOlderDaemonVersion(version: string | null | undefined): boolean {
+ return version != null && compareVersions(version, PKG_VERSION) < 0;
+}
+
+/**
  * Watchdog decision matrix (pure, testable). Recover when the daemon is gone,
- * serves a stale version, or reports a degraded failed-SSE window. Missing
+ * serves an older version, or reports a degraded failed-SSE window. Missing
  * sseDegraded (pre-window daemon) never triggers on its own.
  */
 export function shouldRecoverOnHealth(health: HealthForRecovery): boolean {
  if (health === null) return true;
- if (health.version !== null && health.version !== PKG_VERSION) return true;
+ if (isOlderDaemonVersion(health.version)) return true;
  if (health.sseDegraded === true) return true;
  return false;
 }
@@ -535,7 +546,7 @@ export async function watchdogCheck(port: number): Promise<void> {
   return;
  }
  if (health && (health.activeRequests ?? 0) > 0 && !isStuckBusy(busySince, health.lastBytesAt ?? 0)) return;
- void triggerRecovery(port, health === null ? "daemon gone" : health.version !== PKG_VERSION ? `stale v${health.version}` : "failed-SSE degraded").catch((e) => logWarn("watchdog recovery failed", { error: String(e) }));
+ void triggerRecovery(port, health === null ? "daemon gone" : isOlderDaemonVersion(health.version) ? `stale v${health.version}` : "failed-SSE degraded").catch((e) => logWarn("watchdog recovery failed", { error: String(e) }));
 }
 
 async function shouldReplaceDaemon(port: number, remoteVer: string): Promise<boolean> {
