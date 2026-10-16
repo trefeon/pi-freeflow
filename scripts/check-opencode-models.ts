@@ -7,25 +7,33 @@
  * - 404 ModelNotFound
  * - Upstream failures / regressions
  *
+ * Probes stream (chat and responses alike) so a model is healthy on a 2xx status
+ * line instead of a whole generation fitting the timeout budget; status-0
+ * timeout/network failures get one retry before a model is reported affected.
+ *
  * CLI options:
  *   --output <file>  Write markdown report to file
  *   --json           Print structured JSON to stdout
  */
 import fs from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import { startProxy } from "../src/proxy.ts";
 import { OPENCODE_MODELS } from "../src/models.ts";
 import type { ModelDef } from "../src/types.ts";
 
 const BASE_TEST_PORT = 29680;
 const TIMEOUT_MS = 25000;
+/** One attempt plus a single retry, only for status-0 timeout/network failures. */
+const MAX_PROBE_ATTEMPTS = 2;
 
-interface ModelHealthResult {
+export interface ModelHealthResult {
   id: string;
   api: string;
   status: number;
   latencyMs: number;
   healthy: boolean;
   error?: string;
+  attempts?: number;
 }
 
 async function startOwnedProxy() {
@@ -37,28 +45,16 @@ async function startOwnedProxy() {
   throw new Error(`Could not bind an owned proxy on ports ${candidates.join(", ")}`);
 }
 
-async function probeModel(port: number, model: ModelDef): Promise<ModelHealthResult> {
-  const isResponses = model.api === "openai-responses";
-  const endpoint = isResponses
-    ? `http://127.0.0.1:${port}/v1/responses`
-    : `http://127.0.0.1:${port}/v1/chat/completions`;
-
-  const payload = isResponses
-    ? {
-        model: model.id,
-        input: [{ role: "user", content: "ping" }],
-        stream: true,
-      }
-    : {
-        model: model.id,
-        messages: [{ role: "user", content: "ping" }],
-        stream: false,
-        max_tokens: 10,
-      };
-
+async function attemptProbe(
+  endpoint: string,
+  payload: unknown,
+  model: ModelDef,
+  fetchImpl: typeof fetch,
+): Promise<ModelHealthResult> {
+  const api = model.api || "openai-completions";
   const start = Date.now();
   try {
-    const res = await fetch(endpoint, {
+    const res = await fetchImpl(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -67,13 +63,10 @@ async function probeModel(port: number, model: ModelDef): Promise<ModelHealthRes
 
     const latencyMs = Date.now() - start;
     if (res.ok) {
-      return {
-        id: model.id,
-        api: model.api || "openai-completions",
-        status: res.status,
-        latencyMs,
-        healthy: true,
-      };
+      // Health is the status line: drop the streaming body instead of waiting for a
+      // whole generation to land inside the timeout budget.
+      await res.body?.cancel().catch(() => {});
+      return { id: model.id, api, status: res.status, latencyMs, healthy: true };
     }
 
     const text = await res.text();
@@ -85,7 +78,7 @@ async function probeModel(port: number, model: ModelDef): Promise<ModelHealthRes
 
     return {
       id: model.id,
-      api: model.api || "openai-completions",
+      api,
       status: res.status,
       latencyMs,
       healthy: false,
@@ -94,13 +87,49 @@ async function probeModel(port: number, model: ModelDef): Promise<ModelHealthRes
   } catch (e) {
     return {
       id: model.id,
-      api: model.api || "openai-completions",
+      api,
       status: 0,
       latencyMs: Date.now() - start,
       healthy: false,
       error: (e as Error).message,
     };
   }
+}
+
+export async function probeModel(
+  port: number,
+  model: ModelDef,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ModelHealthResult> {
+  const isResponses = model.api === "openai-responses";
+  const endpoint = isResponses
+    ? `http://127.0.0.1:${port}/v1/responses`
+    : `http://127.0.0.1:${port}/v1/chat/completions`;
+  const payload = isResponses
+    ? {
+        model: model.id,
+        input: [{ role: "user", content: "ping" }],
+        stream: true,
+      }
+    : {
+        model: model.id,
+        messages: [{ role: "user", content: "ping" }],
+        stream: true,
+        max_tokens: 10,
+      };
+
+  const start = Date.now();
+  let attempts = 1;
+  let last = await attemptProbe(endpoint, payload, model, fetchImpl);
+  // Only status-0 (timeout/network) failures get a retry; a real HTTP status is the
+  // upstream's own answer and is reported as-is.
+  while (!last.healthy && last.status === 0 && attempts < MAX_PROBE_ATTEMPTS) {
+    console.log(`  ↻ retry after status-0 (${last.error || "network failure"})`);
+    last = await attemptProbe(endpoint, payload, model, fetchImpl);
+    attempts += 1;
+  }
+
+  return { ...last, latencyMs: Date.now() - start, attempts };
 }
 
 function generateMarkdownReport(results: ModelHealthResult[]): string {
@@ -180,7 +209,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error("[check-opencode] Fatal error:", err);
-  process.exit(2);
-});
+// Run the CLI only when this file is the process entry point; tests import
+// probeModel directly and must not boot a proxy.
+const isDirectRun = !!(process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url);
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error("[check-opencode] Fatal error:", err);
+    process.exit(2);
+  });
+}
