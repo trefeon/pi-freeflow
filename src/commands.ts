@@ -1275,7 +1275,7 @@ export function createCommandSpec(
          }
         }
         if (code === 0) {
-         try { await killPortHolder(PORT); } catch { }
+         try { await killPortHolder(getClientPort() || PORT); } catch { }
          ctx.ui.notify(`Updated to ${latest} and restarted proxy daemon`, "info");
         } else {
          ctx.ui.notify(

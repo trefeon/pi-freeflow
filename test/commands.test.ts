@@ -205,3 +205,16 @@ test("command spec: /freeflow logs --follow tails via setInterval 1s", async () 
 		}
 	}
 });
+
+// /freeflow update restarts the proxy on the attached port (getClientPort() ||
+// PORT), never on the base port, so a walked port cannot leave a stale daemon
+// behind. Proving that needs to observe killPortHolder, which commands.ts (and
+// updater.ts) import as a direct named export from proxy.ts: the suite runs
+// without --experimental-test-module-mocks, so the binding cannot be stubbed,
+// and the only unmocked alternative (bind a port, then kill it) is off limits
+// for unit tests. Skipped deliberately rather than faked.
+test(
+	"command spec: /freeflow update restarts the attached proxy port",
+	{ skip: "killPortHolder is a direct named import; no module-mock flag in the test script" },
+	() => {},
+);

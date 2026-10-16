@@ -10,6 +10,7 @@
 
 import { spawnSync } from "node:child_process";
 
+import { getClientPort } from "./client.ts";
 import { fetchLatestVersion, getLocalVersion, compareVersions } from "./update-checker.ts";
 import { killPortHolder } from "./proxy.ts";
 import { PORT } from "./config.ts";
@@ -148,7 +149,9 @@ export async function performAutoUpdate(
 	}
 	if (code === 0) {
 		onProgress?.(`pi-freeflow auto-updated to v${latest} — restarting proxy daemon…`);
-		await killPortHolder(PORT);
+		// Restart the proxy that is actually attached: a walked port (base busy)
+		// must not leave the live daemon serving the old build.
+		await killPortHolder(getClientPort() || PORT);
 		return { ok: true, version: latest };
 	}
 	return { ok: false, error: `update command failed (exit code ${code})` };
