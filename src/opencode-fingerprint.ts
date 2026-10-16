@@ -5,7 +5,8 @@
  * /zen/v1/messages) validates requests against the official OpenCode agentic
  * client fingerprint. If any of the following 4 axes are missing, upstream
  * answers HTTP 403 FreeTierError:
- * 1. User-Agent (opencode/1.18.31, >= 1.17.0)
+ * 1. User-Agent (`opencode/<version>`; the pinned fallback, live npm lookup,
+ *    and the >= 1.17.0 floor live in src/config.ts)
  * 2. x-opencode-session (canonical ses_[0-9a-f]{12}[0-9A-Za-z]{14} format)
  * 3. Tools: must declare the placeholder sextet {bash, glob, grep, read, edit, write}
  * 4. Streaming: must be stream: true

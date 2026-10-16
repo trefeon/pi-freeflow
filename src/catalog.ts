@@ -1,7 +1,7 @@
 /**
  * Dynamic catalog discovery, caching, and model enrichment for pi-freeflow
  *
- * Provides 1-hour atomic disk caching with safe offline fallback to verified static definitions.
+ * Provides 24-hour atomic disk caching with safe offline fallback to verified static definitions.
  */
 
 import { randomUUID } from "node:crypto";
@@ -11,7 +11,6 @@ import {
  CATALOG_CACHE_FILE,
  CATALOG_CACHE_TTL_MS,
  CATALOG_REFRESH_TIMEOUT_MS,
- KILO_CHAT_URL,
  OPENCODE_API_URL,
  opencodeHeaders,
 } from "./config.ts";
@@ -353,7 +352,10 @@ export function writeCatalogCache(data: CatalogCacheData): void {
 }
 
 /**
- * Refresh free model catalog from OpenCode Zen and KiloCode Gateway endpoints.
+ * Refresh the free model catalog from the OpenCode Zen listing. Only Zen is
+ * fetched — Kilo ids stay static (merged from ALL_MODELS; the cache's kilo
+ * field is preserved but never re-fetched), so Kilo entries change only in
+ * src/models.ts.
  * Uses ETag conditional requests (If-None-Match) to avoid re-merging unchanged
  * catalogs; a 304 Not Modified response skips merge and returns the in-memory
  * catalog unchanged. Falls back gracefully to cached or static models if network

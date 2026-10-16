@@ -280,7 +280,7 @@ test("isFreeCatalogId accepts -free, :free, /free and known ids, rejects paid an
 test("sanitizeCatalogModels keeps every OVH id and repairs its source", () => {
 	// A stale disk cache carries a `source` label; sanitize must re-derive it
 	// from the static definition so an OVH model can never register as a
-	// Zen model, and must never drop one of the nine.
+	// Zen model, and must never drop one of the eight.
 	const seeded: RegisteredModel[] = OVH_MODELS.map((m) => ({
 		...m,
 		source: "opencode" as const,
