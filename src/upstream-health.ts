@@ -332,7 +332,11 @@ export function rememberGateRejection(
 }
 
 /** True when this session already ate a gate 403 and its retry should fail over. */
-export function wasGateRejected(parsedBody: unknown, pathname: string): boolean { const fp = rejectionFingerprint(parsedBody, pathname);
+export function wasGateRejected(parsedBody: unknown, pathname: string): boolean {
+ // Nothing remembered (the steady state): skip fingerprinting entirely. A keyless
+ // body hashes the whole conversation, by far the heaviest per-turn work here.
+ if (rejected.size === 0) return false;
+ const fp = rejectionFingerprint(parsedBody, pathname);
  if (!fp) return false;
  const expiresAt = rejected.get(fp);
  if (expiresAt === undefined) return false;
