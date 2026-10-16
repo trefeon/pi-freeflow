@@ -10,6 +10,10 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: opencode-model-check
+  cancel-in-progress: false
+
 jobs:
   check-models:
     name: Probe OpenCode Free Models
@@ -43,10 +47,19 @@ jobs:
           set -e
 
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "AFFECTED_MODELS=true" >> "$GITHUB_ENV"
-          else
+
+          if [ $EXIT_CODE -eq 2 ]; then
+            echo "Probe infra failure (exit code 2) — report only, no alert issue"
             echo "AFFECTED_MODELS=false" >> "$GITHUB_ENV"
+            echo "INFRA_FAILURE=true" >> "$GITHUB_ENV"
+          elif [ $EXIT_CODE -ne 0 ]; then
+            echo "Affected models detected (exit code $EXIT_CODE)"
+            echo "AFFECTED_MODELS=true" >> "$GITHUB_ENV"
+            echo "INFRA_FAILURE=false" >> "$GITHUB_ENV"
+          else
+            echo "All OpenCode free models healthy (exit code 0)"
+            echo "AFFECTED_MODELS=false" >> "$GITHUB_ENV"
+            echo "INFRA_FAILURE=false" >> "$GITHUB_ENV"
           fi
 
       - name: Publish Step Summary
@@ -55,6 +68,11 @@ jobs:
           if [ -f model-health-report.md ]; then
             cat model-health-report.md >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Annotate Infra Failure
+        if: always() && env.INFRA_FAILURE == 'true'
+        run: |
+          echo "::error::OpenCode free-model probe infra failure — see step summary; no alert issue filed."
 
       - name: Open or Update GitHub Issue on Affected Models
         if: env.AFFECTED_MODELS == 'true'
@@ -65,20 +83,38 @@ jobs:
           LABEL="opencode-model-alert"
           gh label create "$LABEL" --description "OpenCode free-tier model alert" --color "b60205" --force || true
 
-          BODY_ARGS="--body-file model-health-report.md"
+          # gh must always read a real file: an inline --body value would be split by the
+          # shell, so a missing report is replaced by a one-line fallback first.
           if [ ! -f model-health-report.md ]; then
-            BODY_ARGS="--body \"OpenCode free tier models health probe detected affected models. Check workflow logs.\""
+            echo "OpenCode free tier models health probe detected affected models. Check workflow logs." > model-health-report.md
           fi
 
           EXISTING_ISSUE=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number')
           if [ -n "$EXISTING_ISSUE" ]; then
             echo "Updating existing alert issue #$EXISTING_ISSUE"
-            gh issue comment "$EXISTING_ISSUE" $BODY_ARGS
+            gh issue comment "$EXISTING_ISSUE" --body-file model-health-report.md
           else
             echo "Creating new alert issue"
             CURRENT_DATE=$(date -u +'%Y-%m-%d %H:%M UTC')
             gh issue create \
               --title "🚨 OpenCode Free Tier Model Disruption (${CURRENT_DATE})" \
               --label "$LABEL" \
-              $BODY_ARGS
+              --body-file model-health-report.md
+          fi
+
+      - name: Close Recovered Alert Issue
+        if: steps.probe.outputs.exit_code == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LABEL="opencode-model-alert"
+          EXISTING_ISSUE=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number')
+          if [ -z "$EXISTING_ISSUE" ]; then
+            echo "No open $LABEL issue to close"
+          else
+            CURRENT_DATE=$(date -u +'%Y-%m-%d %H:%M UTC')
+            echo "All OpenCode free-tier models healthy again — closing alert issue #$EXISTING_ISSUE"
+            gh issue comment "$EXISTING_ISSUE" --body "All OpenCode free-tier models are healthy again as of ${CURRENT_DATE}. Auto-closing this alert."
+            gh issue close "$EXISTING_ISSUE" --reason completed
           fi
