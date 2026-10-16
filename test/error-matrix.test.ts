@@ -46,10 +46,11 @@ test("Error Matrix [1/10] isRetriableStatus strictly separates transient errors 
 		assert.equal(isRetriableStatus(code), true, `Status ${code} must be retriable`);
 	}
 
-	// Non-retriable client errors (must surface immediately to client, never roll relays)
+	// Not retriable by the generic predicate: relayFetch handles 401 (relay auth),
+	// 402, 404 and 413 in their own branches, and the rest surface terminally.
 	const nonRetriable = [400, 401, 402, 403, 404, 405, 409, 410, 413, 422, 501];
 	for (const code of nonRetriable) {
-		assert.equal(isRetriableStatus(code), false, `Status ${code} must not roll relays`);
+		assert.equal(isRetriableStatus(code), false, `Status ${code} must not be generically retriable`);
 	}
 
 	// Cloudflare 52x band boundaries: just below/above must NOT roll

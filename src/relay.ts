@@ -488,6 +488,38 @@ export async function relayFetch(
 				);
 				continue;
 			}
+
+			// Relay auth rejection: a deployed worker whose RELAY_AUTH no longer
+			// matches this entry's x-relay-auth answers 401 {"error":"unauthorized"}
+			// before forwarding, so the relay never reached upstream (deploy.ts).
+			// That is a relay-host fault, not an upstream verdict: mark it and roll
+			// like every other relay failure. Left to fall through, the broken relay
+			// reached markRelaySuccess below — recorded healthy/sticky, EWMA reset,
+			// no roll, so it kept serving the pool until something else noticed.
+			// Strictly 401: a 403 free-tier gate stays a terminal upstream verdict
+			// (rolling one buys nothing and burns pool quota), and 404-style client
+			// errors keep their non-penalizing terminal path below.
+			if (res.status === 401) {
+				markRelayFailure(targetUrl, 401, "Relay auth rejected (x-relay-auth mismatch)");
+				lastResponse?.body?.cancel().catch(() => {});
+				lastResponse = res;
+				lastResponseRelay = targetUrl;
+				log(
+					"warn",
+					`relay ${targetUrl} rejected the relay auth in ${elapsed}s — rolling to next relay`,
+					{ upstream: url, status: 401 },
+					rid,
+				);
+				const now = Date.now();
+				if (now - lastRollNotify > ROLL_NOTIFY_MS) {
+					lastRollNotify = now;
+					const ui = getStatusUi();
+					if (ui?.notify) {
+						ui.notify(`relay ${shortRelayLabel(targetUrl)} rejected the relay auth (HTTP 401) — rolled to next relay`, "warning");
+					}
+				}
+				continue;
+			}
 			markRelaySuccess(targetUrl, Date.now() - attemptStart);
 
 			// SUCCESS or non-retriable client error (e.g. 200, 404):

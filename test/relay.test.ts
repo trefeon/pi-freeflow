@@ -5,7 +5,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { relayFetch, _resetRollNotifyForTest } from "../src/relay.ts";
-import { setActiveRelayState, setStatusUi, resetAllRelayHealth } from "../src/relay-state.ts";
+import {
+	getRelayHealth,
+	isRelayHealthy,
+	setActiveRelayState,
+	setStatusUi,
+	resetAllRelayHealth,
+} from "../src/relay-state.ts";
 import { startProxy } from "../src/proxy.ts";
 
 test("relayFetch uses global fetch (keep-alive via Node default)", () => {
@@ -220,5 +226,116 @@ test("relayFetch omits x-relay-auth for legacy relay entries without auth", asyn
 			setActiveRelayState({ enabled: true, url: "", relays: [], mode: "auto" } as unknown as Parameters<typeof setActiveRelayState>[0], false);
 		} catch {}
 		resetAllRelayHealth();
+	}
+});
+
+test("relayFetch rolls on a relay auth rejection (401) and cools the rejecting relay", async (t) => {
+	_resetRollNotifyForTest();
+	resetAllRelayHealth();
+	const messages: string[] = [];
+	setStatusUi({
+		notify: (message: string) => {
+			messages.push(message);
+		},
+		setStatus() {},
+	} as unknown as Parameters<typeof setStatusUi>[0]);
+
+	const RELAY_401 = "https://stale-auth-relay.example.com";
+	const RELAY_OK = "https://healthy-relay.example.com";
+	const seen: string[] = [];
+	t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+		const target = String(input);
+		seen.push(target);
+		if (target === RELAY_401) {
+			// Exactly what a deployed worker answers when x-relay-auth no longer matches.
+			return new Response(JSON.stringify({ error: "unauthorized" }), {
+				status: 401,
+				headers: { "content-type": "application/json" },
+			});
+		}
+		return new Response("ok", { status: 200 });
+	});
+
+	try {
+		setActiveRelayState(
+			{
+				enabled: true,
+				url: RELAY_401,
+				relays: [{ url: RELAY_401, auth: "rotated-secret" }, { url: RELAY_OK }],
+				mode: "auto",
+			} as unknown as Parameters<typeof setActiveRelayState>[0],
+			false,
+		);
+
+		const res = await relayFetch(
+			"https://opencode.ai/zen/v1/chat/completions",
+			{ method: "POST", body: "{}" },
+			"authz401",
+		);
+
+		assert.equal(res.status, 200, "the next candidate must serve after a relay 401");
+		assert.deepEqual(
+			seen,
+			[RELAY_401, RELAY_OK],
+			"the 401-ing relay must roll to the next candidate (never straight to direct)",
+		);
+
+		// A 401 is a relay fault: failed and cooled, never recorded as a success.
+		const health = getRelayHealth(RELAY_401);
+		assert.ok(health, "the 401-ing relay must carry a health record");
+		assert.equal(health.consecutiveFailures, 1, "401 must count as a relay failure");
+		assert.equal(health.lastStatus, 401, "the failure must record the 401 status");
+		assert.equal(health.successCount ?? 0, 0, "401 must never be marked a success");
+		assert.equal(isRelayHealthy(RELAY_401), false, "401 must put the relay in cooldown");
+		assert.equal(isRelayHealthy(RELAY_OK), true, "the healthy relay must stay healthy");
+
+		assert.equal(messages.length, 1, "the roll must notify once");
+		assert.match(messages[0], /401/, "the toast must name the relay's 401");
+	} finally {
+		setStatusUi(null);
+		_resetRollNotifyForTest();
+		resetAllRelayHealth();
+		setActiveRelayState(
+			{ enabled: true, url: "", relays: [], mode: "auto" } as unknown as Parameters<typeof setActiveRelayState>[0],
+			false,
+		);
+	}
+});
+
+test("relayFetch keeps a 403 free-tier gate terminal (no roll, no penalty)", async (t) => {
+	resetAllRelayHealth();
+	const RELAY = "https://gated-relay.example.com";
+	const seen: string[] = [];
+	t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+		seen.push(String(input));
+		return new Response(
+			JSON.stringify({
+				error: { code: "FreeTierError", message: "OpenCode's free tier can only be used from within OpenCode" },
+			}),
+			{ status: 403, headers: { "content-type": "application/json" } },
+		);
+	});
+
+	try {
+		setActiveRelayState(
+			{ enabled: true, url: RELAY, relays: [{ url: RELAY }], mode: "auto" } as unknown as Parameters<
+				typeof setActiveRelayState
+			>[0],
+			false,
+		);
+
+		const res = await relayFetch("https://opencode.ai/zen/v1/chat/completions", { method: "POST" }, "gate403");
+
+		assert.equal(res.status, 403, "a 403 gate must surface unchanged");
+		assert.deepEqual(seen, [RELAY], "a 403 gate must never roll or hit the direct fallback");
+		const health = getRelayHealth(RELAY);
+		assert.equal(health?.failureCount ?? 0, 0, "a 403 gate is an upstream verdict, not a relay fault");
+		assert.equal(isRelayHealthy(RELAY), true, "a 403 gate must not cool the relay");
+	} finally {
+		resetAllRelayHealth();
+		setActiveRelayState(
+			{ enabled: true, url: "", relays: [], mode: "auto" } as unknown as Parameters<typeof setActiveRelayState>[0],
+			false,
+		);
 	}
 });
