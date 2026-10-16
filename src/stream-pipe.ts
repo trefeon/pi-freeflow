@@ -8,6 +8,7 @@
 import { randomUUID } from "node:crypto";
 import type * as http from "node:http";
 import type { Readable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import { isDebugEnabled, log } from "./logger.ts";
 import { markRelayFailure } from "./relay-state.ts";
 import {
@@ -811,6 +812,10 @@ export function pipeUpstreamStream(
  // rewritten and forwarded, so a function_call name split across chunks still
  // matches its injected record.
  let sseBuffer = "";
+ // Byte-to-string join for the buffer: a multi-byte character split
+ // across two TCP chunks must decode as one, never as replacement
+ // characters. `end()` flushes a trailing partial sequence at stream end.
+ let sseDecoder = new StringDecoder("utf8");
  // Watchdog outcome: recorded exactly once per stream. Client disconnects
  // and proxy-internal aborts set clientAborted first, so the ensure path
  // below skips them and the window only reflects upstream-side results.
@@ -926,6 +931,7 @@ export function pipeUpstreamStream(
   upstreamEnded = false;
   nodeStream = next;
   sseBuffer = "";
+  sseDecoder = new StringDecoder("utf8");
   terminalScanCarry = Buffer.alloc(0);
   watch(next);
   try {
@@ -1043,6 +1049,7 @@ export function pipeUpstreamStream(
   upstreamEnded = false;
   nodeStream = next;
   sseBuffer = "";
+  sseDecoder = new StringDecoder("utf8");
   terminalScanCarry = Buffer.alloc(0);
   watch(next);
   log("debug", "mid-stream refire: continuing turn on replacement stream", { totalChunks, totalBytes }, rid);
@@ -1090,7 +1097,7 @@ export function pipeUpstreamStream(
    // Forwarding only complete blocks guarantees that network chunk boundaries
    // never split JSON strings on the wire or leave unterminated syntax when
    // mid-stream refire or truncation occurs.
-   sseBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+   sseBuffer += typeof chunk === "string" ? chunk : sseDecoder.write(chunk);
    let boundary = sseBoundary.exec(sseBuffer);
    while (boundary) {
     const block = sseBuffer.slice(0, boundary.index);
@@ -1152,6 +1159,9 @@ export function pipeUpstreamStream(
   // must neither inject a terminal nor end res mid-rescue.
   if (refirePending) return;
   upstreamEnded = true;
+  // The final chunk may end mid-character: only the decoder knows whether
+  // bytes are still pending, and those bytes are part of the last block.
+  sseBuffer += sseDecoder.end();
   // Cloaked streams hold the trailing incomplete block: flush it (rewritten)
   // ahead of the terminal-marker check so a coalesced final event still counts.
   if (sseBuffer.trim() !== "") {

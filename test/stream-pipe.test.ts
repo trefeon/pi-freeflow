@@ -772,3 +772,33 @@ test(
 		}
 	},
 );
+
+test("multi-byte UTF-8 split across TCP chunks reaches the host intact", async () => {
+	resetAllRelayHealth();
+	const stream = new PassThrough();
+	const { res } = pipe(stream, "/v1/chat/completions", RELAY_URL);
+
+	const bytes = Buffer.from(
+		'data: {"delta":"\u4e2d"}\n\ndata: [DONE]\n\n',
+		"utf8",
+	);
+	// Split inside the character's three-byte sequence so neither half decodes
+	// on its own: per-chunk toString("utf8") would emit U+FFFD twice.
+	const splitAt = Buffer.byteLength('data: {"delta":"', "utf8") + 1;
+	const drained = once(stream, "data");
+	stream.push(bytes.subarray(0, splitAt));
+	await drained;
+	stream.push(bytes.subarray(splitAt));
+	stream.end();
+	await once(stream, "close");
+
+	const body = res.body();
+	assert.ok(
+		body.includes('{"delta":"\u4e2d"}'),
+		"the split multi-byte character must be forwarded decoded, not mangled",
+	);
+	assert.ok(
+		!body.includes("\uFFFD"),
+		"no replacement character may leak into the forwarded stream",
+	);
+});
