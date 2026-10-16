@@ -28,6 +28,7 @@ import {
  type DeployPlatform,
 } from "./deploy.ts";
 import {
+ createLogFollower,
  LOG_LEVEL_ORDER,
  getMinLogLevel,
  isDebugEnabled,
@@ -323,9 +324,12 @@ function spawnWithProgress(
 }
 
 /**
- * Follow-mode log poller: tracks the count of matched lines already printed
- * and notifies only lines beyond it, so repeated ticks never re-notify the
- * same tail. One poller at a time — a re-run clears the previous interval.
+ * Follow-mode log poller: one stateful byte-offset follower over the live log
+ * file (createLogFollower), so each tick reads only the bytes appended since
+ * the previous tick instead of re-reading the log file and every rotated
+ * archive. Existing content is the one-shot tail's job — it is printed before
+ * this poller starts, and the follower never re-reports it. One poller at a
+ * time: a re-run clears the previous interval.
  * Stop with stopLogsFollow (session shutdown / non-follow commands).
  */
 let logsFollowTimer: NodeJS.Timeout | null = null;
@@ -339,29 +343,20 @@ function startLogsFollow(
  ctx: ExtensionContext,
  filterLevel: LogLevel | null,
  filterReqId: string | null,
- count: number,
  filterText: string | null,
- baselineMatched: number,
 ): void {
  stopLogsFollow();
- let lastPrinted = baselineMatched;
+ const follower = createLogFollower({
+  level: filterLevel,
+  reqId: filterReqId,
+  text: filterText,
+ });
  logsFollowTimer = setInterval(() => {
   try {
-   const tail = readRecentLogs(filterLevel, filterReqId, count, filterText);
-   if (tail.totalMatched < lastPrinted) {
-    // Log rotated/rewritten below the baseline — re-baseline silently.
-    lastPrinted = tail.totalMatched;
-    return;
-   }
-   const newCount = tail.totalMatched - lastPrinted;
-   if (newCount <= 0) return;
-   const newLines = tail.lines.slice(
-    tail.lines.length - Math.min(newCount, tail.lines.length),
-   ).slice(-50);
+   const newLines = follower.next();
    if (newLines.length > 0) {
     ctx.ui.notify(newLines.join("\n"), "info");
    }
-   lastPrinted = tail.totalMatched;
   } catch { }
  }, 1000);
  // @ts-ignore allow unref to not block process exit in CLI
@@ -1555,9 +1550,7 @@ export function createCommandSpec(
         ctx,
         filterLevel,
         filterReqId,
-        count,
         filterText,
-        result.totalMatched,
        );
       }
       return;
@@ -1573,9 +1566,7 @@ export function createCommandSpec(
        ctx,
        filterLevel,
        filterReqId,
-       count,
        filterText,
-       result.totalMatched,
       );
      }
     } catch (e) {
