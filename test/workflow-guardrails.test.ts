@@ -296,7 +296,11 @@ test(
 			assert.match(history, /chore\(watch\): update opencode watch state \[skip ci\]/, history);
 			assert.match(history, /feat: concurrent change on main/, history);
 			assert.equal(fs.readFileSync(path.join(node.bin, "node.log"), "utf8").trim(), "scripts/opencode-watch.mjs --update");
-			assert.equal(fs.readFileSync(path.join(work, ".github", "opencode-watch-state.json"), "utf8"), '{"simulated":true}\n');
+			// The rebase carries the state file through git, so the checkout may hand it back in the
+			// host's line-ending convention (CRLF on Windows runners): the contract is that the content
+			// survives the rebase-then-push, not which newline the OS writes.
+			const state = fs.readFileSync(path.join(work, ".github", "opencode-watch-state.json"), "utf8").replace(/\r\n/g, "\n");
+			assert.equal(state, '{"simulated":true}\n');
 		});
 	},
 );
