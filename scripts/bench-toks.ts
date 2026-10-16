@@ -83,10 +83,7 @@ const FULL_PLAN: PlanItem[] = [
 	{ model: "big-pickle", effortLabel: "high", effortSent: "high" },
 	{ model: "big-pickle", effortLabel: "max", effortSent: "max" },
 	{ model: "big-pickle", effortLabel: "high", effortSent: "high" },
-	// one-shot comparisons at high x3
-	{ model: "ling-3.0-flash-fin-free", effortLabel: "high", effortSent: "high" },
-	{ model: "ling-3.0-flash-fin-free", effortLabel: "high", effortSent: "high" },
-	{ model: "ling-3.0-flash-fin-free", effortLabel: "high", effortSent: "high" },
+	// one-shot comparison at high x3
 	{ model: "nemotron-3.5-lightning-free", effortLabel: "high", effortSent: "high" },
 	{ model: "nemotron-3.5-lightning-free", effortLabel: "high", effortSent: "high" },
 	{ model: "nemotron-3.5-lightning-free", effortLabel: "high", effortSent: "high" },
@@ -119,21 +116,75 @@ function strField(obj: unknown, key: string): string | null {
 	return null;
 }
 
+/** Answer text from a string-or-array content field (array = [{type:'text',text}]). */
+function textFromContentField(c: unknown): string | null {
+	if (typeof c === "string") return c;
+	if (Array.isArray(c)) {
+		let s = "";
+		for (const p of c) {
+			if (p && typeof p === "object" && "text" in p && typeof p.text === "string") {
+				s += p.text;
+			}
+		}
+		return s.length > 0 ? s : null;
+	}
+	return null;
+}
+
 function deltaContent(json: unknown): { content: string | null; reasoning: string | null } {
 	if (json && typeof json === "object" && "choices" in json && Array.isArray(json.choices)) {
 		const first = json.choices[0];
-		if (first && typeof first === "object" && "delta" in first) {
-			const d = first.delta;
-			if (d && typeof d === "object") {
-				const content = "content" in d && typeof d.content === "string" ? d.content : null;
-				const reasoning = "reasoning_content" in d && typeof d.reasoning_content === "string"
-					? d.reasoning_content
-					: ("reasoning" in d && typeof d.reasoning === "string" ? d.reasoning : null);
+		if (first && typeof first === "object") {
+			const holder = "delta" in first ? first.delta : ("message" in first ? first.message : null);
+			if (holder && typeof holder === "object") {
+				const content = "content" in holder ? textFromContentField(holder.content) : null;
+				let reasoning: string | null = null;
+				if ("reasoning_content" in holder && typeof holder.reasoning_content === "string") {
+					reasoning = holder.reasoning_content;
+				} else if ("reasoning" in holder && typeof holder.reasoning === "string") {
+					reasoning = holder.reasoning;
+				}
 				return { content, reasoning };
 			}
 		}
 	}
 	return { content: null, reasoning: null };
+}
+
+/** First non-empty answer-ish string field on a Responses event (delta/text/content/output_text). */
+function responsesAnswerText(json: unknown): string | null {
+	if (!json || typeof json !== "object" || Array.isArray(json)) return null;
+	if ("delta" in json && typeof json.delta === "string" && json.delta.length > 0) return json.delta;
+	if ("text" in json && typeof json.text === "string" && json.text.length > 0) return json.text;
+	if ("content" in json && typeof json.content === "string" && json.content.length > 0) return json.content;
+	if ("output_text" in json && typeof json.output_text === "string" && json.output_text.length > 0) {
+		return json.output_text;
+	}
+	return null;
+}
+
+/** Walk a response.completed response object → output[].content[] text (mirrors sseToResponsesJson). */
+function walkCompletedResponse(resp: unknown): string {
+	if (!resp || typeof resp !== "object" || Array.isArray(resp)) return "";
+	if ("output_text" in resp && typeof resp.output_text === "string" && resp.output_text.length > 0) {
+		return resp.output_text;
+	}
+	if (!("output" in resp) || !Array.isArray(resp.output)) return "";
+	let s = "";
+	for (const item of resp.output) {
+		if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+		if (!("content" in item)) continue;
+		const content = item.content;
+		if (typeof content === "string") { s += content; continue; }
+		if (!Array.isArray(content)) continue;
+		for (const part of content) {
+			if (!part || typeof part !== "object" || Array.isArray(part)) continue;
+			if (!("text" in part) || typeof part.text !== "string") continue;
+			if ("type" in part && typeof part.type === "string" && !part.type.includes("text")) continue;
+			s += part.text;
+		}
+	}
+	return s;
 }
 
 function buildBody(model: string, effortSent: string | null, cacheKey: string): { endpoint: string; body: Record<string, unknown> } {
@@ -239,53 +290,100 @@ async function runAttempt(
 		const decoder = new TextDecoder();
 		let buf = "";
 		const isResponses = endpoint === "/v1/responses";
+		/** Split off complete CRLF-tolerant SSE blocks; keep the tail buffered. */
+		const takeBlocks = (flush: boolean): string[] => {
+			if (flush) {
+				const tail = buf;
+				buf = "";
+				return tail === "" ? [] : [tail];
+			}
+			const parts = buf.split(/\r?\n\r?\n/);
+			buf = parts.pop() ?? "";
+			return parts;
+		};
+		/** Handle one parsed SSE data payload. Mutates row/terminal state. */
+		const handlePayload = (json: unknown, block: string, eventName: string | null): void => {
+			if (!json || typeof json !== "object") return;
+			if (isResponses) {
+				const t = strField(json, "type") ?? eventName ?? "";
+				if (t.includes("reasoning") || t.includes("thinking")) {
+					const txt = responsesAnswerText(json);
+					if (txt !== null) row.totalReasonChars += txt.length;
+					return;
+				}
+				if (t.includes("completed") || t.includes("response.done") || t.includes("incomplete") || t.includes("failed")) {
+					// Fallback: full-text walk, only when no delta seen (no double-count).
+					if (firstAnswerAt === null) {
+						const withResp = "response" in json ? json.response : json;
+						const full = walkCompletedResponse(withResp);
+						if (full.length > 0) {
+							notes.push("completed-fallback");
+							markAnswer(full.length);
+						}
+					}
+					return;
+				}
+				const txt = responsesAnswerText(json);
+				if (txt !== null) {
+					if (sniffThinking(block) && t !== "response.output_text.delta") {
+						row.totalReasonChars += txt.length;
+					} else {
+						markAnswer(txt.length);
+					}
+				}
+			} else {
+				const { content, reasoning } = deltaContent(json);
+				// Reasoning-only deltas carry content:"" during thinking; only
+				// non-empty content is ANSWER (TTFB source).
+				if (content !== null && content.length > 0) markAnswer(content.length);
+				if (reasoning !== null) row.totalReasonChars += reasoning.length;
+			}
+		};
+		const handleBlock = (block: string): void => {
+			if (block.trim() === "") return;
+			if (block.trim() === "[DONE]") { terminalSeen = true; terminalAt = terminalAt ?? Date.now(); return; }
+			// Upstream keepalives (": keep-alive") ride this framing — skip them.
+			if (block.trim().split(/\r?\n/).every((l) => l.trimStart().startsWith(":"))) return;
+			if (!terminalSeen) {
+				for (const m of TERMINAL_MARKERS) {
+					if (block.includes(m)) { terminalSeen = true; terminalAt = Date.now(); break; }
+				}
+			}
+			let eventName: string | null = null;
+			const dataLines: string[] = [];
+			for (const line of block.split(/\r?\n/)) {
+				const tl = line.trimStart();
+				if (tl.startsWith("event:")) eventName = tl.slice(6).trim();
+				else if (tl.startsWith("data:")) dataLines.push(tl.slice(5).trimStart());
+			}
+			if (eventName !== null && /response\.(completed|done|failed|incomplete)/.test(eventName)) {
+				terminalSeen = true;
+				terminalAt = terminalAt ?? Date.now();
+			}
+			if (dataLines.length === 0) return;
+			const joined = dataLines.join("\n").trim();
+			if (joined === "[DONE]") { terminalSeen = true; terminalAt = terminalAt ?? Date.now(); return; }
+			if (!joined) return;
+			let parsed = false;
+			try {
+				handlePayload(JSON.parse(joined), block, eventName);
+				parsed = true;
+			} catch { /* try per-line below */ }
+			if (!parsed) {
+				for (const dl of dataLines) {
+					const p = dl.trim();
+					if (!p || p === "[DONE]") continue;
+					try { handlePayload(JSON.parse(p), block, eventName); } catch { /* non-JSON keepalive */ }
+				}
+			}
+		};
 		for (;;) {
 			const { done, value } = await reader.read();
 			if (value && value.length > 0) buf += decoder.decode(value, { stream: !done });
-			// Split complete SSE events (blank-line delimited); keep tail. Upstream
-			// keepalives (": keep-alive") also ride this framing — skip them.
-			let idx: number;
-			while ((idx = buf.indexOf("\n\n")) >= 0) {
-				const block = buf.slice(0, idx);
-				buf = buf.slice(idx + 2);
-				if (block.trim() === "" || block.trim().split("\n").every((l) => l.startsWith(":"))) continue;
-				if (!terminalSeen) {
-					for (const m of TERMINAL_MARKERS) {
-						if (block.includes(m)) { terminalSeen = true; terminalAt = Date.now(); break; }
-					}
-				}
-				// Extract data payloads.
-				const dataLines = block.split("\n").filter((l) => l.startsWith("data:"));
-				for (const dl of dataLines) {
-					const payload = dl.slice(5).trim();
-					if (payload === "[DONE]") { terminalSeen = true; terminalAt = terminalAt ?? Date.now(); continue; }
-					if (!payload || payload === "[DONE]") continue;
-					let json: unknown = null;
-					try { json = JSON.parse(payload); } catch { /* non-JSON keepalive */ }
-					if (!json || typeof json !== "object") continue;
-					if (isResponses) {
-						const t = strField(json, "type");
-						const delta = strField(json, "delta");
-						if (t === "response.output_text.delta" && delta !== null) {
-							markAnswer(delta.length);
-						} else if (t !== null && (t.includes("reasoning") || t.includes("thinking")) && delta !== null) {
-							row.totalReasonChars += delta.length;
-						} else if (delta !== null && sniffThinking(block)) {
-							// Thinking-flavored event outside the canonical names: count as
-							// reasoning, never as answer.
-							row.totalReasonChars += delta.length;
-						}
-					} else {
-						const { content, reasoning } = deltaContent(json);
-						// Kilo streams reasoning-only deltas with content:"" during
-						// thinking; only non-empty content is ANSWER (TTFB source).
-						if (content !== null && content.length > 0) markAnswer(content.length);
-						if (reasoning !== null) row.totalReasonChars += reasoning.length;
-					}
-				}
-			}
+			for (const block of takeBlocks(false)) handleBlock(block);
 			if (done) break;
 		}
+		for (const block of takeBlocks(true)) handleBlock(block);
 		try { await reader.cancel().catch(() => {}); } catch { /* already closed */ }
 	} catch (e) {
 		notes.push(`fetch error: ${e instanceof Error ? e.message.slice(0, 160) : String(e).slice(0, 160)}`);

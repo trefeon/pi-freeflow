@@ -514,6 +514,31 @@ export function validateDeployProjectName(
  }
  return { ok: true, name: clean };
 }
+/**
+ * /freeflow update restarts the daemon the session is actually attached to: a
+ * walked port must not keep serving the old build after a successful update.
+ * Three indirections keep that contract testable without module mocking — the
+ * update-step runner, the attached-port lookup and the killer. Production never
+ * calls the setter; the defaults are the real spawnWithProgress, the real
+ * getClientPort() || PORT and the real killPortHolder.
+ */
+let updateStepRunner = spawnWithProgress;
+let attachedPortResolver = (): number => getClientPort() || PORT;
+let attachedPortKiller = (port: number): Promise<unknown> => killPortHolder(port);
+
+/** Test seam for the /freeflow update restart path (null restores the real deps). */
+export function _setUpdateRestartDepsForTest(
+ opts: {
+  runUpdateStep?: (cmd: string, args: string[], ctx: ExtensionContext) => Promise<number>;
+  resolveAttachedPort?: () => number;
+  killAttachedPort?: (port: number) => Promise<unknown>;
+ } | null,
+): void {
+ updateStepRunner = opts?.runUpdateStep ?? spawnWithProgress;
+ attachedPortResolver = opts?.resolveAttachedPort ?? ((): number => getClientPort() || PORT);
+ attachedPortKiller = opts?.killAttachedPort ?? ((port: number): Promise<unknown> => killPortHolder(port));
+}
+
 export function createCommandSpec(
  _pi: ExtensionAPI,
  onCatalogRefreshed?: (models: RegisteredModel[]) => void,
@@ -1256,7 +1281,7 @@ export function createCommandSpec(
          piAvailable: isCommandAvailable("pi"),
         })) {
          if (lastStep !== "") ctx.ui.notify(`${lastStep} exited ${code} — trying ${step.manual}…`, "info");
-         code = await spawnWithProgress(step.cmd, step.args, ctx);
+         code = await updateStepRunner(step.cmd, step.args, ctx);
          manual = step.manual;
          lastStep = step.manual;
          if (code === 0) break;
@@ -1272,11 +1297,13 @@ export function createCommandSpec(
            "info",
           );
           manual = plan.manual;
-          code = await spawnWithProgress(plan.cmd, plan.args, ctx);
+          code = await updateStepRunner(plan.cmd, plan.args, ctx);
          }
         }
         if (code === 0) {
-         try { await killPortHolder(getClientPort() || PORT); } catch { }
+         // Restart the daemon that is actually attached — a walked port must
+         // not leave the old build serving after a successful update.
+         try { await attachedPortKiller(attachedPortResolver()); } catch { }
          ctx.ui.notify(`Updated to ${latest} and restarted proxy daemon`, "info");
         } else {
          ctx.ui.notify(

@@ -18,7 +18,6 @@ import assert from "node:assert/strict";
 import {
 	OMP_CUSTOM_TOOL_NAMES,
 	buildFindGlobRestore,
-	restoreToolChoiceForCaller,
 	restoreToolNameForCaller,
 	retargetToolChoiceForUpstream,
 	translateToolsForPath,
@@ -400,7 +399,7 @@ test("omp usage: OMP glob untouched, never triggers find restore", () => {
 	assert.equal(restoreToolNameForCaller("read", restore), "read");
 });
 
-test("omp usage: tool_choice string + named variants round-trip, never imposed", () => {
+test("omp usage: tool_choice string + named variants carried upstream, never imposed", () => {
 	const globOnly = buildFindGlobRestore([inputFor("chat", OMP_FIXTURES.find((f) => f.name === "glob")!)]);
 	assert.equal(globOnly.renamedFindToGlob, false);
 	assert.equal(retargetToolChoiceForUpstream("auto", globOnly), "auto", "string auto carried");
@@ -415,17 +414,6 @@ test("omp usage: tool_choice string + named variants round-trip, never imposed",
 		{ type: "function", function: { name: "read" } },
 		"chat named variant carried upstream",
 	);
-	assert.deepEqual(
-		restoreToolChoiceForCaller({ type: "function", name: "read" }, globOnly),
-		{ type: "function", name: "read" },
-		"named variant restored verbatim",
-	);
-	assert.deepEqual(
-		restoreToolChoiceForCaller({ type: "function", function: { name: "read" } }, globOnly),
-		{ type: "function", function: { name: "read" } },
-		"chat named variant restored verbatim",
-	);
-	assert.equal(restoreToolChoiceForCaller("auto", globOnly), "auto", "string choice never rewritten");
 });
 // Settings-gated OMP custom tools (sdk.ts: generate_image rides
 // generate_image.enabled, tts rides speechgen.enabled). CustomToolAdapter wire

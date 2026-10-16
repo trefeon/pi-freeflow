@@ -4,9 +4,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { createCommandSpec, updateStatusBar } from "../src/commands.ts";
-import { DEBUG_STATE_FILE, LOG_FILE, RELAY_STATE_FILE } from "../src/config.ts";
+import { _setUpdateRestartDepsForTest, createCommandSpec, updateStatusBar } from "../src/commands.ts";
+import { getClientPort } from "../src/client.ts";
+import { DEBUG_STATE_FILE, LOG_FILE, PORT, RELAY_STATE_FILE } from "../src/config.ts";
 import { _resetDebugStateCacheForTest } from "../src/logger.ts";
 import {
 	getActiveRelayState,
@@ -207,18 +209,151 @@ test("command spec: /freeflow logs --follow tails via setInterval 1s", async () 
 	}
 });
 
-// /freeflow update restarts the proxy on the attached port (getClientPort() ||
-// PORT), never on the base port, so a walked port cannot leave a stale daemon
-// behind. Proving that needs to observe killPortHolder, which commands.ts (and
-// updater.ts) import as a direct named export from proxy.ts: the suite runs
-// without --experimental-test-module-mocks, so the binding cannot be stubbed,
-// and the only unmocked alternative (bind a port, then kill it) is off limits
-// for unit tests. Skipped deliberately rather than faked.
-test(
-	"command spec: /freeflow update restarts the attached proxy port",
-	{ skip: "killPortHolder is a direct named import; no module-mock flag in the test script" },
-	() => {},
-);
+/**
+ * Make the /freeflow update environment deterministic for one test: package
+ * managers on PATH, the registry version and the three restart dependencies.
+ * The update command probes the real PATH for host/global managers, so omp/pi/
+ * npm shims go first on PATH — they are never executed (the step runner is
+ * injected), they only answer the availability probe. The registry fetch is
+ * stubbed, and _setUpdateRestartDepsForTest swaps the step runner, the
+ * attached-port lookup and the killer, which the suite cannot stub as direct
+ * imports. Everything is restored on the way out.
+ */
+async function withDeterministicUpdateEnv(
+	deps: NonNullable<Parameters<typeof _setUpdateRestartDepsForTest>[0]>,
+	fn: () => Promise<void>,
+): Promise<void> {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-freeflow-update-shim-"));
+	const prevPath = process.env["PATH"];
+	const realFetch = globalThis.fetch;
+	try {
+		for (const cmd of ["omp", "pi", "npm"]) {
+			if (process.platform === "win32") {
+				fs.writeFileSync(path.join(dir, `${cmd}.cmd`), "@echo off\r\nexit /b 0\r\n");
+			} else {
+				fs.writeFileSync(path.join(dir, cmd), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+			}
+		}
+		process.env["PATH"] = dir + path.delimiter + (prevPath ?? "");
+		globalThis.fetch = (async () => ({
+			ok: true,
+			json: async () => ({ version: "99.0.0" }),
+		})) as unknown as typeof fetch;
+		_setUpdateRestartDepsForTest(deps);
+		await fn();
+	} finally {
+		_setUpdateRestartDepsForTest(null);
+		globalThis.fetch = realFetch;
+		if (prevPath === undefined) delete process.env["PATH"];
+		else process.env["PATH"] = prevPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// /freeflow update restarts the proxy the session is actually attached to —
+// getClientPort() || PORT, never the base port alone — so a walked port cannot
+// leave a stale daemon serving the old build. Deleting the kill from the
+// handler fails these tests; an unconditional kill fails the failed-update case.
+test("command spec: /freeflow update kills the process on the attached proxy port", async () => {
+	const walkedPort = PORT + 1; // any port other than the base one
+	const killed: number[] = [];
+	const ran: string[] = [];
+	const events: string[] = [];
+	await withDeterministicUpdateEnv(
+		{
+			runUpdateStep: (cmd, args) => {
+				ran.push(`${cmd} ${args.join(" ")}`);
+				return Promise.resolve(0);
+			},
+			resolveAttachedPort: () => walkedPort,
+			killAttachedPort: (port) => {
+				killed.push(port);
+				events.push("kill");
+				return Promise.resolve(true);
+			},
+		},
+		async () => {
+			const spec = createCommandSpec(mockApi);
+			const { ctx, notifications } = createMockContext();
+			const uiNotify = ctx.ui.notify.bind(ctx.ui);
+			ctx.ui.notify = (message, type) => {
+				events.push(`notify:${message}`);
+				return uiNotify(message, type);
+			};
+
+			await spec.handler("update", ctx);
+
+			assert.ok(ran.length > 0, "the update step must run before the restart");
+			assert.deepEqual(
+				killed,
+				[walkedPort],
+				"a successful update must kill the process holding the attached port, not the base one",
+			);
+			const restarted = events.findIndex((e) => e.includes("restarted proxy daemon"));
+			assert.ok(restarted >= 0, "a successful update must announce the restart");
+			assert.ok(
+				events.indexOf("kill") >= 0 && events.indexOf("kill") < restarted,
+				"the kill must happen before the restart is announced",
+			);
+			assert.ok(
+				notifications.some((n) => n.message.includes("99.0.0")),
+				"the update must report the version it moved to",
+			);
+		},
+	);
+});
+
+test("command spec: /freeflow update restarts on getClientPort() with no walked port", async () => {
+	const killed: number[] = [];
+	await withDeterministicUpdateEnv(
+		{
+			runUpdateStep: () => Promise.resolve(0),
+			killAttachedPort: (port) => {
+				killed.push(port);
+				return Promise.resolve(true);
+			},
+		},
+		async () => {
+			const spec = createCommandSpec(mockApi);
+			const { ctx } = createMockContext();
+
+			await spec.handler("update", ctx);
+
+			assert.deepEqual(
+				killed,
+				[getClientPort() || PORT],
+				"the default restart target is the attached client port, else the base port",
+			);
+		},
+	);
+});
+
+test("command spec: /freeflow update leaves the live daemon alone when the updater fails", async () => {
+	const killed: number[] = [];
+	await withDeterministicUpdateEnv(
+		{
+			runUpdateStep: () => Promise.resolve(1),
+			resolveAttachedPort: () => PORT + 1,
+			killAttachedPort: (port) => {
+				killed.push(port);
+				return Promise.resolve(true);
+			},
+		},
+		async () => {
+			const spec = createCommandSpec(mockApi);
+			const { ctx, notifications } = createMockContext();
+
+			await spec.handler("update", ctx);
+
+			assert.deepEqual(killed, [], "a failed update must not kill the running proxy daemon");
+			assert.ok(
+				notifications.some((n) => n.type === "warning" && n.message.includes("Update failed")),
+				"a failed update must report the failure instead of restarting",
+			);
+		},
+	);
+});
+
 test("command spec: /freeflow url with a rejected URL warns instead of throwing", async () => {
 	await withSavedDiskState(async () => {
 		setActiveRelayState(

@@ -32,9 +32,9 @@
  * - First-seen wins on duplicate names, compared case-insensitively on the
  *   upstream name (so `Bash` never duplicates `bash`, `find` collapses with
  *   `glob`). Re-translating translated output adds zero tools (idempotent).
- * - `tool_choice` is never imposed; use retargetToolChoiceForUpstream /
- *   restoreToolChoiceForCaller to carry a caller choice across the find->glob
- *   rename in both directions.
+ * - `tool_choice` is never imposed; use retargetToolChoiceForUpstream to carry
+ *   a caller choice across the find->glob rename. Request-side only: no
+ *   response path carries a choice back to the caller.
  */
 
 /** Compat placeholder tools the upstream gate expects (all lowercase). */
@@ -528,11 +528,6 @@ function retargetChoice(value: unknown, from: string, to: string): unknown {
 export function retargetToolChoiceForUpstream(choice: unknown, restore: FindGlobRestore): unknown {
  if (!restore.renamedFindToGlob) return choice;
  return retargetChoice(choice, "find", "glob");
-}
-/** Carry an upstream `tool_choice` back to the caller (`glob`->`find`). */
-export function restoreToolChoiceForCaller(choice: unknown, restore: FindGlobRestore): unknown {
- if (!restore.renamedFindToGlob) return choice;
- return retargetChoice(choice, "glob", "find");
 }
 /** Extra top-level caller fields survive cross-shape conversion verbatim. */
 function carryExtraFields(
