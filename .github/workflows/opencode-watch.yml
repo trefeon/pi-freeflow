@@ -10,6 +10,10 @@ permissions:
   contents: write
   issues: write
 
+concurrency:
+  group: opencode-watch
+  cancel-in-progress: false
+
 jobs:
   watch:
     name: Check Upstream OpenCode Drift
@@ -75,10 +79,11 @@ jobs:
           # Ensure label exists in repository
           gh label create "$LABEL" --description "Upstream OpenCode drift detected" --color "d73a4a" --force || true
 
-          # Fall back to a minimal inline body when the report file is missing
-          BODY_ARGS="--body-file drift-report.md"
+          # Materialize the fallback so gh is always handed a file. A quoted
+          # "--body <text>" string kept in a variable is word-split and reaches
+          # gh as a broken argument list.
           if [ ! -f drift-report.md ]; then
-            BODY_ARGS="--body \"OpenCode upstream drift detected but drift-report.md is missing. See workflow logs.\""
+            printf '%s\n' "OpenCode upstream drift detected but drift-report.md is missing. See workflow logs." > drift-report.md
           fi
 
           # Check for existing open issue with the opencode-drift label
@@ -86,16 +91,14 @@ jobs:
 
           if [ -n "$EXISTING_ISSUE" ]; then
             echo "Updating existing drift issue #$EXISTING_ISSUE"
-            # shellcheck disable=SC2086
-            gh issue comment "$EXISTING_ISSUE" $BODY_ARGS
+            gh issue comment "$EXISTING_ISSUE" --body-file drift-report.md
           else
             echo "Creating new drift issue"
             CURRENT_DATE=$(date -u +'%Y-%m-%d')
-            # shellcheck disable=SC2086
             gh issue create \
               --title "🚨 OpenCode Upstream Drift Detected (${CURRENT_DATE})" \
               --label "$LABEL" \
-              $BODY_ARGS
+              --body-file drift-report.md
           fi
 
       - name: Update State and Commit
@@ -112,7 +115,26 @@ jobs:
 
           if ! git diff --cached --quiet; then
             git commit -m "chore(watch): update opencode watch state [skip ci]"
-            git push
+
+            # A concurrent commit on main would strand the drift baseline, so
+            # rebase onto the latest main before pushing and retry the push.
+            git pull --rebase --autostash
+
+            push_ok=0
+            for attempt in 1 2 3; do
+              if git push; then
+                push_ok=1
+                break
+              fi
+              echo "Push attempt $attempt failed; rebasing on the latest main and retrying"
+              sleep 5
+              git pull --rebase --autostash
+            done
+
+            if [ "$push_ok" -ne 1 ]; then
+              echo "::error::Failed to push the opencode watch state after 3 attempts"
+              exit 1
+            fi
           else
             echo "No state changes to commit"
           fi
