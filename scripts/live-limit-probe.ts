@@ -103,7 +103,6 @@ const plan: Array<() => Promise<ProbeResult>> = [
 	() => probeMax("nvidia/nemotron-3.5-lightning:free", "lightning kilo max", 70_000),
 	() => probeMax("nvidia/nemotron-3-super-120b-a12b:free", "super max", 263_000),     // >262,144 cap
 	() => probeMax("stealth/glyph-cluster", "glyph max", 257_000),      // >256,000 cap?
-	() => probeMax("stepfun/step-5-preview-free", "step5 kilo max", 65_000), // >64,000 cap?
 	() => probeMax("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "nano-omni max", 70_000),
 ];
 

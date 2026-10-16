@@ -216,30 +216,68 @@ export const OPENCODE_MODELS: ModelDef[] = [
   },
  },
  {
- // Added 2026-10-09: replaces fledge-alpha-free (withdrawn upstream —
- // absent from the live list, chat 401 "not supported"). Live on the Zen
- // list; gated-lane 403 matches the working models from a refused egress,
- // so it rides the same fingerprint path. Specs per models.dev
- // (opencode/step-5-preview-free) + StepFun docs, NOT the enrichModelDef
- // substring heuristic (which yields reasoning:false / 262K / text-only):
- // 1M ctx, 64K max output, text+image+video, efforts low/medium/high only.
- // minimal is explicitly null (omitting the key leaves it selectable in
- // the host); xhigh/max are unsupported upstream.
- id: "step-5-preview-free",
- name: "Step 5 Preview [OpenCode]",
- reasoning: true,
- contextWindow: 1_000_000,
- maxTokens: 65_536,
- input: ["text", "image", "video"],
- thinkingLevelMap: {
-  off: null,
-  minimal: null,
-  low: "low",
-  medium: "medium",
-  high: "high",
-  xhigh: null,
-  max: null,
+  // Added 2026-10-16 (issue #71 drift): Zen v1.19.2 added this free id;
+  // served through the fingerprint path (chat 200 with tools + stream).
+  // Not published on pi.dev yet, and models.dev's 200,000 context is
+  // contradicted by probe: a marker planted at 90% depth (~250K words) is
+  // recalled, and only above ~1M words does the gateway refuse with
+  // context_length_exceeded. Declared 1,000,000 like its Zen siblings and
+  // the Kilo twin (z-ai/glm-5.3-flash, 1,048,576 in this catalog); the
+  // 450K/700K-word recall probes timed out upstream and stayed inconclusive.
+  // maxTokens 32,000 per models.dev — the gateway accepted up to 131,072,
+  // and acceptance is not a cap, so the published figure stays the budget.
+  // Effort ladder probed level-by-level 2026-10-16: minimal/low/medium/high/
+  // xhigh/max all answer 200 (an unsupported value answers 400
+  // [invalid_value], so the gateway validates per model), and minimal vs max
+  // visibly changes reasoning length. Chat is the only native shape
+  // (/v1/responses answers 400 "Model does not support this protocol"),
+  // so `api` stays unset. Vision verified live (a 1x1 PNG reads back as a
+  // colour); video/pdf from the published entry stay unverified and are not
+  // offered.
+  id: "glm-5.3-flash-free",
+  name: "GLM-5.3 Flash [OpenCode]",
+  reasoning: true,
+  contextWindow: 1_000_000,
+  maxTokens: 32_000,
+  input: ["text", "image"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: "minimal",
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: "max",
+  },
  },
+ {
+  // Added 2026-10-16 (issue #71 drift): Zen v1.19.2 added this free id.
+  // Specs agree across pi.dev and models.dev (262,144 ctx / 65,536 max,
+  // text-only) and the boundary probe matches: a marker at 90% depth is
+  // recalled at ~220K words and the gateway refuses ~250K words (400), with
+  // a silent no-recall at ~240K — the window ends right about there.
+  // maxTokens 65,536 published; the gateway accepted 131,072, which is
+  // acceptance, not a cap. Effort ladder: low/medium/high/xhigh/max probed
+  // 200 with visibly different reasoning lengths; `minimal` answers 200 too
+  // but stays hidden because the published ladder starts at low (same class
+  // as nemotron's tolerated-but-hidden `max`); `off` is null like everywhere.
+  // Chat-only (/v1/responses 400 protocol). Text-only: an image probe
+  // produced no answer.
+  id: "ll-alpha-free",
+  name: "LL Alpha [OpenCode]",
+  reasoning: true,
+  contextWindow: 262_144,
+  maxTokens: 65_536,
+  input: ["text"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: null,
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: "max",
+  },
  },
 {
   // Added 2026-10-15: new free model on the OpenCode Zen lane. Live-verified by
@@ -406,19 +444,6 @@ export const KILO_MODELS: ModelDef[] = [
   contextWindow: 200_000,
   maxTokens: 65_536,
   input: ["text", "image"],
-  thinkingFormat: "openrouter",
-  thinkingLevelMap: KILO_REASONING_MAP,
- },
- {
-  // Added 2026-10-09: replaces step-3.7-flash (demoted to paid upstream —
-  // :free ID 404s keyless). Live on Kilo free list (isFree:true, 0/0
-  // pricing, 1M ctx) + keyless chat served (429 provider concurrency).
-  id: "stepfun/step-5-preview-free",
-  name: "Step 5 Preview [Kilo]",
-  reasoning: true,
-  contextWindow: 1_000_000,
- maxTokens: 65_536,
- input: ["text", "image", "video"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
  },
@@ -656,7 +681,7 @@ export const MODEL_ALIASES: Record<string, string> = {
  "nemotron-3-super": "nvidia/nemotron-3-super-120b-a12b:free",
  "north-mini-code": "cohere/north-mini-code:free",
  "lfm-2.5": "liquid/lfm-2.5-2.6b:free",
- "step-5-preview:kilo": "stepfun/step-5-preview-free",
+ "glm-5.3-flash": "glm-5.3-flash-free",
  "glyph-cluster": "stealth/glyph-cluster",
  "inkling-small": "thinkingmachines/inkling-small:free",
  "mimo-v2.6-flash": "mimo-v2.6-flash-free",
@@ -664,7 +689,7 @@ export const MODEL_ALIASES: Record<string, string> = {
  "space-bunny": "space-bunny-free",
  "longcat-2.5-preview": "longcat-2.5-preview-free",
  "longcat": "longcat-2.5-preview-free",
- "step-5-preview": "step-5-preview-free",
+ "ll-alpha": "ll-alpha-free",
  "deepseek-v4.1-flash": "deepseek-v4.1-flash-free",
  // provider-prefixed short aliases (slash-normalized)
  "laguna-s-2.1:free": "poolside/laguna-s-2.1:free",

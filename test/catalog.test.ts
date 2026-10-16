@@ -212,6 +212,15 @@ test("refreshCatalog overlays a partial cache without losing static ids or the c
 		assert.equal(kept.maxTokens, entry.maxTokens);
 	}
 });
+test("step-5-preview entries stay dead across both lanes (2026-10-16)", () => {
+	assert.equal(DEAD_MODEL_IDS.has("step-5-preview-free"), true);
+	assert.equal(DEAD_MODEL_IDS.has("stepfun/step-5-preview-free"), true);
+	assert.equal(isFreeCatalogId("step-5-preview-free"), false);
+	assert.equal(isFreeCatalogId("stepfun/step-5-preview-free"), false);
+	assert.equal(ALL_MODELS.some((m) => m.id === "step-5-preview-free"), false);
+	assert.equal(ALL_MODELS.some((m) => m.id === "stepfun/step-5-preview-free"), false);
+});
+
 test("union-alpha is a dead model id (pruned, never re-enters)", () => {
 	assert.equal(DEAD_MODEL_IDS.has("union-alpha"), true);
 	assert.equal(isFreeCatalogId("union-alpha"), false);

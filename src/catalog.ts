@@ -110,6 +110,15 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "inclusionai/ling-3.1-flash",
  // ovh-free/Mistral-7B-Instruct-v0.3: removed upstream by OVH (2026-10-15) — answers 404 no route matched.
  "ovh-free/Mistral-7B-Instruct-v0.3",
+ // step-5-preview-free: removed from the Zen free docs (2026-10-16 drift,
+ // v1.19.2) and the endpoint answers 400 "Model is unavailable" on both the
+ // chat and the responses shape — the same retirement signature as
+ // deepseek-v4-flash-free.
+ "step-5-preview-free",
+ // stepfun/step-5-preview-free: demoted to paid on Kilo (2026-10-16) —
+ // answers 401 PAID_MODEL_AUTH_REQUIRED while the sibling z-ai/glm-5.3-flash
+ // answers 200 keyless with the same request shape.
+ "stepfun/step-5-preview-free",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.

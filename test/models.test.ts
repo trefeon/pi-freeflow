@@ -60,10 +60,9 @@ test("1M context window models are properly configured", () => {
 		"muse-spark-1.3-contributor-free",
 		"cline-free/muse-spark-1.3-contributor",
 		"z-ai/glm-5.3-flash",
+		"glm-5.3-flash-free",
 		"mimo-v2.6-flash-free",
 		"deepseek-v4.1-flash-free",
-		"stepfun/step-5-preview-free",
-		"step-5-preview-free",
 		"space-bunny-free",
 		"longcat-2.5-preview-free",
 		"nemotron-3.5-lightning-free",
@@ -110,16 +109,6 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
  assert.equal(mimo.thinkingLevelMap?.xhigh, "high");
  assert.equal(getModelUpstream("mimo-v2.6-flash-free"), "opencode");
  assert.equal(getModelUpstream("mimo-v2.6-flash"), "opencode");
-	// Step 5 Preview replaces Step 3.7 Flash on the Kilo free list (2026-10-09)
-	const step = getModelDef("stepfun/step-5-preview-free");
-	assert.ok(step);
-	assert.equal(step.contextWindow, 1_000_000);
-	assert.equal(step.maxTokens, 65_536);
-	assert.equal(step.reasoning, true);
-	assert.deepEqual(step.input, ["text", "image", "video"]);
-	assert.equal(step.thinkingFormat, "openrouter");
-	assert.equal(getModelUpstream("stepfun/step-5-preview-free"), "kilo");
-	assert.equal(getModelUpstream("step-5-preview:kilo"), "kilo");
 	// Glyph Cluster is new on the Kilo free list (2026-10-09)
 	const glyph = getModelDef("stealth/glyph-cluster");
 	assert.ok(glyph);
@@ -130,24 +119,29 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
 	assert.equal(getModelUpstream("stealth/glyph-cluster"), "kilo");
 	assert.equal(getModelUpstream("glyph-cluster"), "kilo");
 });
-test("2026-10-09 Zen Step 5 Preview carries verified reasoning specs (issue #37)", () => {
- // The enrichModelDef substring heuristic yields reasoning:false / 262K /
- // text-only for this ID; the static entry must override all three and lock
- // efforts to the documented low/medium/high set (minimal explicitly null so
- // the host cannot select it).
- const step = getModelDef("step-5-preview-free");
- assert.ok(step);
- assert.equal(step.reasoning, true);
- assert.equal(step.contextWindow, 1_000_000);
- assert.equal(step.maxTokens, 65_536);
- assert.deepEqual(step.input, ["text", "image", "video"]);
- assert.equal(step.thinkingLevelMap?.minimal, null);
- assert.equal(step.thinkingLevelMap?.low, "low");
- assert.equal(step.thinkingLevelMap?.medium, "medium");
- assert.equal(step.thinkingLevelMap?.high, "high");
- assert.equal(step.thinkingLevelMap?.xhigh, null);
- assert.equal(getModelUpstream("step-5-preview"), "opencode");
-});
+	test("2026-10-16 Zen drift additions carry verified specs (issue #71)", () => {
+		const glm = getModelDef("glm-5.3-flash-free");
+		assert.ok(glm);
+		assert.equal(glm.reasoning, true);
+		assert.equal(glm.contextWindow, 1_000_000);
+		assert.equal(glm.maxTokens, 32_000);
+		assert.deepEqual(glm.input, ["text", "image"]);
+		assert.equal(glm.thinkingLevelMap?.minimal, "minimal");
+		assert.equal(glm.thinkingLevelMap?.max, "max");
+		assert.equal(getModelUpstream("glm-5.3-flash-free"), "opencode");
+		assert.equal(getModelUpstream("glm-5.3-flash"), "opencode");
+		const alpha = getModelDef("ll-alpha-free");
+		assert.ok(alpha);
+		assert.equal(alpha.reasoning, true);
+		assert.equal(alpha.contextWindow, 262_144);
+		assert.equal(alpha.maxTokens, 65_536);
+		assert.deepEqual(alpha.input, ["text"]);
+		assert.equal(alpha.thinkingLevelMap?.minimal, null);
+		assert.equal(alpha.thinkingLevelMap?.low, "low");
+		assert.equal(alpha.thinkingLevelMap?.max, "max");
+		assert.equal(getModelUpstream("ll-alpha-free"), "opencode");
+		assert.equal(getModelUpstream("ll-alpha"), "opencode");
+	});
 
 test("2026-09-28 pruned models stay out of the static catalog", () => {
  // Gone from the live Kilo free list: :free IDs absent, keyless 404.
@@ -254,10 +248,14 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   // 131,072 per models.dev.
   "nemotron-3.5-super-vl-free": { ctx: 1_000_000, max: 131_072, reasoning: true },
   "big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
-	// Added 2026-10-09 (live: Zen listing + gated-lane 403 matching working models;
-	// specs per models.dev opencode/step-5-preview-free + StepFun docs: 1M ctx / 64K max,
-	// text+image+video, efforts low/medium/high — minimal explicitly null, xhigh/max null)
-	"step-5-preview-free": { ctx: 1_000_000, max: 65_536, reasoning: true },
+	// Added 2026-10-16 (issue #71): Zen v1.19.2 free id, chat 200 through the
+	// fingerprint path; models.dev's 200,000 ctx contradicted by probe (recall
+	// at ~250K words, hard 400 only above ~1M words) — 1,000,000 declared like
+	// the Kilo twin (z-ai/glm-5.3-flash).
+	"glm-5.3-flash-free": { ctx: 1_000_000, max: 32_000, reasoning: true },
+	// Added 2026-10-16 (issue #71): pi.dev + models.dev agree on 262,144/65,536,
+	// text-only; boundary probe matches (recall ~220K words, 400 at ~250K).
+	"ll-alpha-free": { ctx: 262_144, max: 65_536, reasoning: true },
   // Added 2026-10-15 (live: Zen /v1/models listing + gated-lane 200 carrying the
   // full fingerprint; chat-only, /v1/responses answers 400 ModelProtocolUnsupported).
   // Context measured, NOT published: the catalog entry for this exact free id
@@ -283,7 +281,6 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 	// Retired 2026-10-09 (demoted to paid upstream — :free IDs 404 keyless)
 	// Added 2026-10-09 (live: Kilo free list isFree:true + keyless chat served; 256K/1M ctx)
 	"stealth/glyph-cluster": { ctx: 256_000, max: 256_000, reasoning: true },
-	"stepfun/step-5-preview-free": { ctx: 1_000_000, max: 65_536, reasoning: true },
   // Cline direct-only (per-user pool — https://api.cline.bot)
   "cline-free/muse-spark-1.3-contributor": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "z-ai/glm-5.3-flash": { ctx: 1_048_576, max: 131_072, reasoning: true },
@@ -371,8 +368,8 @@ test("new alias map resolves to canonical kilo ids", () => {
  assert.equal(resolveCanonicalModelId("inkling-small"), "thinkingmachines/inkling-small:free");
 	assert.equal(resolveCanonicalModelId("glyph-cluster"), "stealth/glyph-cluster");
 	assert.equal(resolveCanonicalModelId("mimo-v2.6-flash"), "mimo-v2.6-flash-free");
-	assert.equal(resolveCanonicalModelId("step-5-preview"), "step-5-preview-free");
-	assert.equal(resolveCanonicalModelId("step-5-preview:kilo"), "stepfun/step-5-preview-free");
+	assert.equal(resolveCanonicalModelId("glm-5.3-flash"), "glm-5.3-flash-free");
+	assert.equal(resolveCanonicalModelId("ll-alpha"), "ll-alpha-free");
 });
 
 test("union-alpha is pruned from the static catalog", () => {
@@ -383,6 +380,13 @@ test("union-alpha is pruned from the static catalog", () => {
 test("ling-3.1-flash-free is pruned from the static catalog", () => {
 	assert.equal(MODEL_MAP.get("ling-3.1-flash-free"), undefined, "ling-3.1-flash-free must not be in MODEL_MAP");
 	assert.equal(ALL_MODELS.some((m) => m.id === "ling-3.1-flash-free"), false, "ling-3.1-flash-free must not be in ALL_MODELS");
+});
+
+test("step-5-preview-free and its Kilo lane are pruned from the static catalog", () => {
+	for (const id of ["step-5-preview-free", "stepfun/step-5-preview-free"]) {
+		assert.equal(MODEL_MAP.get(id), undefined, id + " must not be in MODEL_MAP");
+		assert.equal(ALL_MODELS.some((m) => m.id === id), false, id + " must not be in ALL_MODELS");
+	}
 });
 
 test("2026-10-13 OVH lane: every id routes to the ovh upstream, never Zen", () => {
