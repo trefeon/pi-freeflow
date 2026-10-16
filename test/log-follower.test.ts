@@ -120,3 +120,43 @@ test("createLogFollower keeps a codepoint split across two reads intact", () => 
 	assert.deepEqual(lines, ["héllo"], "a split codepoint must decode, not become U+FFFD");
 	assert.ok(!lines[0].includes(String.fromCharCode(0xfffd)));
 });
+
+test("createLogFollower salvages the unread tail from the first archive after a rotation", () => {
+	resetLog("");
+	const follower = createLogFollower();
+	appendLog(`${INFO_LINE}\n`);
+	assert.deepEqual(follower.next(), [INFO_LINE]);
+	// A line lands, then the writer rotates before the next tick: the old
+	// live file becomes the archive and a fresh live file starts empty.
+	appendLog(`${WARN_LINE}\n`);
+	fs.renameSync(LOG_FILE, `${LOG_FILE}.1`);
+	const freshLine = "[2026-01-01T00:00:02.000Z] [INFO] fresh";
+	resetLog(`${freshLine}\n`);
+	try {
+		assert.deepEqual(
+			follower.next(),
+			[WARN_LINE, freshLine],
+			"the rotated tail and the fresh file must both be reported, in order",
+		);
+	} finally {
+		fs.rmSync(`${LOG_FILE}.1`, { force: true });
+	}
+});
+
+test("createLogFollower treats a shrunken file whose archive is smaller as truncation", () => {
+	resetLog("");
+	const follower = createLogFollower();
+	appendLog("y".repeat(120));
+	assert.deepEqual(follower.next(), []);
+	fs.writeFileSync(`${LOG_FILE}.1`, "short\n", "utf8");
+	try {
+		resetLog(`${INFO_LINE}\n`);
+		assert.deepEqual(
+			follower.next(),
+			[INFO_LINE],
+			"a smaller archive cannot hold the reported bytes — reset, never glue",
+		);
+	} finally {
+		fs.rmSync(`${LOG_FILE}.1`, { force: true });
+	}
+});

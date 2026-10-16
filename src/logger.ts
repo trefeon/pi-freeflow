@@ -385,9 +385,11 @@ export interface LogFollowerOptions {
  * already covered them, and rotation replaces the live file rather than
  * appending to it.
  *
- * Rotation/truncation: when the file is shorter than our byte offset the live
- * file was rotated away or truncated, so the follower restarts at byte 0 and
- * drops any partial-line carry — its prefix belongs to the discarded file.
+ * Rotation: a rotation renames the old live file to the first archive
+ * verbatim, so bytes appended between two ticks are salvaged from
+ * `.1[offset..]` before the follower re-anchors at the live file's start.
+ * A plain truncation (nothing holds those bytes) drops the carried partial
+ * line instead — its prefix belongs to the discarded file.
  */
 export function createLogFollower(
 	opts: LogFollowerOptions = {},
@@ -420,6 +422,31 @@ export function createLogFollower(
 		return true;
 	};
 
+	/** Read bytes [from, to) from one file; null when it cannot be read. */
+	const readRange = (file: string, from: number, to: number): Buffer | null => {
+		const wanted = to - from;
+		if (wanted <= 0) return Buffer.alloc(0);
+		const buf = Buffer.allocUnsafe(wanted);
+		try {
+			const fd = fs.openSync(file, "r");
+			try {
+				const read = fs.readSync(fd, buf, 0, wanted, from);
+				return buf.subarray(0, read);
+			} finally {
+				fs.closeSync(fd);
+			}
+		} catch {
+			return null;
+		}
+	};
+
+	/** Split one decoded read into complete filtered lines, holding the tail. */
+	const finish = (text: string): string[] => {
+		const parts = (carry + text).split("\n");
+		carry = parts.pop() ?? "";
+		return parts.filter((l) => l.length > 0 && matches(l)).slice(-maxLines);
+	};
+
 	return {
 		next(): string[] {
 			let size: number;
@@ -429,40 +456,35 @@ export function createLogFollower(
 				return []; // File missing — nothing to follow.
 			}
 
+			let chunk = "";
 			if (size < offset) {
-				// Rotation/truncation: the live file no longer contains the
-				// bytes we already reported, so restart from its beginning. The
-				// decoder goes with it: its pending partial sequence belongs to the
-				// discarded file and must not prefix the new file's first line.
-				offset = 0;
-				carry = "";
-				decoder = new StringDecoder("utf8");
-			}
-			if (size === offset) return [];
-
-			const wanted = size - offset;
-			const buf = Buffer.allocUnsafe(wanted);
-			let read = 0;
-			try {
-				const fd = fs.openSync(LOG_FILE, "r");
+				// Rotation or truncation: the live file no longer holds the bytes we
+				// already reported. A rotation renames the old live file to the first
+				// archive verbatim, so bytes appended after our last read are salvaged
+				// from there before re-anchoring at the live file's start.
+				let archivedSize = -1;
 				try {
-					read = fs.readSync(fd, buf, 0, wanted, offset);
-				} finally {
-					fs.closeSync(fd);
+					archivedSize = fs.statSync(`${LOG_FILE}.1`).size;
+				} catch { }
+				if (archivedSize > offset) {
+					const salvaged = readRange(`${LOG_FILE}.1`, offset, archivedSize);
+					if (salvaged) chunk += decoder.write(salvaged);
+				} else {
+					// Plain truncation: the old tail is gone for good — and so is the
+					// decoder's pending partial sequence, which must not prefix the new file.
+					carry = "";
+					decoder = new StringDecoder("utf8");
 				}
-			} catch {
-				return [];
+				offset = 0;
 			}
-			offset += read;
-
-			const chunk = carry + decoder.write(buf.subarray(0, read));
-			const parts = chunk.split("\n");
-			// A trailing element with no newline is an as-yet-unterminated line:
-			// carry it into the next call instead of reporting it as complete.
-			carry = parts.pop() ?? "";
-
-			const lines = parts.filter((l) => l.length > 0 && matches(l));
-			return lines.slice(-maxLines);
+			if (size > offset) {
+				const bytes = readRange(LOG_FILE, offset, size);
+				if (bytes === null) return chunk.length === 0 ? [] : finish(chunk);
+				offset += bytes.length;
+				chunk += decoder.write(bytes);
+			}
+			if (chunk.length === 0) return [];
+			return finish(chunk);
 		},
 	};
 }
