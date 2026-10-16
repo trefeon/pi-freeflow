@@ -97,7 +97,7 @@ test("createLogFollower returns [] when the log file is missing", () => {
 	assert.deepEqual(follower.next(), [INFO_LINE]);
 });
 
-test("createLogFollower never reads rotated archives", () => {
+test("createLogFollower ignores an archive while the live file is unchanged", () => {
 	resetLog(`${INFO_LINE}\n`);
 	const follower = createLogFollower();
 	try {
@@ -138,6 +138,7 @@ test("createLogFollower salvages the unread tail from the first archive after a 
 			[WARN_LINE, freshLine],
 			"the rotated tail and the fresh file must both be reported, in order",
 		);
+		assert.deepEqual(follower.next(), [], "salvaged lines must never be re-reported");
 	} finally {
 		fs.rmSync(`${LOG_FILE}.1`, { force: true });
 	}

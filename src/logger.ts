@@ -381,9 +381,10 @@ export interface LogFollowerOptions {
  * Follow mode must not re-read the whole file — plus every rotated archive —
  * once per tick, so a follower starts at the current end of LOG_FILE and each
  * next() returns only the complete lines appended since the previous call.
- * Rotated archives are never read: the one-shot tail printed before following
- * already covered them, and rotation replaces the live file rather than
- * appending to it.
+ * Steady-state archived content is never read: the one-shot tail printed
+ * before following already covered it, and rotation replaces the live file
+ * rather than appending to it. The rotation salvage window below is the only
+ * time an archive is read.
  *
  * Rotation: a rotation renames the old live file to the first archive
  * verbatim, so bytes appended between two ticks are salvaged from
