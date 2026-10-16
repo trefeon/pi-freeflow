@@ -975,3 +975,76 @@ test("chatResponsesSseFromChatCompletion emits response.output_text.delta so UI 
 	assert.ok(sse.includes("event: response.completed"), "must emit response.completed");
 	assert.ok(sse.includes("data: [DONE]"), "must terminate with [DONE]");
 });
+
+test("chatResponsesSseFromChatCompletion frames the message item so hosts keep the text", () => {
+	const chat = {
+		id: "chatcmpl_frames",
+		model: "cline-free/muse-spark-1.3-contributor",
+		choices: [{
+			message: { role: "assistant", content: "Hello from Cline!" },
+			finish_reason: "stop",
+		}],
+	};
+	const resp = chatResponsesJsonFromChatCompletion(chat, "cline-free/muse-spark-1.3-contributor");
+
+	const frames = chatResponsesSseFromChatCompletion(resp)
+		.split("\n\n")
+		.filter((block) => block.includes("data: ") && !block.includes("[DONE]"))
+		.map((block) => JSON.parse(block.slice(block.indexOf("data: ") + 6)) as Record<string, unknown>);
+
+	// The hosts' slot rule, reproduced (Pi createSlot/getSlot in
+	// api/openai-responses-shared.ts; OMP registerOpenItem/lookupOpenItem in
+	// providers/openai-shared.ts): a text slot exists only once
+	// `response.output_item.added` opened that output_index, and a keyed
+	// `response.output_text.delta` with no open slot is DROPPED. An answer
+	// framed as bare deltas therefore reached the caller as no assistant text.
+	const openSlots = new Map<number, string>();
+	const order: Record<string, number> = {};
+	let streamedText = "";
+	let addedItem: Record<string, unknown> | undefined;
+	let doneItem: Record<string, unknown> | undefined;
+	frames.forEach((frame, index) => {
+		const outputIndex = frame.output_index as number | undefined;
+		if (frame.type === "response.output_item.added") {
+			const added = frame.item as Record<string, unknown>;
+			if (added.type === "message" && outputIndex !== undefined) {
+				openSlots.set(outputIndex, String(added.id));
+				if (addedItem === undefined) { order.added = index; addedItem = added; }
+			}
+			return;
+		}
+		if (frame.type === "response.output_text.delta") {
+			if (outputIndex === undefined || !openSlots.has(outputIndex)) return; // dropped, exactly as the hosts drop it
+			if (!("firstDelta" in order)) order.firstDelta = index;
+			streamedText += String(frame.delta);
+			return;
+		}
+		if (frame.type === "response.output_item.done") {
+			const done = frame.item as Record<string, unknown>;
+			if (done.type === "message" && doneItem === undefined) { order.done = index; doneItem = done; }
+			return;
+		}
+		if (frame.type === "response.completed" && !("completed" in order)) order.completed = index;
+	});
+
+	assert.equal(streamedText, "Hello from Cline!", "a host applying its own slot rule must reconstruct the assistant text");
+	assert.ok(order.added < order.firstDelta, "the message item opens before its first text delta");
+	assert.ok(order.done > order.firstDelta, "the message item closes only after its text deltas");
+	assert.ok(order.done < order.completed, "the message item closes before the terminal response event");
+
+	// The item shape both hosts read at `added` (id for their text signature,
+	// status/content carrying the placeholder the real wire sends) and the final
+	// item re-stated at `done`.
+	assert.equal(addedItem?.type, "message");
+	assert.equal(typeof addedItem?.id, "string");
+	assert.equal(addedItem?.status, "in_progress");
+	assert.deepEqual(addedItem?.content, []);
+	const item = (resp.output as Array<Record<string, unknown>>)[0];
+	assert.equal(item.type, "message");
+	assert.equal(typeof item.id, "string");
+	assert.equal(addedItem?.id, item.id, "added and done must agree on the id");
+	assert.equal(item.role, "assistant");
+	assert.equal(item.status, "completed");
+	assert.deepEqual(item.content, [{ type: "output_text", text: "Hello from Cline!" }]);
+	assert.deepEqual(doneItem, item, "the done event re-states the final item, id included");
+});

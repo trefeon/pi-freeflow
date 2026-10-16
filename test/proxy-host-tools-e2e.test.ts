@@ -247,7 +247,7 @@ test("proxy e2e: responses non-stream stores false, flat tools, function_call re
 			{ type: "function_call", id: "fc_bash", name: "bash", arguments: '{"command":"ls"}' },
 			{ type: "function_call", id: "fc_ask", name: "ask", arguments: '{"question":"q?"}' },
 			{ type: "function_call", id: "fc_read", name: "read", arguments: '{"path":"x"}' },
-			{ type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] },
+			{ type: "message", id: "msg_done", role: "assistant", status: "completed", content: [{ type: "output_text", text: "done" }] },
 		],
 	};
 	const rawSse = `event: response.created\ndata: {"type":"response.created","response":{"id":"resp_e2e","status":"in_progress"}}\n\n`

@@ -750,11 +750,19 @@ export function chatResponsesJsonFromChatCompletion(chat: Record<string, unknown
  const message = firstChatMessage(chat);
  const model = typeof chat.model === "string" && chat.model.length > 0 ? chat.model : fallbackModel;
  const id = typeof chat.id === "string" ? chat.id.replace(/^chatcmpl/, "resp") : "resp_cline";
+ // Both hosts key their text block off the item id — Pi builds `textSignature`
+ // from item.id, OMP stores itemId — and each synthesizes a fallback when it
+ // is missing, so the message item carries one derived from the response id,
+ // the way upstream OpenAI ids share a suffix.
+ const messageId = `msg_${id.replace(/^resp[_-]?/, "")}`;
+ const choices = chat.choices;
+ const first = Array.isArray(choices) && choices.length > 0 && typeof choices[0] === "object" && choices[0] !== null ? (choices[0] as Record<string, unknown>) : {};
+ const status = first.finish_reason === "length" ? "incomplete" : "completed";
  const output: Record<string, unknown>[] = [];
  if (message) {
   const text = typeof message.content === "string" ? message.content : null;
   if (text !== null && text.length > 0) {
-   output.push({ type: "message", role: "assistant", content: [{ type: "output_text", text }] });
+   output.push({ type: "message", id: messageId, role: "assistant", status, content: [{ type: "output_text", text }] });
   }
   const toolCalls = message.tool_calls;
   if (Array.isArray(toolCalls)) {
@@ -768,15 +776,13 @@ export function chatResponsesJsonFromChatCompletion(chat: Record<string, unknown
    }
   }
  }
- const choices = chat.choices;
- const first = Array.isArray(choices) && choices.length > 0 && typeof choices[0] === "object" && choices[0] !== null ? (choices[0] as Record<string, unknown>) : {};
  const out: Record<string, unknown> = {
   id,
   object: "response",
   created_at: typeof chat.created === "number" ? chat.created : Math.floor(Date.now() / 1000),
   model,
   output,
-  status: first.finish_reason === "length" ? "incomplete" : "completed",
+  status,
  };
  if (chat.usage !== undefined) out.usage = chat.usage;
  return out;
@@ -787,6 +793,15 @@ export function chatResponsesJsonFromChatCompletion(chat: Record<string, unknown
  * (created + completed + DONE) so streamed responses-path clients get a
  * stream even though the upstream lane only serves chat. Round-trips through
  * sseToResponsesJson: the completed event carries the full object.
+ *
+ * Every output item is framed the way hosts consume streams: it opens with
+ * `response.output_item.added` before its deltas and closes with
+ * `response.output_item.done` after them. A host creates a slot only on
+ * `added` and DROPS a keyed delta that has no open slot (Pi
+ * api/openai-responses-shared.ts createSlot/getSlot; OMP
+ * providers/openai-shared.ts registerOpenItem/lookupOpenItem), so a message
+ * item emitted as bare `response.output_text.delta` frames left every
+ * chat-only lane answer blank on the caller side.
  */
 export function chatResponsesSseFromChatCompletion(resp: Record<string, unknown>): string {
  const head = { type: "response.created", response: { id: resp.id, object: "response", model: resp.model } };
@@ -796,15 +811,33 @@ export function chatResponsesSseFromChatCompletion(resp: Record<string, unknown>
   for (let idx = 0; idx < output.length; idx++) {
    const item = output[idx] as Record<string, unknown>;
    if (item && item.type === "message" && Array.isArray(item.content)) {
-    for (const part of item.content) {
-     const p = part as Record<string, unknown>;
-     if (p && p.type === "output_text" && typeof p.text === "string" && p.text.length > 0) {
-      out += `event: response.output_text.delta\ndata: ${JSON.stringify({
-       type: "response.output_text.delta",
-       output_index: idx,
-       delta: p.text,
-      })}\n\n`;
+    const parts = item.content as Record<string, unknown>[];
+    const hasText = parts.some((p) => p && p.type === "output_text" && typeof p.text === "string" && p.text.length > 0);
+    // An item carrying no text (a pure tool-call turn) stays unopened: opening
+    // and closing it would leave the host with an empty text block.
+    if (hasText) {
+     out += `event: response.output_item.added\ndata: ${JSON.stringify({
+      type: "response.output_item.added",
+      output_index: idx,
+      item: { type: "message", id: item.id, role: typeof item.role === "string" ? item.role : "assistant", status: "in_progress", content: [] },
+     })}\n\n`;
+     for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+      const p = parts[partIndex];
+      if (p && p.type === "output_text" && typeof p.text === "string" && p.text.length > 0) {
+       out += `event: response.output_text.delta\ndata: ${JSON.stringify({
+        type: "response.output_text.delta",
+        item_id: item.id,
+        output_index: idx,
+        content_index: partIndex,
+        delta: p.text,
+       })}\n\n`;
+      }
      }
+     out += `event: response.output_item.done\ndata: ${JSON.stringify({
+      type: "response.output_item.done",
+      output_index: idx,
+      item,
+     })}\n\n`;
     }
    } else if (item && item.type === "function_call") {
     out += `event: response.output_item.added\ndata: ${JSON.stringify({
