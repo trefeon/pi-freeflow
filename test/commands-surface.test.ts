@@ -494,7 +494,23 @@ function scriptedFetch(
    status,
    headers: { "content-type": "application/json" },
   });
- }) as typeof fetch;
+   }) as typeof fetch;
+}
+
+/**
+ * Make the deploy flow's polling/retry sleeps resolve immediately so
+ * platform build polls and probe retries never cost wall-clock time.
+ * Only ever paired with terminal-status stubs, so loops cannot spin unbounded.
+ */
+function instantTimers(t: test.TestContext): void {
+ const original = globalThis.setTimeout;
+ globalThis.setTimeout = ((cb: () => void) => {
+  queueMicrotask(cb);
+  return 0 as unknown as NodeJS.Timeout;
+ }) as unknown as typeof setTimeout;
+ t.after(() => {
+  globalThis.setTimeout = original;
+ });
 }
 
 test("command spec: /freeflow deploy vercel picker + confirm deploys and probes reachable", async (t) => {
@@ -506,7 +522,10 @@ test("command spec: /freeflow deploy vercel picker + confirm deploys and probes 
    "fetch",
    scriptedFetch((url, init) => {
     if (url.endsWith("/v1/models")) {
-     return { status: 200, body: {} }; // post-deploy probe
+     return { status: 200, body: {} }; // post-deploy reachability probe
+    }
+    if (url.endsWith("/inference/v1/chat/completions") && init?.method === "POST") {
+     return { status: 200, body: {} }; // post-deploy free-tier inference probe
     }
     if (url.includes("/v13/deployments/")) {
      return { body: { readyState: "READY", url: "relay-my-relay.vercel.app" } };
@@ -536,6 +555,49 @@ test("command spec: /freeflow deploy vercel picker + confirm deploys and probes 
   assert.ok(
    notifications.some((n) => n.message.includes("reachable")),
    `expected reachable probe note, got: ${JSON.stringify(notifications)}`,
+  );
+  assert.ok(
+   notifications.some((n) => n.message.includes("inference verified")),
+   `expected the free-tier inference probe to pass on a healthy relay, got: ${JSON.stringify(notifications)}`,
+  );
+ });
+});
+
+test("command spec: /freeflow deploy probes models (GET) then chat (POST) through the deployed relay URL", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  const liveUrl = "https://relay-probe-order.vercel.app";
+  const probed: Array<{ url: string; method: string }> = [];
+  t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
+   if (url.includes("/v1/models") || url.includes("/inference/v1/chat/completions")) {
+    probed.push({ url, method: init?.method ?? "GET" });
+    return { status: 200, body: {} };
+   }
+   if (url.includes("/v13/deployments/")) return { body: { readyState: "READY", url: "relay-probe-order.vercel.app" } };
+   if (url.includes("/v13/deployments") && init?.method === "POST") return { body: { id: "dep1", projectId: "proj1" } };
+   if (url.includes("/v9/projects/")) return { body: {} };
+   return { status: 500, body: {} };
+  }));
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({
+   selectValue: VERCEL_OPTION,
+   inputValues: ["fake-token-12345", "probe-order"],
+   confirmValue: true,
+  });
+  await spec.handler("deploy", ctx);
+
+  assert.equal(probed.length, 2, `expected exactly two post-deploy probes, got: ${JSON.stringify(probed)}`);
+  assert.equal(probed[0].url, `${liveUrl}/v1/models`, "reachability probe must GET the relay's models endpoint");
+  assert.equal(probed[0].method, "GET");
+  assert.equal(probed[1].url, `${liveUrl}/inference/v1/chat/completions`, "inference probe must POST the free-tier chat endpoint through the relay");
+  assert.equal(probed[1].method, "POST");
+  const done = notifications.find((n) => n.message.includes("Deployed & active"));
+  assert.ok(done, `deploy must report success, got: ${JSON.stringify(notifications)}`);
+  assert.match(
+   done.message,
+   /^✓ Deployed & active: https:\/\/relay-probe-order\.vercel\.app ✓ reachable \+ free-tier inference verified \(HTTP 200, \d+ms\)$/,
+   `verified copy expected, got: ${done.message}`,
   );
  });
 });
@@ -817,6 +879,99 @@ test("command spec: /freeflow deploy warns with exact retry/remove commands when
   assert.ok(done.message.includes(`/freeflow test ${liveUrl}`), "must give the exact retry probe command");
   assert.ok(done.message.includes(`/freeflow remove ${liveUrl}`), "must give the exact remove command");
   assert.equal(loadRelayState().url, liveUrl, "unreachable deploy stays active-primary by explicit warn, never silent");
+ });
+});
+
+test("command spec: /freeflow deploy warns when the relay answers /v1/models but rejects free-tier inference (403 FreeTierError)", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  const liveUrl = "https://relay-zen-gated-case.vercel.app";
+  let chatProbes = 0;
+  t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
+   if (url.endsWith("/v1/models")) return { status: 200, body: {} };
+   if (url.endsWith("/inference/v1/chat/completions") && init?.method === "POST") {
+    chatProbes++;
+    return { status: 403, body: { error: { type: "FreeTierError", message: "free tier requires the official client fingerprint" } } };
+   }
+   if (url.includes("/v13/deployments/")) return { body: { readyState: "READY", url: "relay-zen-gated-case.vercel.app" } };
+   if (url.includes("/v13/deployments") && init?.method === "POST") return { body: { id: "dep1", projectId: "proj1" } };
+   if (url.includes("/v9/projects/")) return { body: {} };
+   return { status: 500, body: {} };
+  }));
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({
+   selectValue: VERCEL_OPTION,
+   inputValues: ["fake-token-12345", "zen-gated"],
+   confirmValue: true,
+  });
+  await spec.handler("deploy", ctx);
+
+  const done = notifications.find((n) => n.message.includes("Deployed & active"));
+  assert.ok(done, `deploy must still activate, got: ${JSON.stringify(notifications)}`);
+  assert.equal(
+   done.message,
+   `✓ Deployed & active: ${liveUrl} ⚠ reachable, but the free-tier inference probe failed (HTTP 403) — this relay cannot serve OpenCode Zen traffic (its egress is transformed in flight). Run /freeflow test ${liveUrl} --chat to re-check, or /freeflow remove ${liveUrl} to drop it`,
+   "the generic failure note must name the reachable-but-gated state and both recovery commands",
+  );
+  assert.equal(chatProbes, 2, "the inference probe retries once before reporting failure");
+ });
+});
+
+test("command spec: /freeflow deploy deno warns up front and blames the User-Agent rewrite when inference is rejected", async (t) => {
+ await withSavedDiskState(async () => {
+  instantTimers(t);
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  const liveUrl = "https://relay-deno-gated.my-org.deno.net";
+  let fetchCalls = 0;
+  t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
+   fetchCalls++;
+   if (url.endsWith("/v1/models")) return { status: 200, body: {} };
+   if (url.endsWith("/inference/v1/chat/completions") && init?.method === "POST") {
+    return { status: 403, body: { error: { type: "FreeTierError", message: "unsupported client fingerprint" } } };
+   }
+   if (url.endsWith("/v2/revisions/rev-1")) {
+    return { body: { id: "rev-1", status: "succeeded", timelines: [{ name: "Production", context: "Production", hostnames: ["relay-deno-gated.my-org.deno.net"] }] } };
+   }
+   if (url.endsWith("/v2/apps/app-uuid-1/deploy") && init?.method === "POST") return { body: { id: "rev-1", status: "queued" } };
+   if (url.endsWith("/v2/apps") && init?.method === "POST") return { body: { id: "app-uuid-1", slug: "relay-deno-gated" } };
+   return { status: 500, body: { error: { message: `unexpected ${init?.method} ${url}` } } };
+  }));
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({
+   inputValues: ["ddo-fake-token", "relay-deno-gated"],
+   confirmValue: true,
+  });
+  // Snapshot the network counter when the pre-deploy warning fires: it must
+  // land before any deploy/probe traffic, not after a failed deployment.
+  let callsAtWarning: number | null = null;
+  const innerNotify = ctx.ui.notify;
+  ctx.ui.notify = (message: string, type?: "info" | "warning" | "error") => {
+   if (callsAtWarning === null && message.includes("Deno Deploy rewrites outbound User-Agent")) {
+    callsAtWarning = fetchCalls;
+   }
+   innerNotify(message, type);
+  };
+
+  await spec.handler("deploy deno", ctx);
+
+  const warning = notifications.find((n) => n.message.includes("Deno Deploy rewrites outbound User-Agent"));
+  assert.ok(warning, `deno deploy must warn about the User-Agent rewrite, got: ${JSON.stringify(notifications)}`);
+  assert.equal(warning.type, "warning", "the Deno caveat must surface as a warning");
+  assert.equal(callsAtWarning, 0, "the warning must precede the token prompt and every network call");
+  const warningIdx = notifications.indexOf(warning);
+  const doneIdx = notifications.findIndex((n) => n.message.includes("Deployed & active"));
+  assert.ok(doneIdx > warningIdx, "the warning must be pre-deploy, not a post-mortem");
+
+  const done = notifications[doneIdx];
+  assert.ok(done, `deploy must still activate, got: ${JSON.stringify(notifications)}`);
+  assert.equal(loadRelayState().url, liveUrl, "the deno relay still lands in the pool so Kilo keeps working");
+  assert.equal(
+   done.message,
+   `✓ Deployed & active: ${liveUrl} ⚠ reachable, but the free-tier inference probe failed — Deno Deploy rewrites the outbound User-Agent, which OpenCode Zen rejects; Kilo models still work through this relay. Run /freeflow test ${liveUrl} --chat to re-check, or /freeflow remove ${liveUrl} to drop it`,
+   "the deno note must blame the platform and keep the Kilo path explicit",
+  );
  });
 });
 

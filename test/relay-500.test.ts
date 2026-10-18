@@ -194,7 +194,7 @@ test("relay 500-variants: 501/505 surface immediately without rolling", async (t
 	}, { onRestore: () => resetAllRelayHealth() });
 });
 
-test("relay terminal: 400/403/404-generic surface without rolling", async (t) => {
+test("relay terminal: 400/404-generic surface without rolling", async (t) => {
 	await withIsolatedRelayFiles(async () => {
 		setActiveRelayState(poolState(), false);
 		resetAllRelayHealth();
@@ -208,14 +208,17 @@ test("relay terminal: 400/403/404-generic surface without rolling", async (t) =>
 			return stubResponse(nextStatus, cancelled, `{"error":"s${nextStatus}"}`);
 		});
 
-		for (const s of [400, 403, 404]) {
+		// 403 is deliberately out of this set: a relay-forwarded 403 is a
+		// relay-host fault (blocked egress fingerprint) and relayFetch rolls it
+		// like a 401 — the roll contract lives in relay.test.ts.
+		for (const s of [400, 404]) {
 			nextStatus = s;
 			const before = fetchMock.mock.callCount();
 			const out = await relayFetch(UPSTREAM_URL, { method: "POST" }, `t-term-${s}`);
 			assert.equal(out.status, s, `${s} must surface immediately`);
 			assert.equal(fetchMock.mock.callCount(), before + 1, `${s} must not roll to a sibling`);
 		}
-		assert.deepEqual(seenUrls, [RELAY_A, RELAY_A, RELAY_A], "terminal statuses never touch the sibling");
+		assert.deepEqual(seenUrls, [RELAY_A, RELAY_A], "terminal statuses never touch the sibling");
 	}, { onRestore: () => resetAllRelayHealth() });
 });
 

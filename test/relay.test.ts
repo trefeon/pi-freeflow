@@ -309,18 +309,100 @@ test("relayFetch rolls on a relay auth rejection (401) and cools the rejecting r
 	}
 });
 
-test("relayFetch keeps a 403 free-tier gate terminal (no roll, no penalty)", async (t) => {
+test("relayFetch rolls on a relay 403 (rejected egress fingerprint) and cools the relay", async (t) => {
+	_resetRollNotifyForTest();
 	resetAllRelayHealth();
-	const RELAY = "https://gated-relay.example.com";
+	const messages: string[] = [];
+	setStatusUi({
+		notify: (message: string) => {
+			messages.push(message);
+		},
+		setStatus() {},
+	} as unknown as Parameters<typeof setStatusUi>[0]);
+
+	const RELAY_403 = "https://gated-egress-relay.example.com";
+	const RELAY_OK = "https://healthy-relay.example.com";
 	const seen: string[] = [];
 	t.mock.method(globalThis, "fetch", async (input: string | URL) => {
-		seen.push(String(input));
-		return new Response(
-			JSON.stringify({
-				error: { code: "FreeTierError", message: "OpenCode's free tier can only be used from within OpenCode" },
-			}),
-			{ status: 403, headers: { "content-type": "application/json" } },
+		const target = String(input);
+		seen.push(target);
+		if (target === RELAY_403) {
+			// Exactly what OpenCode Zen answers when the relay's egress
+			// fingerprint is not the client's (stripped User-Agent etc.).
+			return new Response(
+				JSON.stringify({
+					error: { code: "FreeTierError", message: "OpenCode's free tier can only be used from within OpenCode" },
+				}),
+				{ status: 403, headers: { "content-type": "application/json" } },
+			);
+		}
+		return new Response("ok", { status: 200 });
+	});
+
+	try {
+		setActiveRelayState(
+			{
+				enabled: true,
+				url: RELAY_403,
+				relays: [{ url: RELAY_403 }, { url: RELAY_OK }],
+				mode: "auto",
+			} as unknown as Parameters<typeof setActiveRelayState>[0],
+			false,
 		);
+
+		const res = await relayFetch(
+			"https://opencode.ai/zen/v1/chat/completions",
+			{ method: "POST", body: "{}" },
+			"gate403roll",
+		);
+
+		assert.equal(res.status, 200, "the next candidate must serve after a relay 403");
+		assert.deepEqual(
+			seen,
+			[RELAY_403, RELAY_OK],
+			"the 403-ing relay must roll to the next candidate (never straight to direct)",
+		);
+
+		// A relay-forwarded 403 is a relay-host fault: failed and cooled,
+		// never recorded as a success.
+		const health = getRelayHealth(RELAY_403);
+		assert.ok(health, "the 403-ing relay must carry a health record");
+		assert.equal(health.consecutiveFailures, 1, "403 must count as a relay failure");
+		assert.equal(health.lastStatus, 403, "the failure must record the 403 status");
+		assert.equal(health.successCount ?? 0, 0, "403 must never be marked a success");
+		assert.equal(isRelayHealthy(RELAY_403), false, "403 must put the relay in cooldown");
+		assert.equal(isRelayHealthy(RELAY_OK), true, "the healthy relay must stay healthy");
+
+		assert.equal(messages.length, 1, "the roll must notify once");
+		assert.match(messages[0], /403/, "the toast must name the relay's 403");
+	} finally {
+		setStatusUi(null);
+		_resetRollNotifyForTest();
+		resetAllRelayHealth();
+		setActiveRelayState(
+			{ enabled: true, url: "", relays: [], mode: "auto" } as unknown as Parameters<typeof setActiveRelayState>[0],
+			false,
+		);
+	}
+});
+
+test("relayFetch falls back to direct when every relay answers 403", async (t) => {
+	resetAllRelayHealth();
+	const RELAY = "https://gated-egress-relay.example.com";
+	const UPSTREAM = "https://opencode.ai/zen/v1/chat/completions";
+	const seen: string[] = [];
+	t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+		const target = String(input);
+		seen.push(target);
+		if (target === RELAY) {
+			return new Response(
+				JSON.stringify({
+					error: { code: "FreeTierError", message: "OpenCode's free tier can only be used from within OpenCode" },
+				}),
+				{ status: 403, headers: { "content-type": "application/json" } },
+			);
+		}
+		return new Response("ok", { status: 200 });
 	});
 
 	try {
@@ -331,13 +413,55 @@ test("relayFetch keeps a 403 free-tier gate terminal (no roll, no penalty)", asy
 			false,
 		);
 
-		const res = await relayFetch("https://opencode.ai/zen/v1/chat/completions", { method: "POST" }, "gate403");
+		const res = await relayFetch(UPSTREAM, { method: "POST", body: "{}" }, "gate403direct");
 
-		assert.equal(res.status, 403, "a 403 gate must surface unchanged");
-		assert.deepEqual(seen, [RELAY], "a 403 gate must never roll or hit the direct fallback");
+		assert.equal(res.status, 200, "the direct fallback must serve after a relay 403");
+		assert.deepEqual(seen, [RELAY, UPSTREAM], "the 403-ing relay must roll, then fall back to direct");
 		const health = getRelayHealth(RELAY);
-		assert.equal(health?.failureCount ?? 0, 0, "a 403 gate is an upstream verdict, not a relay fault");
-		assert.equal(isRelayHealthy(RELAY), true, "a 403 gate must not cool the relay");
+		assert.ok(health, "the 403-ing relay must carry a health record");
+		assert.equal(health.consecutiveFailures, 1, "403 must mark the relay failed");
+		assert.equal(health.lastStatus, 403, "the failure must record the 403 status");
+	} finally {
+		resetAllRelayHealth();
+		setActiveRelayState(
+			{ enabled: true, url: "", relays: [], mode: "auto" } as unknown as Parameters<typeof setActiveRelayState>[0],
+			false,
+		);
+	}
+});
+
+test("relayFetch surfaces the direct 403 when relay and direct both answer 403", async (t) => {
+	resetAllRelayHealth();
+	const RELAY = "https://gated-egress-relay.example.com";
+	const UPSTREAM = "https://opencode.ai/zen/v1/chat/completions";
+	const relayBody = JSON.stringify({
+		error: { code: "FreeTierError", message: "relay-shaped rejection" },
+	});
+	const directBody = JSON.stringify({
+		error: { code: "FreeTierError", message: "direct-shaped rejection" },
+	});
+	const seen: string[] = [];
+	t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+		const target = String(input);
+		seen.push(target);
+		const body = target === RELAY ? relayBody : directBody;
+		return new Response(body, { status: 403, headers: { "content-type": "application/json" } });
+	});
+
+	try {
+		setActiveRelayState(
+			{ enabled: true, url: RELAY, relays: [{ url: RELAY }], mode: "auto" } as unknown as Parameters<
+				typeof setActiveRelayState
+			>[0],
+			false,
+		);
+
+		const res = await relayFetch(UPSTREAM, { method: "POST", body: "{}" }, "gate403both");
+
+		assert.equal(res.status, 403, "the direct 403 must surface unchanged");
+		assert.equal(await res.text(), directBody, "the surfaced body must be the direct leg's, not the relay's");
+		assert.equal(seen[seen.length - 1], UPSTREAM, "the direct URL must be the last one fetched");
+		assert.deepEqual(seen, [RELAY, UPSTREAM], "the relay must be tried first, then direct");
 	} finally {
 		resetAllRelayHealth();
 		setActiveRelayState(

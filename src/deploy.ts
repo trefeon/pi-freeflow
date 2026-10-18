@@ -488,18 +488,45 @@ export async function deployCloudflareWorker(
  return { url, auth: relayAuth };
 }
 
+type DenoTimeline = {
+ /** Live v2 shape: display name, e.g. "Production". */
+ name?: string;
+ /** Live v2 shape: routing context ("Production" / "Preview"). */
+ context?: string;
+ /** Live v2 shape: hostnames routed to this timeline. */
+ hostnames?: string[];
+ /** Legacy shape retained for older API responses. */
+ slug?: string;
+ domains?: Array<{ domain?: string }>;
+};
+
 type DenoRevision = {
  status?: string;
  failure_reason?: string | null;
- timelines?: Array<{ slug?: string; domains?: Array<{ domain?: string }> }>;
+ timelines?: DenoTimeline[];
 };
 
+/** The v2 API labels the production timeline via `name`/`context` (legacy: `slug`). */
+function isProductionTimeline(t: DenoTimeline): boolean {
+ return [t.name, t.context, t.slug].some(
+  (v) => typeof v === "string" && v.trim().toLowerCase() === "production",
+ );
+}
+
+/**
+ * Resolve the hostname routed to the production timeline of a revision.
+ * The live v2 API answers `timelines[].hostnames` (e.g. `app-org.deno.net`);
+ * older responses carried `slug` + `domains: [{ domain }]`. Both are read,
+ * preferring whichever timeline is marked production, else the first one.
+ */
 function resolveRoutedDomain(revision: DenoRevision): string | null {
  const timelines = revision.timelines ?? [];
- const production = timelines.find((t) => t.slug === "production") ?? timelines[0];
- const host = (production?.domains ?? [])
-  .map((d) => d.domain ?? "")
-  .find((h) => h.length > 0);
+ const production = timelines.find(isProductionTimeline) ?? timelines[0];
+ if (!production) return null;
+ const host = [
+  ...(production.hostnames ?? []),
+  ...(production.domains ?? []).map((d) => d.domain ?? ""),
+ ].find((h) => typeof h === "string" && h.length > 0);
  return host ?? null;
 }
 

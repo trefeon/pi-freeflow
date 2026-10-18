@@ -1612,12 +1612,18 @@ export function startProxy(
         ) {
          rememberIssuerRelay(conversationKey, servedIssuer);
         }
-        // Upstream degradation tracking: successes prove Zen reachable,
-        // 403 free-tier gates feed the health state machine (a 403 never
-        // rolls — it is a terminal upstream verdict, not a relay fault).
+        // Upstream degradation tracking: successes prove Zen reachable; a 403
+        // free-tier gate feeds the health state machine only when the DIRECT
+        // path produced it (servedIssuer === null). A relay-served 403 is
+        // relay-shaped — relay.ts rolls it and marks the relay — so a salvaged
+        // relay 403 must never flip the machine-wide gate.
         if (response.ok) {
          recordUpstreamSuccess("zen", { sessionKey, canary: isCanary });
-        } else if (response.status === 403 && (response.headers.get("content-type") ?? "").includes("application/json")) {
+        } else if (
+         servedIssuer === null &&
+         response.status === 403 &&
+         (response.headers.get("content-type") ?? "").includes("application/json")
+        ) {
          try {
           const gateText = await response.clone().text();
           recordUpstreamFailure("zen", 403, gateText);

@@ -728,6 +728,15 @@ export function createCommandSpec(
        ? "Deno Deploy relay — token: dash.deno.com → Access Tokens"
        : "Vercel relay — token: vercel.com/account/tokens";
     ctx.ui.notify(tokenHint, "info");
+    if (platform === "deno") {
+     // Verified 2026-10-17: Deno Deploy rewrites the outbound User-Agent at the
+     // platform layer, so OpenCode Zen's free tier rejects every request that
+     // rides this relay. Warn before spending a token on a Zen-only deployment.
+     ctx.ui.notify(
+      "⚠ Deno Deploy rewrites outbound User-Agent: OpenCode Zen free-tier requests through this relay are rejected (403 FreeTierError). It can still serve Kilo models — prefer Cloudflare for Zen.",
+      "warning",
+     );
+    }
     const token = (
      await ctx.ui.input(`${label} API token:`, "")
     )?.trim();
@@ -812,9 +821,29 @@ export function createCommandSpec(
         );
        },
       });
-      probeNote = probe.ok
-       ? ` ✓ reachable (HTTP ${probe.status}, ${probe.latencyMs}ms)`
-       : ` ⚠ deployed but unreachable (${probe.error || `HTTP ${probe.status}`}) — run /freeflow test ${finalUrl} to retry, or /freeflow remove ${finalUrl} to drop it`;
+      if (!probe.ok) {
+       probeNote = ` ⚠ deployed but unreachable (${probe.error || `HTTP ${probe.status}`}) — run /freeflow test ${finalUrl} to retry, or /freeflow remove ${finalUrl} to drop it`;
+      } else {
+       // Reachability is not enough: a relay can answer /v1/models while its
+       // egress is transformed in flight (Deno Deploy rewrites the outbound
+       // User-Agent), and OpenCode Zen then rejects the real traffic. The chat
+       // probe carries the full free-tier fingerprint + tools + stream, so it
+       // fails exactly when Zen inference through this relay would.
+       const chat = await probeRelay(finalUrl, auth, {
+        endpoint: "chat",
+        retries: 1,
+        retryDelayMs: retryDelay,
+       });
+       if (chat.ok) {
+        probeNote = ` ✓ reachable + free-tier inference verified (HTTP ${chat.status}, ${chat.latencyMs}ms)`;
+       } else {
+        const reason =
+         platform === "deno"
+          ? "— Deno Deploy rewrites the outbound User-Agent, which OpenCode Zen rejects; Kilo models still work through this relay"
+          : `(${chat.error || `HTTP ${chat.status}`}) — this relay cannot serve OpenCode Zen traffic (its egress is transformed in flight)`;
+        probeNote = ` ⚠ reachable, but the free-tier inference probe failed ${reason}. Run /freeflow test ${finalUrl} --chat to re-check, or /freeflow remove ${finalUrl} to drop it`;
+       }
+      }
      } catch {
       // probeRelay never throws, but keep the notify safe regardless
      }

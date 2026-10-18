@@ -27,6 +27,7 @@ Instead of VPN tunnels, pi-freeflow uses standard edge worker scripts across **C
 | :--- | :--- | :--- |
 | **HTTP 200 (OK)** | Success | In `auto` the winner becomes the sticky target; in `spread` the pool is left as-is |
 | **HTTP 429 (Rate Limit)** | Roll to next relay | IP quota exceeded; fresh egress IP per relay |
+| **HTTP 403 from a relay** | Roll to next relay, relay marked failed | An egress that transforms the request fingerprint (e.g. stripped User-Agent) makes the free-tier gate reject everything from that relay; without this it could be recorded healthy and pinned as primary |
 | **Relay Edge 404 (Dead Deployment)** | Roll to next relay | Deployment missing or deleted on relay host; auto-failover |
 | **HTTP 408 (Request Timeout)** | Roll to next relay | Transient request timeout; treated as retriable like the other edge failures |
 | **HTTP 502 / 503** | Roll to next relay | Upstream edge transient error |
@@ -72,6 +73,8 @@ Free tier: 100,000 requests/day with no meter on origin transfer, so streaming s
 
 ### Deno Deploy
 Free tier: 100,000 requests/day. Deploy via `/freeflow deploy deno` or manual playground paste.
+
+**Known limitation:** Deno Deploy replaces the outbound `User-Agent` at the platform layer, so OpenCode Zen free-tier requests through a Deno relay are rejected with `403 FreeTierError` (verified 2026-10-17). The deploy flow warns about this up front, and its post-deploy inference probe surfaces the failure at deploy time rather than leaving a relay that silently cannot serve Zen traffic. Kilo models are unaffected. Prefer Cloudflare/Vercel for Zen traffic.
 
 ### Vercel Edge Function (Last Resort)
 Only use with a paid plan or a spare Hobby project you can afford to lose: the Hobby plan caps Fast Origin Transfer at 10 GB, and a streaming relay burns roughly 1.2 MB per turn (about 8,000 turns total). Once the cap is hit, every deployment in the project returns HTTP 402 and the whole pool goes dark until the quota resets. Deploy via `/freeflow deploy vercel` (in-memory token, auto-adds to pool) or manual Git deploy with `api/relay.js` + `vercel.json`.
