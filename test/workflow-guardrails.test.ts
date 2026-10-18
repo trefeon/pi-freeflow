@@ -29,7 +29,6 @@ const STATE_STEP = "Update State and Commit";
 const RELEASE_JOB = "validate-and-publish";
 const TAG_VALIDATION_STEP = "Validate tag against package version";
 const RELEASE_STEP = "Create or Update GitHub Release";
-const PUBLISH_STEP = "Publish with Changesets (if NPM_TOKEN is configured)";
 const TAG_GATE = "startsWith(github.ref, 'refs/tags/')";
 const FALLBACK_BODY = "OpenCode upstream drift detected but drift-report.md is missing. See workflow logs.";
 
@@ -309,13 +308,20 @@ test("release.yml validates the pushed tag against package.json", { skip: SKIP_N
 	const doc = loadWorkflow("release.yml");
 	assert.equal(stepOf(doc, RELEASE_JOB, TAG_VALIDATION_STEP).if, TAG_GATE);
 	assert.equal(stepOf(doc, RELEASE_JOB, RELEASE_STEP).if, TAG_GATE);
-	assert.equal(stepOf(doc, RELEASE_JOB, RELEASE_STEP).uses, "softprops/action-gh-release@v2");
+	// The maintained action is the contract; its major moves independently of this repo.
+	assert.match(stepOf(doc, RELEASE_JOB, RELEASE_STEP).uses ?? "", /^softprops\/action-gh-release@v\d+$/);
 });
 
-test("release.yml reaches for the GitHub Release only on a tag", { skip: SKIP_NO_YAML }, () => {
-	const publish = stepOf(loadWorkflow("release.yml"), RELEASE_JOB, PUBLISH_STEP);
-	assert.equal(publish.if, "env.NPM_TOKEN != ''");
-	assert.equal(publish.run, "pnpm changeset publish");
+test("release.yml never publishes to npm and proves the tarball before releasing", { skip: SKIP_NO_YAML }, () => {
+	const steps = jobOf(loadWorkflow("release.yml"), RELEASE_JOB).steps ?? [];
+	// Publishing is manual in this repo (maintainer terminal, 2FA): a workflow that can
+	// publish on its own is the regression this guards.
+	assert.doesNotMatch(steps.map((step) => step.run ?? "").join("\n"), /(npm publish|changeset publish)/);
+
+	const verifyIndex = steps.findIndex((step) => (step.run ?? "").includes("scripts/verify-published-tarball.mjs"));
+	const releaseIndex = steps.findIndex((step) => step.name === RELEASE_STEP);
+	assert.ok(verifyIndex >= 0, `expected the published-tarball verification step: ${steps.map((step) => step.name).join(", ")}`);
+	assert.ok(releaseIndex > verifyIndex, "the tarball verification must run before the GitHub Release is created");
 });
 
 test("release.yml tag validation rejects a tag that disagrees with the version", { skip: SKIP_NO_YAML ?? SKIP_NO_SHELL }, () => {

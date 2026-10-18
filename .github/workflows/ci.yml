@@ -20,28 +20,83 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Classify the change so heavy work only runs where it can find something:
+  # a docs-only push builds the docs, a shipped-file change checks the tarball,
+  # and everything else runs the full matrix.
+  changes:
+    name: Detect changed areas
+    if: "!inputs.use_self_hosted"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      pack: ${{ steps.filter.outputs.pack }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed files
+        id: filter
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="origin/${{ github.base_ref }}...HEAD"
+          elif [ -n "${{ github.event.before || '' }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            RANGE="${{ github.event.before }}..${{ github.sha }}"
+          else
+            RANGE=""
+          fi
+
+          if [ -z "$RANGE" ]; then
+            FILES=$(git ls-files)
+          else
+            FILES=$(git diff --name-only "$RANGE")
+          fi
+
+          has() { printf '%s\n' "$FILES" | grep -Eq "$1"; }
+          code=false
+          pack=false
+          docs=false
+          if has '^(src/|test/|scripts/|extensions/|package\.json|pnpm-lock\.yaml|tsconfig\.json|\.github/workflows/)'; then code=true; fi
+          if has '^(src/|extensions/|package\.json|LICENSE|README\.md|CHANGELOG\.md|\.npmignore)'; then pack=true; fi
+          if has '^docs/'; then docs=true; fi
+
+          {
+            echo "code=$code"
+            echo "pack=$pack"
+            echo "docs=$docs"
+          } >> "$GITHUB_OUTPUT"
+          echo "changed files: $(printf '%s\n' "$FILES" | grep -c . || true) → code=$code pack=$pack docs=$docs"
+
   test:
     name: Test (${{ matrix.os }} - Node ${{ matrix.node-version }})
-    if: "!inputs.use_self_hosted"
+    needs: changes
+    if: "!inputs.use_self_hosted && needs.changes.outputs.code == 'true'"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
         node-version: ["lts/*", "22.19.0"]
+        include:
+          - os: windows-latest
+            node-version: "lts/*"
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9
 
       - name: Setup Node.js (LTS)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: "pnpm"
@@ -52,14 +107,39 @@ jobs:
       - name: Typecheck (tsc --noEmit)
         run: pnpm run typecheck
 
-      - name: Build docs (vitepress)
-        run: pnpm run docs:build
-
       - name: Smoke test (extension entrypoint)
         run: pnpm run smoke
 
       - name: Run test suite
         run: pnpm test
+
+  docs:
+    name: Build docs (vitepress)
+    needs: changes
+    if: "!inputs.use_self_hosted && needs.changes.outputs.docs == 'true'"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - name: Setup Node.js (LTS)
+        uses: actions/setup-node@v7
+        with:
+          node-version: "lts/*"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build docs (vitepress)
+        run: pnpm run docs:build
 
   # Fallback runner: only used when explicitly requested (e.g. GitHub Actions minutes limit reached)
   test-local:
@@ -70,15 +150,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9
 
       - name: Setup Node.js (LTS)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "lts/*"
           cache: "pnpm"
@@ -100,19 +180,21 @@ jobs:
 
   package-check:
     name: Package Integrity & Tarball Whitelist
+    needs: changes
+    if: "!inputs.use_self_hosted && needs.changes.outputs.pack == 'true'"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9
 
       - name: Setup Node.js (LTS)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "lts/*"
           cache: "pnpm"
