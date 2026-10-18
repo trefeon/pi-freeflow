@@ -621,6 +621,25 @@ export async function relayFetch(
 		directHeaders.set("x-request-id", rid);
 
 		const directRes = await fetch(url, { ...opts, headers: directHeaders } as unknown as RequestInit);
+		if (
+			directRes.status === 403 &&
+			lastResponse &&
+			(lastResponse.status === 429 || lastResponse.status === 502 || lastResponse.status === 503)
+		) {
+			log(
+				"warn",
+				`direct fallback returned HTTP 403 FreeTierError (direct IP untrusted) — salvaging last relay HTTP ${lastResponse.status}`,
+				{
+					upstream: url,
+					directStatus: 403,
+					relayStatus: lastResponse.status,
+				},
+				rid,
+			);
+			directRes.body?.cancel().catch(() => {});
+			affinity.onServed?.(lastResponseRelay);
+			return lastResponse;
+		}
 		// lastResponse holds an unread body that would otherwise leak its socket
 		// until GC; the salvage path below still needs it, so only cancel here.
 		lastResponse?.body?.cancel().catch(() => {});

@@ -470,3 +470,45 @@ test("relayFetch surfaces the direct 403 when relay and direct both answer 403",
 		);
 	}
 });
+
+test("relayFetch salvages last relay 429 when direct fallback answers 403", async (t) => {
+	resetAllRelayHealth();
+	const RELAY = "https://gated-egress-relay.example.com";
+	const UPSTREAM = "https://opencode.ai/zen/v1/chat/completions";
+	const relayBody = JSON.stringify({
+		error: { code: "rate_limit_exceeded", message: "Too Many Requests" },
+	});
+	const directBody = JSON.stringify({
+		error: { code: "FreeTierError", message: "OpenCode's free models aren't available from your current network because we've detected abusive traffic from this IP address." },
+	});
+	const seen: string[] = [];
+	t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+		const target = String(input);
+		seen.push(target);
+		const body = target === RELAY ? relayBody : directBody;
+		const status = target === RELAY ? 429 : 403;
+		return new Response(body, { status, headers: { "content-type": "application/json" } });
+	});
+
+	try {
+		setActiveRelayState(
+			{ enabled: true, url: RELAY, relays: [{ url: RELAY }], mode: "auto" } as unknown as Parameters<
+				typeof setActiveRelayState
+			>[0],
+			false,
+		);
+
+		const res = await relayFetch(UPSTREAM, { method: "POST", body: "{}" }, "salvage429");
+
+		assert.equal(res.status, 429, "the salvaged 429 must surface instead of the direct 403");
+		assert.equal(await res.text(), relayBody, "the surfaced body must be the relay's 429, not the direct 403");
+		assert.equal(seen[seen.length - 1], UPSTREAM, "the direct URL must be the last one fetched");
+		assert.deepEqual(seen, [RELAY, UPSTREAM], "the relay must be tried first, then direct");
+	} finally {
+		resetAllRelayHealth();
+		setActiveRelayState(
+			{ enabled: true, url: "", relays: [], mode: "auto" } as unknown as Parameters<typeof setActiveRelayState>[0],
+			false,
+		);
+	}
+});

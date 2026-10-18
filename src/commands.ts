@@ -540,10 +540,11 @@ export function createCommandSpec(
 ): Omit<RegisteredCommand, "name"> {
  return {
   description:
-   "Relay egress: auto | spread | on | off | hide | show | widget hide/show | status | kill|stop|shutdown | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | url [value] | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | trace [reqId] | debug on|off|level <level> | refresh | models|reload | update [auto on|off] | autoupdate [on|off] | deploy cloudflare | deploy deno | deploy vercel | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot] | cline signout|switch",
+   "Relay egress: auto | sticky | spread | on | off | hide | show | widget hide/show | status | kill|stop|shutdown | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | url [value] | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | trace [reqId] | debug on|off|level <level> | refresh | models|reload | update [auto on|off] | autoupdate [on|off] | deploy cloudflare | deploy deno | deploy vercel | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot] | cline signout|switch",
   getArgumentCompletions: (prefix: string) =>
    [
     "auto",
+    "sticky",
     "spread",
     "on",
     "off",
@@ -1134,7 +1135,7 @@ export function createCommandSpec(
     }
    };
 
-   if (sub === "auto") {
+   if (sub === "auto" || sub === "sticky") {
     applyRelayState((s) => {
      s.mode = "auto";
      s.enabled = true;
@@ -1211,10 +1212,10 @@ export function createCommandSpec(
      relayState.mode === "off"
       ? "Mode: off (always direct)"
       : relayState.mode === "on"
-       ? "Mode: on (always relay)"
+       ? "Mode: on (always relay, sticky primary)"
        : relayState.mode === "spread"
         ? "Mode: spread (rotates across healthy relays, auto-rolls on 429/5xx)"
-        : "Mode: auto (enabled on session, auto-rolls on 429/5xx)";
+        : "Mode: auto (sticky primary, auto-rolls on 429/5xx)";
     const poolLine = `${relayState.relays.length} relay(s)${relayState.relays.length > 0
      ? ` | active: ${shortRelayLabel(relayState.url, relayState.relays)}`
      : ""
@@ -1957,8 +1958,8 @@ export function createCommandSpec(
      "Deploy Cloudflare relay…",
      "Deploy Deno relay…",
      "Deploy Vercel relay (last resort)…",
-     "Mode: AUTO (auto-detect on model select)",
-     "Mode: ON (always relay)",
+     "Mode: AUTO (sticky primary, auto-detect on model select)",
+     "Mode: ON (always relay, sticky primary)",
      "Mode: OFF (always direct)",
      "Mode: SPREAD (rotate across healthy relays)",
     ]);
@@ -1986,7 +1987,7 @@ export function createCommandSpec(
      await doDeploy("cloudflare");
     } else if (choice === "Deploy Deno relay…") {
      await doDeploy("deno");
-    } else if (choice === "Mode: AUTO (auto-detect on model select)") {
+    } else if (choice === "Mode: AUTO (sticky primary, auto-detect on model select)") {
      applyRelayState((s) => {
       s.mode = "auto";
       s.enabled = true;
@@ -1998,7 +1999,7 @@ export function createCommandSpec(
      });
      persist();
      flash();
-    } else if (choice === "Mode: ON (always relay)") {
+    } else if (choice === "Mode: ON (always relay, sticky primary)") {
      applyRelayState((s) => {
       s.mode = "on";
       s.enabled = true;

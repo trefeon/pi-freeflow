@@ -19,7 +19,7 @@ All commands are available inside the OMP or Pi TUI via `/freeflow`:
 | `/freeflow export [path] [--include-secrets]` | Save the relay pool to a JSON file (relay passwords are stripped unless you ask for them) |
 | `/freeflow import <path> [--merge&vert;--replace] [--dry-run]` | Load a relay pool from a file — merged into the pool by default, or `--replace` to swap it out |
 | `/freeflow test <index&vert;url&vert;label>` | Probe a relay for reachability (HTTP 200 + latency) |
-| `/freeflow on &vert; off &vert; auto &vert; spread` | Relay mode (auto = enabled for freeflow, spread = rotate across the healthy relays) |
+| `/freeflow on &vert; off &vert; auto &vert; sticky &vert; spread` | Relay mode (auto/sticky = sticky primary until 429/error, spread = rotate across healthy relays) |
 | `/freeflow deploy <platform>` | Guided relay deploy (cloudflare, deno, vercel — Cloudflare is the recommended edge relay, Vercel the last resort; for OpenCode Zen traffic a self-hosted pool is recommended, see [Relays](/pages/relays)) |
 | `/freeflow install-startup` | Install the login-startup hook so the daemon comes up with your session |
 | `/freeflow uninstall-startup` | Remove the login-startup hook |

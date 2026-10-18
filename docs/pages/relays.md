@@ -45,7 +45,8 @@ Instead of VPN tunnels, pi-freeflow talks to two families of relays over one con
 | :--- | :--- |
 | `/freeflow off` | Always talk direct to upstream — no relays. |
 | `/freeflow auto` | Default. Relay turns on when you pick a `freeflow/*` model. Every request starts at the active relay and rolls to the next healthy one on a rate limit, timeout, or edge failure. |
-| `/freeflow on` | Always relay, regardless of which model is selected. |
+| `/freeflow sticky` | Explicit sticky primary mode (alias for `auto`). Sticks to the active relay until an HTTP 429 rate limit or edge error occurs before rolling. |
+| `/freeflow on` | Always relay (sticky primary), regardless of which model is selected. |
 | `/freeflow spread` | Relay turns on and each request starts at a rotating healthy relay instead of one sticky primary, so parallel sessions and subagents land on different egress IPs. A conversation's reasoning issuer still outranks the rotation, and a rate-limited relay is never preferred. |
 
 ## Relay Pool Management
