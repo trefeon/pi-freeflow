@@ -975,6 +975,44 @@ test("command spec: /freeflow deploy deno warns up front and blames the User-Age
  });
 });
 
+test("command spec: /freeflow deploy deno reports the observed failure, not the User-Agent gate, on a non-403 inference error", async (t) => {
+ await withSavedDiskState(async () => {
+  instantTimers(t);
+  resetAllRelayHealth();
+  setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
+  const liveUrl = "https://relay-deno-5xx.my-org.deno.net";
+  t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
+   if (url.endsWith("/v1/models")) return { status: 200, body: {} };
+   if (url.endsWith("/inference/v1/chat/completions") && init?.method === "POST") return { status: 500, body: {} };
+   if (url.endsWith("/v2/revisions/rev-1")) {
+    return { body: { id: "rev-1", status: "succeeded", timelines: [{ name: "Production", context: "Production", hostnames: ["relay-deno-5xx.my-org.deno.net"] }] } };
+   }
+   if (url.endsWith("/v2/apps/app-1/deploy") && init?.method === "POST") return { body: { id: "rev-1", status: "queued" } };
+   if (url.endsWith("/v2/apps") && init?.method === "POST") return { body: { id: "app-1", slug: "relay-deno-5xx" } };
+   return { status: 500, body: { error: { message: `unexpected ${init?.method} ${url}` } } };
+  }));
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({
+   inputValues: ["ddo-fake-token", "relay-deno-5xx"],
+   confirmValue: true,
+  });
+
+  await spec.handler("deploy deno", ctx);
+
+  const done = notifications.find((n) => n.message.includes("Deployed & active"));
+  assert.ok(done, `deploy must still activate, got: ${JSON.stringify(notifications)}`);
+  assert.equal(
+   done.message,
+   `✓ Deployed & active: ${liveUrl} ⚠ reachable, but the free-tier inference probe failed (HTTP 500) — this relay cannot serve OpenCode Zen traffic (its egress is transformed in flight). Run /freeflow test ${liveUrl} --chat to re-check, or /freeflow remove ${liveUrl} to drop it`,
+   "a non-403 probe failure must report the observed result, never the Deno User-Agent gate",
+  );
+  assert.ok(
+   !done.message.includes("Deno Deploy rewrites the outbound User-Agent"),
+   "the UA-rewrite reason must not cover unrelated probe failures",
+  );
+ });
+});
+
 test("command spec: /freeflow deploy retries probe when initial edge routing returns 404 and reports ok on retry", async (t) => {
  await withSavedDiskState(async () => {
   resetAllRelayHealth();

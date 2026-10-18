@@ -837,10 +837,12 @@ export function createCommandSpec(
        if (chat.ok) {
         probeNote = ` ✓ reachable + free-tier inference verified (HTTP ${chat.status}, ${chat.latencyMs}ms)`;
        } else {
-        const reason =
-         platform === "deno"
-          ? "— Deno Deploy rewrites the outbound User-Agent, which OpenCode Zen rejects; Kilo models still work through this relay"
-          : `(${chat.error || `HTTP ${chat.status}`}) — this relay cannot serve OpenCode Zen traffic (its egress is transformed in flight)`;
+        // The Deno User-Agent rewrite only explains the free-tier gate; a
+        // timeout or a 5xx must report what was actually observed instead.
+        const denoGate = platform === "deno" && chat.status === 403;
+        const reason = denoGate
+         ? "— Deno Deploy rewrites the outbound User-Agent, which OpenCode Zen rejects; Kilo models still work through this relay"
+         : `(${chat.error || `HTTP ${chat.status}`}) — this relay cannot serve OpenCode Zen traffic (its egress is transformed in flight)`;
         probeNote = ` ⚠ reachable, but the free-tier inference probe failed ${reason}. Run /freeflow test ${finalUrl} --chat to re-check, or /freeflow remove ${finalUrl} to drop it`;
        }
       }

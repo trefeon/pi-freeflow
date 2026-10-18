@@ -237,36 +237,37 @@ test("deployDenoRelay creates app, pushes script, polls revision, resolves route
 
 test("deployDenoRelay resolves the production hostname from the live v2 timelines shape", async (t) => {
 	instantTimers(t);
-	// Verbatim shape of a real GET /v2/revisions/<id> after success: the live
-	// API labels timelines with name/context and routes hostnames to them.
+	// Shape of a live GET /v2/revisions/<id> after success: the v2 API labels
+	// timelines with name/context and routes hostnames to them (Preview is
+	// listed first, so ordering alone must not decide the public URL).
 	stubFetch(t, (url, init) => {
-		if (url.endsWith("/v2/revisions/68812s1da960")) {
+		if (url.endsWith("/v2/revisions/rev-1")) {
 			return {
 				body: {
-					id: "68812s1da960",
+					id: "rev-1",
 					status: "succeeded",
-					build_finished_at: "2026-10-18T06:14:35.481Z",
+					build_finished_at: "2026-10-18T00:00:00.000Z",
 					timelines: [
-						{ name: "Preview", context: "Preview", hostnames: ["pf-dbg2-mvdfkffz-68812s1da960.abik1.deno.net"] },
-						{ name: "Production", context: "Production", hostnames: ["pf-dbg2-mvdfkffz.abik1.deno.net"] },
+						{ name: "Preview", context: "Preview", hostnames: ["relay-prod-rev-1.my-org.deno.net"] },
+						{ name: "Production", context: "Production", hostnames: ["relay-prod.my-org.deno.net"] },
 					],
 				},
 			};
 		}
-		if (url.endsWith("/v2/apps/app-live/deploy") && init?.method === "POST") {
-			return { body: { id: "68812s1da960", status: "queued" } };
+		if (url.endsWith("/v2/apps/app-1/deploy") && init?.method === "POST") {
+			return { body: { id: "rev-1", status: "queued" } };
 		}
 		if (url.endsWith("/v2/apps") && init?.method === "POST") {
-			return { body: { id: "app-live", slug: "pf-dbg2" } };
+			return { body: { id: "app-1", slug: "app-slug" } };
 		}
 		return { status: 500, body: { error: { message: `unexpected ${init?.method} ${url}` } } };
 	});
 
-	const deployed = await deployDenoRelay("ddo-tok", "pf-dbg2");
+	const deployed = await deployDenoRelay("ddo-tok", "app-slug");
 
 	assert.equal(
 		deployed.url,
-		"https://pf-dbg2-mvdfkffz.abik1.deno.net",
+		"https://relay-prod.my-org.deno.net",
 		"the Production timeline hostname must win even when Preview is listed first",
 	);
 	assert.match(deployed.auth, /^[0-9a-f]{64}$/, "deno relay mints a private 256-bit secret by default");
