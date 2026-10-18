@@ -40,12 +40,17 @@ jobs:
 
       - name: Classify changed files
         id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
           set -eu
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            RANGE="origin/${{ github.base_ref }}...HEAD"
-          elif [ -n "${{ github.event.before || '' }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-            RANGE="${{ github.event.before }}..${{ github.sha }}"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            RANGE="origin/${BASE_REF:-main}...HEAD"
+          elif [ -n "${BEFORE_SHA:-}" ] && [ "${BEFORE_SHA:-}" != "0000000000000000000000000000000000000000" ]; then
+            RANGE="${BEFORE_SHA}..${HEAD_SHA}"
           else
             RANGE=""
           fi
@@ -62,7 +67,8 @@ jobs:
           docs=false
           if has '^(src/|test/|scripts/|extensions/|package\.json|pnpm-lock\.yaml|tsconfig\.json|\.github/workflows/)'; then code=true; fi
           if has '^(src/|extensions/|package\.json|LICENSE|README\.md|CHANGELOG\.md|\.npmignore)'; then pack=true; fi
-          if has '^docs/'; then docs=true; fi
+          # A dependency change can break the docs build (vitepress) with no docs/ edit.
+          if has '^(docs/|package\.json|pnpm-lock\.yaml)'; then docs=true; fi
 
           {
             echo "code=$code"

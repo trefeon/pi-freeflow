@@ -371,3 +371,76 @@ test("ci.yml exercises the declared node floor and scopes the token", { skip: SK
 	assert.deepEqual(fallback["runs-on"], ["self-hosted", "Linux", "X64", "acerblue-local"]);
 	assert.equal(fallback.strategy, undefined);
 });
+
+test("ci.yml classifies changed paths into the gates it promises", { skip: SKIP_NO_YAML ?? SKIP_NO_SHELL ?? SKIP_NO_GIT }, () => {
+	withTempDir("pff-classify-", (dir) => {
+		const repo = path.join(dir, "repo");
+		fs.mkdirSync(repo);
+		initRepo(repo);
+
+		const commit = (files: Record<string, string>, message: string): string => {
+			for (const [name, content] of Object.entries(files)) {
+				const target = path.join(repo, name);
+				fs.mkdirSync(path.dirname(target), { recursive: true });
+				fs.writeFileSync(target, content);
+			}
+			git(["add", "-A"], repo);
+			git(["commit", "-m", message], repo);
+			return git(["rev-parse", "HEAD"], repo).trim();
+		};
+
+		const classify = (env: Record<string, string>): Record<string, string> => {
+			const output = path.join(dir, "github-output.txt");
+			fs.writeFileSync(output, "");
+			const result = runShell(scriptOf("ci.yml", "changes", "Classify changed files"), repo, {
+				...env,
+				GITHUB_OUTPUT: slash(output),
+			});
+			assert.equal(result.status, 0, result.output);
+			return Object.fromEntries(
+				fs
+					.readFileSync(output, "utf8")
+					.trim()
+					.split("\n")
+					.map((line) => line.split("=") as [string, string]),
+			);
+		};
+
+		const base = commit({ "README.md": "base\n" }, "base");
+		const docs = commit({ "docs/pages/relays.md": "page\n" }, "docs page");
+		assert.deepEqual(classify({ EVENT_NAME: "push", BEFORE_SHA: base, HEAD_SHA: docs }), {
+			code: "false",
+			pack: "false",
+			docs: "true",
+		});
+
+		// A dependency bump can break the docs build without touching docs/, and it ships.
+		const deps = commit({ "package.json": "{}\n" }, "dependency bump");
+		assert.deepEqual(classify({ EVENT_NAME: "push", BEFORE_SHA: docs, HEAD_SHA: deps }), {
+			code: "true",
+			pack: "true",
+			docs: "true",
+		});
+
+		const source = commit({ "src/relay.ts": "// touched\n" }, "source change");
+		assert.deepEqual(classify({ EVENT_NAME: "push", BEFORE_SHA: deps, HEAD_SHA: source }), {
+			code: "true",
+			pack: "true",
+			docs: "false",
+		});
+
+		const meta = commit({ "AGENTS.md": "note\n" }, "agent docs");
+		assert.deepEqual(classify({ EVENT_NAME: "push", BEFORE_SHA: source, HEAD_SHA: meta }), {
+			code: "false",
+			pack: "false",
+			docs: "false",
+		});
+
+		// A manual run has no range to diff: everything runs rather than nothing.
+		assert.deepEqual(classify({ EVENT_NAME: "workflow_dispatch" }), {
+			code: "true",
+			pack: "true",
+			docs: "true",
+		});
+	});
+});
