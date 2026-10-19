@@ -308,8 +308,8 @@ test("F: buildProviderConfig emits the host-compatible provider contract", () =>
 		assert.equal(m.cost?.cacheWrite, 0);
 	}
 
-	// known model: OpenCode Zen responses model with a thinkingLevelMap
-	const muse = cfg.models.find((m) => m.id === "muse-spark-1.2-contributor-free");
+ // known model: Cline responses model with a thinkingLevelMap
+ const muse = cfg.models.find((m) => m.id === "cline-free/muse-spark-1.3-contributor");
 	assert.ok(muse, "muse model must be present");
 	assert.equal(muse!.reasoning, true);
 	assert.equal(muse!.api, "openai-responses");

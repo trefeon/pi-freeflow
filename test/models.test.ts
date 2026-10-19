@@ -20,6 +20,7 @@ import {
  resolveCanonicalModelId,
  getAllRegisteredModels,
 } from "../src/models.ts";
+import { DEAD_MODEL_IDS } from "../src/catalog.ts";
 
 test("catalog composition: OpenCode + Kilo + Cline + OVH lists make up the full catalog", () => {
  // Composition over hardcoded counts — resilient to catalog growth while
@@ -44,8 +45,8 @@ test("all models have positive contextWindow and maxTokens", () => {
  }
 });
 
-test("muse-spark uses openai-responses api", () => {
- const spark = getModelDef("muse-spark-1.2-contributor-free");
+test("the Cline Muse Spark entry uses openai-responses api", () => {
+ const spark = getModelDef("cline-free/muse-spark-1.3-contributor");
  assert.ok(spark);
  assert.equal(spark?.api, "openai-responses");
  assert.equal(spark?.contextWindow, 1_048_576);
@@ -56,7 +57,6 @@ test("1M context window models are properly configured", () => {
  // model in the catalog advertising >= 1M must be in that known list
  // (drift guard — no unaccounted-for 1M models).
 	const oneMillionModels = [
-		"muse-spark-1.2-contributor-free",
 		"cline-free/muse-spark-1.3-contributor",
 		"z-ai/glm-5.3-flash",
 		"glm-5.3-flash-free",
@@ -246,7 +246,6 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   // while the gateway keeps answering 200 all the way to ~1M and truncates
   // silently. Acceptance is not capability; do not raise this from a 200.
   "cat-jam-free": { ctx: 262_144, max: 131_072, reasoning: true },
-  "muse-spark-1.2-contributor-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // Added 2026-09-22 (live: Zen /v1/models + keyless chat 200 on mimo-v2.6-flash-free)
   "mimo-v2.6-flash-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // Added 2026-09-23 (live: Zen listing + keyless chat 200; models.dev 1M ctx / 512K out)
@@ -418,6 +417,12 @@ test("muse-spark-1.3-contributor-free is pruned from the static catalog", () => 
 	assert.equal(ALL_MODELS.some((m) => m.id === "muse-spark-1.3-contributor-free"), false, "muse-spark-1.3-contributor-free must not be in ALL_MODELS");
 });
 
+test("muse-spark-1.2-contributor-free is retired and cannot re-enter the catalog", () => {
+	assert.equal(MODEL_MAP.get("muse-spark-1.2-contributor-free"), undefined, "muse-spark-1.2-contributor-free must not be in MODEL_MAP");
+	assert.equal(ALL_MODELS.some((m) => m.id === "muse-spark-1.2-contributor-free"), false, "muse-spark-1.2-contributor-free must not be in ALL_MODELS");
+	assert.ok(DEAD_MODEL_IDS.has("muse-spark-1.2-contributor-free"), "the retired id must be dead-listed so stale caches and upstream merges cannot revive it");
+});
+
 test("2026-10-13 OVH lane: every id routes to the ovh upstream, never Zen", () => {
  // Lane resolution is the load-bearing assertion: a miss here sends the
  // request into the Zen branch, where the free-tier fingerprint and the
@@ -428,10 +433,10 @@ test("2026-10-13 OVH lane: every id routes to the ovh upstream, never Zen", () =
   assert.equal(isOvhModel(resolveCanonicalModelId(m.id)), true, `${m.id} must be recognized through alias resolution`);
   assert.equal(isKiloModel(m.id), false, `${m.id} must never resolve to Kilo`);
  }
- assert.equal(isOvhModel("muse-spark-1.2-contributor-free"), false);
+ assert.equal(isOvhModel("deepseek-v4.1-flash-free"), false);
  assert.equal(isOvhModel("dots-studio/dots-3-note-preview:free"), false);
  assert.equal(isOvhModel("z-ai/glm-5.3-flash"), false);
- assert.equal(getModelUpstream("muse-spark-1.2-contributor-free"), "opencode");
+ assert.equal(getModelUpstream("deepseek-v4.1-flash-free"), "opencode");
 });
 test("2026-10-13 OVH aliases resolve to the ovh-free catalog ids", () => {
  const aliases: Record<string, string> = {

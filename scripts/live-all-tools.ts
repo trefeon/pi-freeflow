@@ -215,9 +215,9 @@ function liveSpec(only: string): LiveSpec {
  const msgTools = [...ALL_HOST_TOOL_NAMES, ...EXTRA_TOOLS].map((n, i) => callerTool(n, "/v1/messages", i));
  if (only === "responses") {
   return {
-   only, path: "/v1/responses", model: "muse-spark-1.2-contributor-free", verdict: "hard",
+   only, path: "/v1/responses", model: "cline-free/muse-spark-1.3-contributor", verdict: "hard",
    body: {
-    model: "muse-spark-1.2-contributor-free",
+    model: "cline-free/muse-spark-1.3-contributor",
     input: [{ role: "user", content: "Reply with exactly: OK" }],
     tools: respTools, tool_choice: "auto", max_output_tokens: 64, stream: false,
    },

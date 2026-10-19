@@ -255,8 +255,8 @@ returns `403` — the same `403` in all four cases, with nothing in the body to
 say which axis was wrong.
 
 Note that `max_tokens: 16` is fine on the chat-completions wire but rejected
-on `/responses`, where the floor is 16 or higher — `muse-spark-1.2-contributor-free`
-answers `400` below it.
+on `/responses`, where the floor is 16 or higher — measured live on the
+now-retired `muse-spark-1.2-contributor-free`, which answered `400` below it.
 
 ## Operational notes
 

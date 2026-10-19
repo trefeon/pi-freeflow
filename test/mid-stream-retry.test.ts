@@ -36,7 +36,7 @@ import {
 const PROXY_PORT = 19380;
 const RELAY_A = "http://127.0.0.1:19381";
 const RELAY_B = "http://127.0.0.1:19382";
-const MODEL = "muse-spark-1.2-contributor-free";
+const MODEL = "nemotron-3.5-super-vl-free";
 
 function seedPool(): void {
 	setActiveRelayState(

@@ -14,7 +14,7 @@ import {
 import { startProxy } from "../src/proxy.ts";
 
 const CHAT_MODEL = "cat-jam-free";
-const RESPONSES_MODEL = "muse-spark-1.2-contributor-free";
+const RESPONSES_MODEL = "nemotron-3.5-super-vl-free";
 
 /** The malformation reproduced live from the free models (see tool-args-repair). */
 const MALFORMED = '{"op":"init","phases":[{"name":"Research","tasks":["Map repo structure"]},{"name":"Synthesis","tasks":["Write summary"]}]}';

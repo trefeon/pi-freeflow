@@ -7,18 +7,30 @@
  *
  * NOTE: only models with a declared `api` can trip the guard — catalog
  * chat models declare no `api`, so a chat model on /v1/responses is
- * (observably) a silent passthrough, locked in below.
+ * (observably) a silent passthrough, locked in below. The guard is also
+ * Zen-lane only: the Cline responses model on a chat/messages path is
+ * served verbatim without a warning (locked in below).
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 import { startProxy } from "../src/proxy.ts";
 import { getActiveRelayState, resetAllRelayHealth, setActiveRelayState } from "../src/relay-state.ts";
 import { readRecentLogs } from "../src/logger.ts";
 import { _resetFreeTierHintForTest, _resetUpstreamHealthForTest } from "../src/upstream-health.ts";
+import { CLINE_POOL_FILE, _resetClinePoolCacheForTest } from "../src/cline-accounts.ts";
 
-const RESPONSES_MODEL = "muse-spark-1.2-contributor-free";
+// The only static catalog entry that declares api: "openai-responses" is the
+// Cline Muse Spark model (the Zen muse-spark contributor ids were retired
+// upstream). A Cline request needs one pool slot so the lane reaches the
+// stubbed upstream instead of failing auth first.
+const RESPONSES_MODEL = "cline-free/muse-spark-1.3-contributor";
 const CHAT_MODEL = "mimo-v2.6-flash-free";
+const CLINE_POOL_FIXTURE = JSON.stringify({
+	accounts: [{ slot: "stale-warn-fixture", token: "workos:fixture", addedAt: new Date(0).toISOString() }],
+});
 
 const CHAT_SSE = 'data: {"id":"chatcmpl-1","model":"x","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}\n\ndata: [DONE]\n\n';
 const RESPONSES_SSE = 'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","output":[]}}\n\n';
@@ -35,6 +47,10 @@ async function withProxy(fn: (port: number) => Promise<void>): Promise<void> {
  _resetUpstreamHealthForTest();
  _resetFreeTierHintForTest();
  const prior = getActiveRelayState();
+ const priorPool = fs.existsSync(CLINE_POOL_FILE) ? fs.readFileSync(CLINE_POOL_FILE, "utf8") : null;
+ fs.mkdirSync(path.dirname(CLINE_POOL_FILE), { recursive: true });
+ fs.writeFileSync(CLINE_POOL_FILE, CLINE_POOL_FIXTURE, { mode: 0o600 });
+ _resetClinePoolCacheForTest();
  const mock = http.createServer((req, res) => {
   const chunks: Buffer[] = [];
   req.on("data", (c) => chunks.push(c as Buffer));
@@ -66,6 +82,9 @@ async function withProxy(fn: (port: number) => Promise<void>): Promise<void> {
   if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
   await new Promise<void>((resolve) => mock.close(() => resolve()));
   setActiveRelayState(prior, false);
+  if (priorPool === null) fs.rmSync(CLINE_POOL_FILE, { force: true });
+  else fs.writeFileSync(CLINE_POOL_FILE, priorPool, "utf8");
+  _resetClinePoolCacheForTest();
   _resetUpstreamHealthForTest();
   _resetFreeTierHintForTest();
  }
@@ -80,25 +99,18 @@ async function post(port: number, path: string, body: unknown): Promise<{ status
  return { status: res.status, text: await res.text() };
 }
 
-test("stale registration: responses model on chat path warns but still proxies", async () => {
+test("stale registration guard is Zen-only: a Cline responses model on chat/messages paths warns nothing", async () => {
  await withProxy(async (port) => {
   const before = warnCount();
-  const res = await post(port, "/v1/chat/completions", { model: RESPONSES_MODEL, messages: [{ role: "user", content: "hi" }], stream: false });
-  assert.equal(res.status, 200, "mismatched request must still proxy (warn-only, no block)");
-  const fresh = newWarnsSince(before);
-  assert.ok(fresh.length >= 1, "responses model on /v1/chat/completions must log a stale-registration warning");
-  assert.ok(fresh.some((l) => l.includes(RESPONSES_MODEL)), "warning must name the mismatched model");
- });
-});
-
-test("stale registration: responses model on messages path warns", async () => {
- await withProxy(async (port) => {
-  const before = warnCount();
-  const res = await post(port, "/v1/messages", { model: RESPONSES_MODEL, messages: [{ role: "user", content: "hi" }] });
-  const fresh = newWarnsSince(before);
-  assert.ok(fresh.length >= 1, "responses model on /v1/messages must log a stale-registration warning");
-  assert.ok(fresh.some((l) => l.includes(RESPONSES_MODEL)), "warning must name the mismatched model");
-  assert.notEqual(res.status, 400, "mismatched request must not be rejected by the proxy itself");
+  const chat = await post(port, "/v1/chat/completions", { model: RESPONSES_MODEL, messages: [{ role: "user", content: "hi" }], stream: false });
+  assert.equal(chat.status, 200, "mismatched Cline request must still proxy verbatim");
+  const messages = await post(port, "/v1/messages", { model: RESPONSES_MODEL, messages: [{ role: "user", content: "hi" }] });
+  assert.notEqual(messages.status, 400, "mismatched request must not be rejected by the proxy itself");
+  assert.equal(
+   newWarnsSince(before).length,
+   0,
+   "the guard only runs on the Zen lane; the Zen responses clause is dormant until a Zen responses model returns",
+  );
  });
 });
 

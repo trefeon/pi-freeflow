@@ -95,7 +95,7 @@ function sseResponse(chunks: string[]): Response {
  } as unknown as Response;
 }
 
-const OPENCODE_MODEL = "muse-spark-1.2-contributor-free";
+const OPENCODE_MODEL = "nemotron-3.5-super-vl-free";
 
 function chatBody(model: string, stream = false): string {
  return JSON.stringify({

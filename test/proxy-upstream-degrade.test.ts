@@ -39,7 +39,7 @@ import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
 const TEST_PORT = 19291;
 const ZEN_MODEL = "mimo-v2.6-flash-free";
-const RESPONSES_MODEL = "muse-spark-1.2-contributor-free";
+const RESPONSES_MODEL = "nemotron-3.5-super-vl-free";
 const GATE_BODY = JSON.stringify({
  error: {
   code: "FreeTierError",

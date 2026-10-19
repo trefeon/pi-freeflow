@@ -52,7 +52,7 @@ import { getActiveRelayState, setActiveRelayState } from "../src/relay-state.ts"
 import type { RelayState } from "../src/types.ts";
 
 const RESPONSES_MODELS: Record<string, true> = {
- "muse-spark-1.2-contributor-free": true,
+ "nemotron-3.5-super-vl-free": true,
 };
 const PORT = 29363;
 const PROMPT = "Write a TypeScript LRU cache with JSDoc, ~80 lines, no preamble.";
@@ -88,8 +88,8 @@ interface BenchRow {
 
 /* Quick pass: 12 cells x {direct, relay} x 1 attempt = 24 rows. */
 const CELLS: Cell[] = [
- { model: "muse-spark-1.2-contributor-free", effortLabel: "xhigh", effortSent: "xhigh", perPath: 1 },
- { model: "muse-spark-1.2-contributor-free", effortLabel: "high", effortSent: "high", perPath: 1 },
+ { model: "nemotron-3.5-super-vl-free", effortLabel: "xhigh", effortSent: "xhigh", perPath: 1 },
+ { model: "nemotron-3.5-super-vl-free", effortLabel: "high", effortSent: "high", perPath: 1 },
  { model: "big-pickle", effortLabel: "max", effortSent: "max", perPath: 1 },
  { model: "big-pickle", effortLabel: "high", effortSent: "high", perPath: 1 },
  { model: "mimo-v2.6-flash-free", effortLabel: "high", effortSent: "high", perPath: 1 },

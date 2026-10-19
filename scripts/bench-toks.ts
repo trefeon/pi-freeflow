@@ -29,7 +29,7 @@ import { startProxy } from "../src/proxy.ts";
 import { getActiveRelayState, setActiveRelayState } from "../src/relay-state.ts";
 
 const RESPONSES_MODELS: Record<string, true> = {
-	"muse-spark-1.2-contributor-free": true,
+	"nemotron-3.5-super-vl-free": true,
 };
 const PORT = 29361;
 const PROMPT = "Write a TypeScript LRU cache with JSDoc, ~80 lines, no preamble.";
@@ -62,12 +62,12 @@ interface BenchRow {
 
 const FULL_PLAN: PlanItem[] = [
 	// muse-spark-1.2: xhigh x3 + high x3, interleaved
-	{ model: "muse-spark-1.2-contributor-free", effortLabel: "xhigh", effortSent: "xhigh" },
-	{ model: "muse-spark-1.2-contributor-free", effortLabel: "high", effortSent: "high" },
-	{ model: "muse-spark-1.2-contributor-free", effortLabel: "xhigh", effortSent: "xhigh" },
-	{ model: "muse-spark-1.2-contributor-free", effortLabel: "high", effortSent: "high" },
-	{ model: "muse-spark-1.2-contributor-free", effortLabel: "xhigh", effortSent: "xhigh" },
-	{ model: "muse-spark-1.2-contributor-free", effortLabel: "high", effortSent: "high" },
+	{ model: "nemotron-3.5-super-vl-free", effortLabel: "xhigh", effortSent: "xhigh" },
+	{ model: "nemotron-3.5-super-vl-free", effortLabel: "high", effortSent: "high" },
+	{ model: "nemotron-3.5-super-vl-free", effortLabel: "xhigh", effortSent: "xhigh" },
+	{ model: "nemotron-3.5-super-vl-free", effortLabel: "high", effortSent: "high" },
+	{ model: "nemotron-3.5-super-vl-free", effortLabel: "xhigh", effortSent: "xhigh" },
+	{ model: "nemotron-3.5-super-vl-free", effortLabel: "high", effortSent: "high" },
 	// big-pickle: max x3 + high x3, interleaved
 	{ model: "big-pickle", effortLabel: "max", effortSent: "max" },
 	{ model: "big-pickle", effortLabel: "high", effortSent: "high" },

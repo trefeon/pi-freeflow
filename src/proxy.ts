@@ -1420,11 +1420,12 @@ export function startProxy(
 
    const isStream = clientRequestedStream;
 
-   // Stale-registration guard: each model's declared api decides its upstream
-   // path — responses models (muse-spark-*) reach /v1/responses and
-   // anthropic-messages models reach /v1/messages. A request on the wrong path
-   // means the host still holds a pre-fix provider registration (stale disk
-   // cache or no restart after upgrade) and upstream answers 500.
+   // Stale-registration guard: a model whose declared api does not match the
+   // path means the host still holds a pre-fix provider registration (stale
+   // disk cache or no restart after upgrade) and upstream answers 500.
+   // Zen-lane only (Kilo/Cline/OVH are served verbatim) and dormant while the
+   // Zen catalog declares no non-chat api — a new responses or messages entry
+   // re-arms it automatically.
    if (!isKilo && !isCline && !isOvh && typeof parsedBody?.model === "string") {
     const knownDef = MODEL_MAP.get(String(parsedBody.model));
     if (target.pathname.endsWith("/chat/completions") && knownDef?.api && knownDef.api !== "openai-completions") {

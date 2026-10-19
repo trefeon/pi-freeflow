@@ -253,7 +253,7 @@ test("/freeflow update and status commands handle up-to-date, offline, and updat
 
 	const mockCtx: ExtensionContext = {
 		ui: mockUi,
-		model: { provider: "freeflow", id: "muse-spark-1.2-contributor-free" },
+		model: { provider: "freeflow", id: "nemotron-3.5-super-vl-free" },
 	};
 
 	const mockPi: ExtensionAPI = {

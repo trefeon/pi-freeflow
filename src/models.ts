@@ -1,10 +1,11 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 36 verified free models (live-verified 2026-10-17):
- * - 13 OpenCode Zen models (1 Responses API + 12 Chat Completions)
+ * Defines the 35 verified free models (live-verified 2026-10-18):
+ * - 12 OpenCode Zen models (all Chat Completions — the last Responses model,
+ *   muse-spark-1.2-contributor-free, was deprecated upstream 2026-10-18)
  * - 13 KiloCode Keyless Gateway models (OpenRouter format)
- * - 2 Cline direct-only models (per-user pool)
+ * - 2 Cline direct-only models (per-user pool; one is Responses API)
  * - 8 OVHcloud AI Endpoints models (keyless, direct-only)
  */
 
@@ -39,24 +40,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
    high: "high",
    xhigh: "xhigh",
    max: "max",
-  },
- },
- {
-  id: "muse-spark-1.2-contributor-free",
-  name: "Muse Spark 1.2 [OpenCode]",
-  reasoning: true,
-  contextWindow: 1_048_576,
-  maxTokens: 131_072,
-  api: "openai-responses",
- input: ["text", "image", "video"],
-  thinkingLevelMap: {
-   off: null,
-   minimal: "minimal",
-   low: "low",
-   medium: "medium",
-   high: "high",
-   xhigh: "xhigh",
-   max: null,
   },
  },
  {
@@ -261,9 +244,9 @@ export const OPENCODE_MODELS: ModelDef[] = [
  {
   // Added 2026-10-16 (recheck): live free id on the Zen lane, listed on the
   // official free lineup while models.dev already tags it deprecated — the
-  // tag also sits on live ids (muse-spark-1.2-contributor-free) and on
-  // already-dead ones (mimo-v2.5-free), so the live answer decides: chat 200
-  // with tools + stream, and the tool call round-trips. Chat is the only
+  // tag also sits on live ids and on already-dead ones (mimo-v2.5-free), so
+  // the live answer decides: chat 200 with tools + stream, and the tool call
+  // round-trips. Chat is the only
   // native shape (/v1/responses answers 400 "Model does not support this
   // protocol"), so `api` stays unset. Reasoning: the published ladder lists
   // `high` only; high streams thinking and the unavailable rungs stay null
@@ -756,7 +739,7 @@ export const OVH_MODEL_IDS = new Set<string>([
   .map(([alias]) => alias),
 ]);
 /**
- * Combined list of all 36 static free models (canonical)
+ * Combined list of all 35 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS, ...OVH_MODELS];
 

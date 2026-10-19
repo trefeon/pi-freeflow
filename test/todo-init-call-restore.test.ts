@@ -35,7 +35,7 @@ function responsesTool(name: string, description: string, parameters: unknown): 
 /** OMP-like caller body: todo marker + one fingerprint slot covered. */
 function todoCallerBody(): Record<string, unknown> {
 	return {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		stream: false,
 		tools: [
@@ -148,7 +148,7 @@ test("bare init control passes through unchanged (error is model-sent, not strip
 
 test("normalizeResponsesBody leaves todo tools alone (spark effort clamp only)", () => {
 	const body: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		reasoning: { effort: "max" },
 		tools: [responsesTool("todo", "Manage tasks", { type: "object" })],

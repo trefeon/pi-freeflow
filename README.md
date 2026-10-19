@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 36 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 35 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **36 free models** | 13 from OpenCode Zen, 13 from KiloCode Gateway, 2 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
+| **35 free models** | 12 from OpenCode Zen, 13 from KiloCode Gateway, 2 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own relays: a self-hosted egress pool (many egress IPs on one small host) or Cloudflare Workers / Deno Deploy / Vercel Edge workers. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your host or platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`; the two Cline models have no alias and must be typed in full. | **$0** |
@@ -48,12 +48,12 @@ pi install npm:pi-freeflow
 **OMP, interactive:**
 ```bash
 omp
-/model → freeflow → muse-spark-1.2-contributor-free (1M) → max
+/model → freeflow → deepseek-v4.1-flash-free (1M) → max
 ```
 
 **OMP, one shot:**
 ```bash
-omp -p --model freeflow/muse-spark-1.2-contributor-free "build me a SaaS"
+omp -p --model freeflow/deepseek-v4.1-flash-free "build me a SaaS"
 omp -p --model freeflow/space-bunny:high "solve this bug"   # alias + thinking level
 ```
 
@@ -208,21 +208,20 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 36 models, one command
+### 35 models, one command
 
 ```bash
 /model → freeflow → pick
 ```
 
 Every model specification is reconciled against [models.dev](https://models.dev/), [OpenRouter](https://openrouter.ai/), and OMP's built-in catalog, configured with the highest verified context, output ceiling, and reasoning capabilities across twin models.
-#### OpenCode Zen (13 models), Responses and Chat API
+#### OpenCode Zen (12 models), Chat Completions API
 
 Good defaults for long coding sessions and agentic work.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `cat-jam-free` | Cat Jam | **256K** (262.144) | **131K** (131.072) | `low … max` | ❌ |
-| `muse-spark-1.2-contributor-free` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
 | `mimo-v2.6-flash-free` | Xiaomi MiMo | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh`\* | ✅ |
 | `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `minimal … xhigh` | ❌ |
 | `nemotron-3.5-super-vl-free` | NVIDIA | **1M** (1.000.000) | **131K** (131.072) | `minimal … xhigh` | ✅ |
@@ -378,7 +377,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 #### Project structure
 
 ```
-├── models.ts                # 36-model catalog definitions
+├── models.ts                # 35-model catalog definitions
 ├── index.ts                 # extension entry, lifecycle hooks
 ├── catalog.ts               # model catalog cache (24h disk)
 ├── proxy.ts                 # local proxy server (127.0.0.1:28180)

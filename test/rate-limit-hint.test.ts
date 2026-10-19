@@ -32,7 +32,7 @@ const HINT_TEXT =
 
 const TEST_PORT = 19183;
 const TEST_PORT_RELAY = 19184;
-const MODEL = "muse-spark-1.2-contributor-free";
+const MODEL = "nemotron-3.5-super-vl-free";
 const FAKE_RELAY = "https://dead-relay-999.example.com";
 
 /** Response-like stub: a JSON error with the given status, no stream body. */

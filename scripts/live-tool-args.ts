@@ -196,7 +196,7 @@ function callFromSse(sse: string, endpoint: string): { name: string; args: strin
 }
 
 const targets = process.argv.slice(2).filter((a) => !a.startsWith("-"));
-const models = targets.length > 0 ? targets : ["muse-spark-1.2-contributor-free", "mimo-v2.6-flash-free"];
+const models = targets.length > 0 ? targets : ["nemotron-3.5-super-vl-free", "mimo-v2.6-flash-free"];
 const { server, port } = await startProxy(PORT);
 try {
  for (const model of models) {

@@ -428,7 +428,7 @@ test("sseToMessagesJson: drops placeholder tool_use, keeps caller blocks with re
 
 test("normalizeResponsesBody: canned OMP chat leftovers reach responses shape", () => {
 	const body: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		messages: [{ role: "user", content: "hi" }],
 		max_tokens: 200,
 		temperature: 0.5,
@@ -453,7 +453,7 @@ test("normalizeResponsesBody: canned OMP chat leftovers reach responses shape", 
 
 test("normalizeResponsesBody: auto + parallel true + ultra survive, non-spark untouched", () => {
 	const body: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		max_completion_tokens: 50,
 		tool_choice: "auto",
@@ -487,7 +487,7 @@ test("normalizeResponsesBody: every assistant commentary item loses its phase", 
 	});
 
 	const terminal: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: [user, narration(), user],
 	};
 	normalizeResponsesBody(terminal);
@@ -504,7 +504,7 @@ test("normalizeResponsesBody: every assistant commentary item loses its phase", 
 	// user message, so a tail-only sweep would miss it. Upstream validates the
 	// whole replayed history, so every commentary item goes.
 	const withSystemBetween: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: [narration(), { role: "developer", content: "extra tools" }, user],
 	};
 	normalizeResponsesBody(withSystemBetween);
@@ -515,7 +515,7 @@ test("normalizeResponsesBody: every assistant commentary item loses its phase", 
 
 	// An earlier turn's commentary must not come back once later turns append.
 	const twoTurns: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: [
 			{ ...narration(), id: "rs_turn_one" },
 			user,
@@ -532,12 +532,12 @@ test("normalizeResponsesBody: every assistant commentary item loses its phase", 
 test("tool_choice is auto-or-absent on every Zen path", () => {
 	const unsupported = ["none", "required", "any"] as const;
 	for (const value of unsupported) {
-		const body: Record<string, unknown> = { model: "muse-spark-1.2-contributor-free", input: "hi", tool_choice: value };
+		const body: Record<string, unknown> = { model: "nemotron-3.5-super-vl-free", input: "hi", tool_choice: value };
 		normalizeResponsesBody(body);
 		assert.ok(!("tool_choice" in body), `"${value}" dropped — Zen supports only auto`);
 	}
 	const named: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		tool_choice: { type: "function", name: "bash" },
 	};
@@ -545,7 +545,7 @@ test("tool_choice is auto-or-absent on every Zen path", () => {
 	assert.ok(!("tool_choice" in named), "named function choice dropped");
 
 	const auto: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		tool_choice: "auto",
 	};
@@ -579,7 +579,7 @@ test("a replayed tool call with a malformed name is folded on the wire", () => {
 	// Captured live: space-bunny-free emitted a call named `id id=`, and Pi
 	// replays it in input[] forever, so every later turn 400s.
 	const body: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: [
 			{ role: "user", content: [{ type: "input_text", text: "go" }] },
 			{ type: "function_call", call_id: "call_983ed385be8d42d1a0841458", name: "id id=", arguments: "{}" },
@@ -594,7 +594,7 @@ test("a replayed tool call with a malformed name is folded on the wire", () => {
 	assert.equal(items[1].arguments, "{}", "arguments untouched");
 
 	const custom: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: [
 			{ type: "custom_tool_call", call_id: "c1", name: "xd://browser__open", input: "{}" },
 			{ type: "custom_tool_call", call_id: "c1", name: "bash", input: "{}" },
@@ -607,7 +607,7 @@ test("a replayed tool call with a malformed name is folded on the wire", () => {
 
 	// A `messages` body copied into `input` is covered by the same sweep.
 	const viaMessages: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		messages: [{ type: "function_call", call_id: "c2", name: "bad name", arguments: "{}" }],
 	};
 	normalizeResponsesBody(viaMessages);
@@ -623,7 +623,7 @@ test("dropping a forced tool call keeps the model's native reasoning on", () => 
 	// reasoning off with effort "none". Dropping the forced call must not leave
 	// the model reasoning-free, and "none" is itself rejected upstream.
 	const body: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: [{ role: "user", content: [{ type: "input_text", text: "go" }] }],
 		tool_choice: { type: "function", name: "think" },
 		reasoning: { effort: "none" },
@@ -637,7 +637,7 @@ test("dropping a forced tool call keeps the model's native reasoning on", () => 
 	);
 
 	const flat: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		tool_choice: "required",
 		reasoning_effort: "none",
@@ -646,7 +646,7 @@ test("dropping a forced tool call keeps the model's native reasoning on", () => 
 	assert.equal(flat.reasoning_effort, "xhigh", "the flat field is restored too");
 
 	const camel: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		tool_choice: "required",
 		reasoningEffort: "none",
@@ -656,7 +656,7 @@ test("dropping a forced tool call keeps the model's native reasoning on", () => 
 
 	// Genuine reasoning-off is the caller's real intent and must survive.
 	const genuineOff: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		tool_choice: "required",
 		reasoning: { effort: "off" },
@@ -666,7 +666,7 @@ test("dropping a forced tool call keeps the model's native reasoning on", () => 
 
 	// A supported effort is left exactly as the caller set it.
 	const chosen: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		tool_choice: "required",
 		reasoning: { effort: "low" },
@@ -676,7 +676,7 @@ test("dropping a forced tool call keeps the model's native reasoning on", () => 
 
 	// No forced call means no restore: the host's own value stands.
 	const untouched: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		reasoning: { effort: "none" },
 	};
@@ -690,7 +690,7 @@ test("dropping a forced tool call keeps the model's native reasoning on", () => 
 
 test("enforceOpencodeFingerprint: responses path normalizes before fingerprint", () => {
 	const body: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		messages: [{ role: "user", content: "hi" }],
 		max_tokens: 200,
 		temperature: 0.5,
@@ -724,7 +724,7 @@ test("enforceOpencodeFingerprint: responses path normalizes before fingerprint",
 
 test("normalizeResponsesBody: flat reasoning effort max|ultra clamp to xhigh", () => {
 	const body: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		reasoning_effort: "max",
 		reasoningEffort: "ultra",
@@ -733,7 +733,7 @@ test("normalizeResponsesBody: flat reasoning effort max|ultra clamp to xhigh", (
 	assert.equal(body.reasoning_effort, "xhigh");
 	assert.equal(body.reasoningEffort, "xhigh");
 	const upper: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		reasoning_effort: "MAX",
 		reasoningEffort: "Ultra",
@@ -743,7 +743,7 @@ test("normalizeResponsesBody: flat reasoning effort max|ultra clamp to xhigh", (
 	assert.equal(upper.reasoningEffort, "xhigh", "clamp is case-insensitive");
 	for (const level of ["off", "low", "medium", "high", "xhigh"]) {
 		const kept: Record<string, unknown> = {
-			model: "muse-spark-1.2-contributor-free",
+			model: "nemotron-3.5-super-vl-free",
 			input: "hi",
 			reasoning_effort: level,
 			reasoningEffort: level,
@@ -765,7 +765,7 @@ test("normalizeResponsesBody: flat reasoning effort max|ultra clamp to xhigh", (
 
 test("enforceOpencodeFingerprint: responses path clamps flat effort end to end", () => {
 	const body: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		reasoning_effort: "max",
 		reasoningEffort: "ultra",
@@ -789,7 +789,7 @@ test("enforceOpencodeFingerprint: responses path clamps flat effort end to end",
 test("enforceOpencodeFingerprint: chat path drops tool_choice none, keeps auto-or-absent", () => {
 	for (const none of ["none", "None", { type: "none" }]) {
 		const body: Record<string, unknown> = {
-			model: "muse-spark-1.2-contributor-free",
+			model: "nemotron-3.5-super-vl-free",
 			messages: [{ role: "user", content: "hi" }],
 			tool_choice: none,
 			stream: false,
@@ -799,7 +799,7 @@ test("enforceOpencodeFingerprint: chat path drops tool_choice none, keeps auto-o
 		assert.equal(body.stream, true, "stream still forced");
 	}
 	const auto: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		messages: [{ role: "user", content: "hi" }],
 		tool_choice: "auto",
 		stream: false,
@@ -807,7 +807,7 @@ test("enforceOpencodeFingerprint: chat path drops tool_choice none, keeps auto-o
 	enforceOpencodeFingerprint(auto, "/v1/chat/completions");
 	assert.equal(auto.tool_choice, "auto", "auto still rides");
 	const absent: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		messages: [{ role: "user", content: "hi" }],
 		stream: false,
 	};
@@ -817,7 +817,7 @@ test("enforceOpencodeFingerprint: chat path drops tool_choice none, keeps auto-o
 
 test("normalizeResponsesBody: drops response_format leftover from chat completions", () => {
 	const body: Record<string, unknown> = {
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		input: "hi",
 		response_format: { type: "json_object" },
 	};

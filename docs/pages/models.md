@@ -1,12 +1,12 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **36 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
+pi-freeflow provides unified access to **35 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
 
 ## Upstream Protocol Distinction
 
 ### OpenCode Zen — Responses API (`/v1/responses`)
 - **Endpoint**: `https://opencode.ai/inference/v1/responses`
-- **Models**: `muse-spark-1.2-contributor-free` (1M context, 131K output, vision)
+- **Models**: none right now — the lane is wired for any model that declares `api: "openai-responses"`, but the two Zen muse-spark contributor ids were retired upstream (1.3 on 2026-10-17, 1.2 on 2026-10-18). The Cline Muse Spark entry still serves this flavor.
 - **Config**: `api: "openai-responses"`, session affinity via OpenAI-nosession
 
 ### OpenCode Zen — Chat Completions (`/v1/chat/completions`)
@@ -37,14 +37,13 @@ pi-freeflow provides unified access to **36 curated free models** across four up
 - **Routing**: direct only, never through the relay pool
 - **Config**: `api: "openai-completions"`. Chat is the only upstream shape: OVH's responses endpoint rejects every array `input` with `422 input: data did not match any variant of untagged enum ResponseInput` and accepts only a bare string, so a responses-path request is translated to chat upstream and the answer mapped back — the same shape mapping the Cline lane uses.
 
-## 36 Model Specifications
+## 35 Model Specifications
 
-### OpenCode Zen (13 models)
+### OpenCode Zen (12 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
 | `cat-jam-free` | 262,144 | 131,072 | low..max | ❌ |
-| `muse-spark-1.2-contributor-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `mimo-v2.6-flash-free` | 1,048,576 | 131,072 | minimal..xhigh (3 values)* | ✅ |
 | `nemotron-3.5-lightning-free` | 1,000,000 | 262,144 | minimal..xhigh | ❌ |
 | `nemotron-3.5-super-vl-free` | 1,000,000 | 131,072 | minimal..xhigh | ✅ |
@@ -126,7 +125,7 @@ When a model is available under multiple twin names (e.g. `deepseek-v4.1-flash-f
 
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :---: | :--- | :--- | :--- |
-| **OpenCode Zen** | 13 | `opencode.ai/inference` | `/inference/v1` (Responses + Chat) | `Bearer public` |
+| **OpenCode Zen** | 12 | `opencode.ai/inference` | `/inference/v1` (Chat; the Responses lane is wired for future ids) | `Bearer public` |
 | **KiloCode Gateway** | 13 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
 | **Cline** | 2 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 | **OVHcloud AI Endpoints** | 8 | `oai.endpoints.kepler.ai.cloud.ovh.net` | `/v1/chat/completions` (responses path translated) | Keyless, anonymous |

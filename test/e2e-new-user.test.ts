@@ -223,24 +223,24 @@ test("E2E [5/10] ensureDaemon seamlessly rebinds when active daemon process is t
 
 test("E2E [6/10] model catalog accurately maps thinking formats and source routing", () => {
  // Canonical resolution
- assert.equal(resolveCanonicalModelId("muse-spark-1.2-contributor-free"), "muse-spark-1.2-contributor-free");
+ assert.equal(resolveCanonicalModelId("cline-free/muse-spark-1.3-contributor"), "cline-free/muse-spark-1.3-contributor");
 	assert.equal(resolveCanonicalModelId("beam-free"), "beam-free");
 	assert.equal(resolveCanonicalModelId("mimo-v2.6-flash-free"), "mimo-v2.6-flash-free");
 
  // Kilo models identification
  assert.equal(isKiloModel("dots-3-note-preview"), true);
- assert.equal(isKiloModel("muse-spark-1.2-contributor-free"), false);
+ assert.equal(isKiloModel("cline-free/muse-spark-1.3-contributor"), false);
 
  // ProviderConfig format verification
  const sampleCatalog: RegisteredModel[] = [
   {
-   id: "muse-spark-1.2-contributor-free",
+   id: "cline-free/muse-spark-1.3-contributor",
    name: "Muse Spark",
    api: "openai-responses",
    contextWindow: 128000,
    maxTokens: 4096,
    reasoning: true,
-   source: "opencode",
+   source: "cline",
   },
   {
 			id: "mimo-v2.6-flash-free",
@@ -263,7 +263,7 @@ test("E2E [6/10] model catalog accurately maps thinking formats and source routi
  assert.equal(cfg.baseUrl, "http://127.0.0.1:28180/v1");
 
  // Muse spark gets openai-responses session format
- const museModel = cfg.models.find((m) => m.id === "muse-spark-1.2-contributor-free");
+ const museModel = cfg.models.find((m) => m.id === "cline-free/muse-spark-1.3-contributor");
  assert.ok(museModel);
  assert.equal(museModel?.compat?.sessionAffinityFormat, "openai-nosession");
 

@@ -18,7 +18,7 @@ import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 const TEST_PORT_DISABLED = 19185;
 const TEST_PORT_QUOTA = 19186;
 const TEST_PORT_DIRECT = 19187;
-const MODEL = "muse-spark-1.2-contributor-free";
+const MODEL = "nemotron-3.5-super-vl-free";
 const FAKE_RELAY = "https://dead-relay-998.example.com";
 
 const DISABLED_BODY = JSON.stringify({

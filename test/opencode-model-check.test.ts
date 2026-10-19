@@ -13,7 +13,7 @@ const CHAT_MODEL: ModelDef = {
 
 const RESPONSES_MODEL: ModelDef = {
 	...CHAT_MODEL,
-	id: "muse-spark-1.2-contributor-free",
+	id: "cline-free/muse-spark-1.3-contributor",
 	api: "openai-responses",
 };
 

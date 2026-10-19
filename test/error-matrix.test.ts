@@ -141,7 +141,7 @@ test("Error Matrix [4/10] catalog gracefully strips dead model IDs on cache read
 	// Simulated incoming payload containing resurrected dead models
 	const dirtyCatalog: RegisteredModel[] = [
 		{
-			id: "muse-spark-1.2-contributor-free",
+			id: "nemotron-3.5-super-vl-free",
 			name: "Muse Spark",
 			contextWindow: 128000,
 			maxTokens: 4096,
@@ -169,7 +169,7 @@ test("Error Matrix [4/10] catalog gracefully strips dead model IDs on cache read
 	// Merge must sanitize out dead model IDs
 	const base: RegisteredModel[] = [
 		{
-			id: "muse-spark-1.2-contributor-free",
+			id: "nemotron-3.5-super-vl-free",
 			name: "Muse Spark",
 			contextWindow: 128000,
 			maxTokens: 4096,

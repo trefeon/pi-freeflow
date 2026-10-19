@@ -14,7 +14,7 @@ import { resetAllRelayHealth, setActiveRelayState } from "../src/relay-state.ts"
 import type { KnownRelay, RelayState } from "../src/types.ts";
 import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
 
-const ZEN_FREE = "muse-spark-1.2-contributor-free";
+const ZEN_FREE = "nemotron-3.5-super-vl-free";
 const KILO_FREE = "dots-studio/dots-3-note-preview:free";
 const UNKNOWN_MODEL = "gpt-9-ultra-paid";
 const OVH_FREE = "ovh-free/gpt-oss-20b";

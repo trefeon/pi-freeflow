@@ -45,7 +45,7 @@ function reasoning(blob: string, summary = ""): Record<string, unknown> {
 /** Responses body shaped like the captured production payload. */
 function responsesBody(key: string, blobs: string[]): string {
 	return JSON.stringify({
-		model: "muse-spark-1.2-contributor-free",
+		model: "nemotron-3.5-super-vl-free",
 		store: false,
 		stream: false,
 		prompt_cache_key: key,

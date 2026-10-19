@@ -23,7 +23,7 @@ import type { RelayState } from "../src/types.ts";
 // into the per-run sandbox, so isolation holds against unpatched src too.
 import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
-const STREAM_MODEL = "muse-spark-1.2-contributor-free";
+const STREAM_MODEL = "nemotron-3.5-super-vl-free";
 const SSE_BODY = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n';
 
 /** Upstream SSE stub with a body but deliberately no anti-buffer headers. */

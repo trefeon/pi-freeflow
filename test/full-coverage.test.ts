@@ -210,7 +210,7 @@ test("payload size guard via startProxy 413", async () => {
      (res) => resolve({ status: res.statusCode ?? 0 }),
     );
     req.on("error", reject);
-    req.end(JSON.stringify({ model: "muse-spark-1.2-contributor-free" }));
+    req.end(JSON.stringify({ model: "nemotron-3.5-super-vl-free" }));
    });
   });
   assert.equal(res.status, 413);
@@ -257,8 +257,8 @@ test("startProxy binds ephemeral and isProxyAlive true", async () => {
  }
 });
 
-test("alive catalog init 36 models", () => {
+test("alive catalog init 35 models", () => {
 	setAliveCatalog(ALL_MODELS as unknown as RegisteredModel[]);
 	assert.equal(getAliveCatalog().length, ALL_MODELS.length);
-	assert.equal(getAliveCatalog().length, 36);
+	assert.equal(getAliveCatalog().length, 35);
 });

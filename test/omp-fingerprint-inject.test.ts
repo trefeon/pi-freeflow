@@ -133,7 +133,7 @@ test("fingerprint injection: full OMP inventory injects nothing; idempotent and 
 
 test("enforce: partial OMP [ask,glob] on /v1/responses yields real schemas, edit cloaked", () => {
  const body: Record<string, unknown> = {
-  model: "muse-spark-1.2-contributor-free",
+  model: "nemotron-3.5-super-vl-free",
   input: "hi",
   stream: false,
   tools: [
@@ -165,7 +165,7 @@ test("enforce: partial OMP [ask,glob] on /v1/responses yields real schemas, edit
 
 test("enforce: model calling injected read executes downstream (not cloaked)", () => {
  const body: Record<string, unknown> = {
-  model: "muse-spark-1.2-contributor-free",
+  model: "nemotron-3.5-super-vl-free",
   input: "hi",
   stream: false,
   tools: [responsesTool("ask", "Ask", { type: "object" }), responsesTool("glob", "Find", { type: "object" })],
@@ -193,7 +193,7 @@ test("enforce: model calling injected read executes downstream (not cloaked)", (
 
 test("enforce: full OMP inventory yields injected=[] and injectedReal=[]", () => {
  const body: Record<string, unknown> = {
-  model: "muse-spark-1.2-contributor-free",
+  model: "nemotron-3.5-super-vl-free",
   input: "hi",
   stream: false,
   tools: [
