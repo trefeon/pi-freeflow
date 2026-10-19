@@ -4,6 +4,7 @@ import { relayFetch } from "../src/relay.ts";
 import { setActiveRelayState, resetAllRelayHealth } from "../src/relay-state.ts";
 import { registerClient, renewClient, getLeaseCount, _resetLeaseStateForTest } from "../src/lease.ts";
 import { ALLOW_UNSAFE_RELAY_ENV } from "../src/config.ts";
+import { tokenAuthHeaders } from "../src/token.ts";
 
 async function run() {
   console.log("=== Starting pi-freeflow Stress Test ===");
@@ -16,7 +17,7 @@ async function run() {
     const start = Date.now();
     const promises = Array.from({ length: 100 }, async (_, i) => {
       const path = i % 2 === 0 ? "/v1/models" : "/health";
-      const res = await fetch(`http://127.0.0.1:${port}${path}`);
+      const res = await fetch(`http://127.0.0.1:${port}${path}`, { headers: tokenAuthHeaders() });
       if (!res.ok) throw new Error(`Request ${i} failed with HTTP ${res.status}`);
       return res.json();
     });

@@ -4,6 +4,7 @@
  */
 import { loadRelayState } from "../src/relay-state.ts";
 import { agent } from "../src/relay.ts";
+import { tokenAuthHeaders } from "../src/token.ts";
 
 const PROXY = "http://127.0.0.1:28180";
 
@@ -34,7 +35,7 @@ async function postBody(model: string, body: Record<string, unknown>, abortAfter
 	try {
 		const res = await fetch(`${PROXY}/v1/chat/completions`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: { "content-type": "application/json", ...tokenAuthHeaders() },
 			body: JSON.stringify(body),
 			signal: controller.signal,
 		});

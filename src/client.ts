@@ -55,7 +55,7 @@ import {
 import { compareVersions } from "./update-core.ts";
 import { isDaemonIdentityBody } from "./health.ts";
 import type { DaemonHealthSnapshot } from "./health.ts";
-import { readToken } from "./token.ts";
+import { tokenAuthHeaders } from "./token.ts";
 
 const CLIENT_ID = randomUUID();
 
@@ -249,14 +249,10 @@ async function controlCall(
  endpoint: string,
  payload: Record<string, string>,
 ): Promise<ControlResult> {
- const token = readToken();
  try {
   const res = await fetch(`http://${HOST}:${port}${endpoint}`, {
    method: "POST",
-   headers: {
-    "content-type": "application/json",
-    ...(token ? { authorization: `Bearer ${token}` } : {}),
-   },
+   headers: { "content-type": "application/json", ...tokenAuthHeaders() },
    body: JSON.stringify(payload),
    signal: AbortSignal.timeout(getControlTimeoutMs()),
   });

@@ -50,6 +50,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { startProxy } from "../src/proxy.ts";
 import { getActiveRelayState, setActiveRelayState } from "../src/relay-state.ts";
+import { tokenAuthHeaders } from "../src/token.ts";
 import type { RelayState } from "../src/types.ts";
 
 const RESPONSES_MODELS: Record<string, true> = {
@@ -381,7 +382,7 @@ async function runAttempt(
  try {
   const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
    method: "POST",
-   headers: { "content-type": "application/json" },
+   headers: { "content-type": "application/json", ...tokenAuthHeaders() },
    body: JSON.stringify(body),
    signal: controller.signal,
   });

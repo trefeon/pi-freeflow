@@ -35,6 +35,7 @@ import {
  translateToolsForPath,
 } from "../src/tool-translation.ts";
 import { enforceOpencodeFingerprint } from "../src/opencode-fingerprint.ts";
+import { tokenAuthHeaders } from "../src/token.ts";
 
 const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
 const PORT = 29481;
@@ -290,7 +291,7 @@ async function phaseB(spec: LiveSpec): Promise<number> {
   await new Promise((r) => setTimeout(r, 1_000));
   const res = await fetch(`http://127.0.0.1:${port}${spec.path}`, {
    method: "POST",
-   headers: { "content-type": "application/json", accept: "application/json" },
+   headers: { "content-type": "application/json", accept: "application/json", ...tokenAuthHeaders() },
    body: JSON.stringify(spec.body),
    signal: AbortSignal.timeout(LIVE_TIMEOUT_MS),
   });

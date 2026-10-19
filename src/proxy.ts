@@ -14,7 +14,7 @@ import net from "node:net";
 import { handleHealthRequest, isDaemonIdentityBody, isLoopbackIP } from "./health.ts";
 import type { DaemonHealthSnapshot } from "./health.ts";
 import { getLeaseCount, registerClient, renewClient, touchActivity, unregisterClient } from "./lease.ts";
-import { ensureToken, isAuthorizedBearer, readToken } from "./token.ts";
+import { ensureToken, isAuthorizedBearer, tokenAuthHeaders } from "./token.ts";
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
@@ -919,11 +919,10 @@ export async function getDaemonHealth(
  port: number,
 ): Promise<DaemonHealthSnapshot> {
  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
- const token = readToken();
  try {
   const res = await fetch(`http://${HOST}:${port}/_health`, {
    signal: AbortSignal.timeout(2500),
-   headers: token ? { authorization: `Bearer ${token}` } : undefined,
+   headers: tokenAuthHeaders(),
   });
   if (!res.ok) return null;
   const data: unknown = await res.json();
@@ -1061,12 +1060,12 @@ export async function killPortHolder(port: number): Promise<boolean> {
   log("warn", `refusing to kill :${port} — it answers /health as a foreign service, not a pi-freeflow daemon`);
   return false;
  }
- const token = readToken();
+ const auth = tokenAuthHeaders();
 	try {
 		try {
 			await fetch(`http://${HOST}:${port}/_shutdown`, {
 				method: "POST",
-				headers: token ? { authorization: `Bearer ${token}` } : undefined,
+				headers: auth,
 				signal: AbortSignal.timeout(300),
 			});
 			for (let i = 0; i < 6; i++) {

@@ -25,9 +25,12 @@ const TOKEN_MODE = 0o600;
 
 let cache: { path: string; token: string } | null = null;
 
-/** Read the installation token; null while the file is missing or empty. */
-export function readToken(): string | null {
-	const file = resolveTokenPath();
+/** Read the installation token; null while the file is missing or empty.
+ * `dataDir` overrides the resolved data directory — harnesses that boot their
+ * own daemon under a temp dir must read that daemon's token, not this
+ * process's. */
+export function readToken(dataDir?: string): string | null {
+	const file = dataDir === undefined ? resolveTokenPath() : path.join(dataDir, "token");
 	if (cache !== null && cache.path === file) return cache.token;
 	try {
 		const token = readFileSync(file, "utf8").trim();
@@ -37,6 +40,17 @@ export function readToken(): string | null {
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * `Authorization` header for a request to the local proxy, or `{}` while the
+ * token file does not exist yet. The single way every loopback caller
+ * authenticates: the client heartbeat/attach/detach, the daemon watchdog
+ * probes, the `/freeflow` control verbs and the scripts under scripts/.
+ */
+export function tokenAuthHeaders(dataDir?: string): Record<string, string> {
+	const token = readToken(dataDir);
+	return token ? { authorization: `Bearer ${token}` } : {};
 }
 
 /**
@@ -79,9 +93,4 @@ export function isAuthorizedBearer(header: string | undefined, expected: string)
 	const wanted = Buffer.from(expected, "utf8");
 	if (candidate.length !== wanted.length) return false;
 	return timingSafeEqual(candidate, wanted);
-}
-
-/** Test-only: drop the cached token so the file is re-read. */
-function _resetTokenCacheForTest(): void {
-	cache = null;
 }

@@ -36,6 +36,9 @@ const cfg = await import("../src/config.ts");
 const relayState = await import("../src/relay-state.ts");
 const lease = await import("../src/lease.ts");
 const proxy = await import("../src/proxy.ts");
+// Loaded dynamically too: token.ts pulls config.ts, whose PORT must already be
+// the override above.
+const { tokenAuthHeaders } = await import("../src/token.ts");
 
 if (cfg.PORT !== STRESS_PORT) throw new Error(`port override failed: ${cfg.PORT}`);
 
@@ -57,7 +60,7 @@ async function scenario(name: string, ms: number, fn: () => Promise<string>): Pr
 
 function get(pathname: string, port: number, timeoutMs = 5000): Promise<{ status: number; body: string }> {
 	return new Promise((res, rej) => {
-		const req = http.get({ host: HOST, port, path: pathname, signal: AbortSignal.timeout(timeoutMs) }, (r) => {
+		const req = http.get({ host: HOST, port, path: pathname, headers: tokenAuthHeaders(), signal: AbortSignal.timeout(timeoutMs) }, (r) => {
 			const chunks: Buffer[] = [];
 			r.on("data", (c: Buffer) => chunks.push(c));
 			r.on("end", () => res({ status: r.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
@@ -70,7 +73,7 @@ function post(pathname: string, port: number, payload: unknown, timeoutMs = 5000
 	return new Promise((res, rej) => {
 		const data = JSON.stringify(payload);
 		const req = http.request(
-			{ host: HOST, port, path: pathname, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) }, signal: AbortSignal.timeout(timeoutMs) },
+			{ host: HOST, port, path: pathname, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data), ...tokenAuthHeaders() }, signal: AbortSignal.timeout(timeoutMs) },
 			(r) => {
 				const chunks: Buffer[] = [];
 				r.on("data", (c: Buffer) => chunks.push(c));
@@ -241,10 +244,11 @@ await scenario("S6 models probe pins nothing", 15000, async () => {
 	}
 });
 
-// S7: killPortHolder reaps a foreign holder process, never self.
-// (An in-process dummy reports our own PID, which the guard must skip.)
+// S7: killPortHolder reaps an identified holder process, never self.
+// (The dummy answers the /health identity probe as a daemon bound to its own
+// port; an in-process dummy reports our own PID, which the guard must skip.)
 await scenario("S7 killPortHolder precision", 30000, async () => {
-	const child = spawn(process.execPath, ["-e", "require('node:http').createServer((_,res)=>res.end('x')).listen(0,'127.0.0.1',function(){console.log('DPORT='+this.address().port)});setInterval(()=>{},1000);"], {
+	const child = spawn(process.execPath, ["-e", "const s=require('node:http').createServer((q,res)=>{const p=s.address().port;res.setHeader('content-type','application/json');res.end(JSON.stringify(q.url==='/health'?{ok:true,service:'pi-freeflow',port:p,version:'0.0.0-stress'}:{ok:true}));}).listen(0,'127.0.0.1',function(){console.log('DPORT='+this.address().port)});setInterval(()=>{},1000);"], {
 		cwd: ROOT, stdio: ["ignore", "pipe", "pipe"],
 	});
 	const dport = await new Promise<number>((res, rej) => {

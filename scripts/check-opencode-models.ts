@@ -13,6 +13,10 @@
  * twice with backoff before a model is reported affected, so one bad sample
  * from the shared runner IP cannot file a false alert.
  *
+ * Every probe carries the installation token: the local proxy requires
+ * `Authorization: Bearer <token>` on /v1/*, and a missing header is a 401 of
+ * ours, not a verdict on the model.
+ *
  * CLI options:
  *   --output <file>  Write markdown report to file
  *   --json           Print structured JSON to stdout
@@ -21,6 +25,7 @@ import fs from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { startProxy } from "../src/proxy.ts";
 import { OPENCODE_MODELS } from "../src/models.ts";
+import { tokenAuthHeaders } from "../src/token.ts";
 import type { ModelDef } from "../src/types.ts";
 
 const BASE_TEST_PORT = 29680;
@@ -67,7 +72,7 @@ async function attemptProbe(
   try {
     const res = await fetchImpl(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...tokenAuthHeaders() },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });

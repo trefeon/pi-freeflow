@@ -14,6 +14,7 @@
 import { startProxy } from "../src/proxy.ts";
 import { OPENCODE_MODELS, KILO_MODELS, ALL_MODELS, MODEL_MAP} from "../src/models.ts";
 import { opencodeHeaders } from "../src/config.ts";
+import { tokenAuthHeaders } from "../src/token.ts";
 import type { ModelDef } from "../src/types.ts";
 
 const TEST_PORT = 29480;
@@ -176,7 +177,7 @@ async function probeStream(port: number, model: ModelDef): Promise<StreamOutcome
  try {
   const res = await fetch(endpointFor(port, model), {
    method: "POST",
-   headers: { "content-type": "application/json", accept: "text/event-stream" },
+   headers: { "content-type": "application/json", accept: "text/event-stream", ...tokenAuthHeaders() },
    body: JSON.stringify(body),
    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
@@ -256,7 +257,7 @@ async function probeAgentLoop(
  try {
   const res = await fetch(endpointFor(port, model), {
    method: "POST",
-   headers: { "content-type": "application/json", accept: "application/json" },
+   headers: { "content-type": "application/json", accept: "application/json", ...tokenAuthHeaders() },
    body: JSON.stringify(body),
    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });

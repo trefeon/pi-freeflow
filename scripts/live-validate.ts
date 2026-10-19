@@ -3,6 +3,7 @@ import { startProxy } from "../src/proxy.ts";
 import { probeRelay } from "../src/probe.ts";
 import { loadRelayState } from "../src/relay-state.ts";
 import { ONBOARDED_FLAG_FILE } from "../src/config.ts";
+import { tokenAuthHeaders } from "../src/token.ts";
 import fs from "node:fs";
 
 const results: string[] = [];
@@ -19,13 +20,17 @@ if (fs.existsSync(ONBOARDED_FLAG_FILE)) {
 // 2. Live proxy: /v1/models + /health
 const { server, port } = await startProxy(29201);
 try {
-	const models = await fetch(`http://127.0.0.1:${port}/v1/models`);
+	const models = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: tokenAuthHeaders() });
 	const modelsJson = await models.json() as { data?: unknown[] };
 	ok(`proxy /v1/models → HTTP ${models.status}, ${modelsJson.data?.length ?? "?"} models`);
 
 	const health = await fetch(`http://127.0.0.1:${port}/health`);
-	const healthJson = await health.json() as { status?: string };
-	ok(`proxy /health → HTTP ${health.status}, status=${healthJson.status ?? "?"}`);
+	const healthJson = await health.json() as { ok?: boolean; service?: string; port?: number };
+	if (health.status === 200 && healthJson.ok === true && healthJson.service === "pi-freeflow" && healthJson.port === port) {
+		ok(`proxy /health identity → HTTP ${health.status}, service=${healthJson.service} port=${healthJson.port}`);
+	} else {
+		bad(`proxy /health identity check failed: HTTP ${health.status} ${JSON.stringify(healthJson)}`);
+	}
 } catch (e) {
 	bad(`proxy live check failed: ${(e as Error).message}`);
 } finally {

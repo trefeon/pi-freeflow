@@ -20,7 +20,7 @@ import {
  runUpdateStep,
 } from "./update-core.ts";
 import { isCommandAvailable, selectGlobalUpdatePlan, selectHostUpdateSteps } from "./updater.ts";
-import { readToken } from "./token.ts";
+import { tokenAuthHeaders } from "./token.ts";
 import {
  deployCloudflareWorker,
  deployDenoRelay,
@@ -1273,10 +1273,9 @@ export function createCommandSpec(
     try {
      // /_shutdown is token-gated like every other /_* route: without the
      // bearer header this is an unauthorized request, not a stopped daemon.
-     const token = readToken();
      const res = await fetch(`http://${HOST}:${port}/_shutdown`, {
       method: "POST",
-      headers: token ? { authorization: `Bearer ${token}` } : {},
+      headers: tokenAuthHeaders(),
       signal: AbortSignal.timeout(1500),
      });
      if (res.ok) {

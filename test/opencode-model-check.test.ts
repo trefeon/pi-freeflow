@@ -1,9 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { probeModel, MAX_PROBE_ATTEMPTS, RETRY_BACKOFF_MS, TIMEOUT_MS } from "../scripts/check-opencode-models.ts";
+import { DATA_DIR_ENV } from "../src/config.ts";
 import { OPENCODE_MODELS } from "../src/models.ts";
+import { ensureToken } from "../src/token.ts";
 import type { ModelDef } from "../src/types.ts";
+
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 test("the probe workflow timeout covers a fully hanging catalog", () => {
 	// The health check is the only alarm for a mass upstream outage, so its
@@ -226,4 +235,119 @@ test("a 410 deprecated answer is terminal and single-shot", async () => {
 	assert.equal(result.healthy, false);
 	assert.equal(result.status, 410);
 	assert.equal(result.attempts, 1);
+});
+
+// ── local-proxy authorization gate ──────────────────────────────────────────
+
+/**
+ * The probe runs through the loopback proxy, whose /v1/* routes require the
+ * per-installation token. A probe that forgets it collects our own 401 and the
+ * health check then files an alert about a healthy catalog, so this stub
+ * answers exactly like the daemon gate: 401 without `Authorization: Bearer
+ * <token>`, 200 with it.
+ */
+test("probeModel carries the installation token through the daemon gate", async () => {
+	const token = ensureToken();
+	const seen: Array<string | undefined> = [];
+	const gate = http.createServer((req, res) => {
+		seen.push(req.headers.authorization);
+		if (req.headers.authorization !== `Bearer ${token}`) {
+			res.writeHead(401, { "content-type": "application/json" });
+			res.end(JSON.stringify({ error: "unauthorized" }));
+			return;
+		}
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end('data: {"choices":[{"delta":{"content":"pong"}}]}\n\ndata: [DONE]\n\n');
+	});
+	await new Promise<void>((resolve) => gate.listen(0, "127.0.0.1", () => resolve()));
+	const address = gate.address();
+	const port = typeof address === "object" && address ? address.port : 0;
+	try {
+		const result = await probeModel(port, CHAT_MODEL, fetch, { maxAttempts: 1, backoffMs: [0] });
+		assert.equal(
+			result.healthy,
+			true,
+			`the probe must pass the gate: HTTP ${result.status} ${result.error ?? ""}`,
+		);
+		assert.equal(result.status, 200);
+		assert.deepEqual(seen, [`Bearer ${token}`], "every probe request carries the proxy token");
+
+		// The same stub without the header is a 401 — that is the failure the
+		// assertion above catches if probeModel stops sending the token.
+		const denied = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: CHAT_MODEL.id, messages: [], stream: true }),
+		});
+		assert.equal(denied.status, 401);
+		await denied.body?.cancel().catch(() => {});
+		assert.equal(seen.length, 2);
+		assert.equal(seen[1], undefined);
+	} finally {
+		await new Promise<void>((resolve) => gate.close(() => resolve()));
+	}
+});
+
+/** Preload for the CLI child: only the loopback proxy is reached for real,
+ * every upstream answer comes from here, so the run stays offline. */
+const UPSTREAM_STUB_SOURCE = `const realFetch = globalThis.fetch.bind(globalThis);
+globalThis.fetch = async (input, init) => {
+	const url = String(typeof input === "string" ? input : (input?.url ?? input));
+	if (url.includes("127.0.0.1") || url.includes("localhost") || url.includes("[::1]")) {
+		return realFetch(input, init);
+	}
+	return new Response('data: {"id":"chatcmpl-stub","choices":[{"delta":{"content":"pong"}}]}\\n\\ndata: [DONE]\\n\\n', {
+		status: 200,
+		headers: { "content-type": "text/event-stream" },
+	});
+};
+`;
+
+/**
+ * CLI-level check: the script boots its own daemon and probes it over
+ * loopback, so it passes the real gate (not a stub of it) and reports the
+ * whole catalog healthy. Exit 1 with "model(s) affected" is exactly what the
+ * model-health workflow would file as an alert.
+ */
+test("the health-check CLI exits 0 through the real daemon gate", async () => {
+	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ff-model-check-"));
+	const preload = path.join(scratch, "stub-fetch.mjs");
+	fs.writeFileSync(preload, UPSTREAM_STUB_SOURCE, "utf8");
+	// Fresh data dir: the CLI's daemon writes its own token there and the CLI
+	// reads it back, while the empty relay state keeps the run on the direct
+	// (stubbed) upstream path.
+	const dataDir = path.join(scratch, "data");
+	const child = spawn(
+		process.execPath,
+		["--experimental-strip-types", "--import", pathToFileURL(preload).href, path.join(ROOT, "scripts", "check-opencode-models.ts")],
+		{
+			cwd: ROOT,
+			env: { ...process.env, [DATA_DIR_ENV]: dataDir },
+			windowsHide: true,
+			// Watchdog, not pacing: the run ends on the child's exit. Without it a
+			// wedged CLI would hang the test file instead of failing it.
+			timeout: 120_000,
+			killSignal: "SIGKILL",
+		},
+	);
+	let stdout = "";
+	let stderr = "";
+	child.stdout?.on("data", (chunk: Buffer) => { stdout += String(chunk); });
+	child.stderr?.on("data", (chunk: Buffer) => { stderr += String(chunk); });
+	try {
+		const code = await new Promise<number | null>((resolve) => child.on("exit", (c) => resolve(c)));
+		assert.equal(
+			code,
+			0,
+			`CLI must exit 0 against a healthy catalog; stdout=${stdout.slice(-300)} stderr=${stderr.slice(-300)}`,
+		);
+		assert.match(stdout, /All \d+ models healthy/);
+		assert.ok(!/affected/.test(stderr), `no model may be reported affected: ${stderr.slice(-300)}`);
+		assert.ok(
+			fs.existsSync(path.join(dataDir, "token")),
+			"the CLI's daemon wrote the token the CLI authenticated with",
+		);
+	} finally {
+		fs.rmSync(scratch, { recursive: true, force: true });
+	}
 });

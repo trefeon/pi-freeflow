@@ -25,6 +25,7 @@ import {
 	DAEMON_TTL_MS_ENV,
 	HOST,
 } from "../src/config.ts";
+import { tokenAuthHeaders } from "../src/token.ts";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -81,10 +82,19 @@ function pickFreePort(): Promise<number> {
 	});
 }
 
+/** Data dir of every daemon this script booted, by port: each one owns its own
+ * token file, and the gate on its control routes is that daemon's token. */
+const daemonDataDirs = new Map<number, string>();
+
+/** Authorization for the daemon bound to `port` ({} before it wrote its token). */
+function authFor(port: number): Record<string, string> {
+	return tokenAuthHeaders(daemonDataDirs.get(port));
+}
+
 function get(pathname: string, port: number, timeoutMs = 5000): Promise<{ status: number; body: string }> {
 	return new Promise((res, rej) => {
 		const req = http.get(
-			{ host: HOST, port, path: pathname, signal: AbortSignal.timeout(timeoutMs) },
+			{ host: HOST, port, path: pathname, headers: authFor(port), signal: AbortSignal.timeout(timeoutMs) },
 			(r) => {
 				const chunks: Buffer[] = [];
 				r.on("data", (c: Buffer) => chunks.push(c));
@@ -104,7 +114,7 @@ function post(pathname: string, port: number, payload: unknown, timeoutMs = 5000
 				port,
 				path: pathname,
 				method: "POST",
-				headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) },
+				headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data), ...authFor(port) },
 				signal: AbortSignal.timeout(timeoutMs),
 			},
 			(r) => {
@@ -130,6 +140,7 @@ interface DaemonHandle {
 async function bootDaemon(): Promise<DaemonHandle> {
 	const port = await pickFreePort();
 	const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ff-idle-stress-"));
+	daemonDataDirs.set(port, dataDir);
 	assert(port !== 28180, `picked test port collides with live daemon (got ${port})`);
 	const child = spawn(process.execPath, [path.join(ROOT, "src", "daemon.ts")], {
 		cwd: ROOT,

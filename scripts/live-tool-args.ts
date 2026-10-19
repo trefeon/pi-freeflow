@@ -19,6 +19,7 @@ import { startProxy } from "../src/proxy.ts";
 import { ALL_HOST_TOOL_NAMES, translateToolsForPath } from "../src/tool-translation.ts";
 import { ensureChatFingerprintTools, ensureMessagesFingerprintTools, ensureResponsesFingerprintTools } from "../src/opencode-fingerprint.ts";
 import { MODEL_MAP } from "../src/models.ts";
+import { tokenAuthHeaders } from "../src/token.ts";
 
 const PORT = 29483;
 const OP_ENUM = ["init", "start", "done", "rm", "drop", "block", "unblock", "append", "view"];
@@ -241,7 +242,7 @@ try {
   try {
    const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...tokenAuthHeaders() },
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(Number(process.env.FF_TIMEOUT_MS ?? 90_000)),
    });
