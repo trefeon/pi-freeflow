@@ -11,9 +11,10 @@ import { execSync } from "node:child_process";
 import * as http from "node:http";
 import * as https from "node:https";
 import net from "node:net";
-import { handleHealthRequest, isLoopbackIP } from "./health.ts";
+import { handleHealthRequest, isDaemonIdentityBody, isLoopbackIP } from "./health.ts";
 import type { DaemonHealthSnapshot } from "./health.ts";
-import { registerClient, renewClient, touchActivity, unregisterClient } from "./lease.ts";
+import { getLeaseCount, registerClient, renewClient, touchActivity, unregisterClient } from "./lease.ts";
+import { ensureToken, isAuthorizedBearer, readToken } from "./token.ts";
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
@@ -23,6 +24,7 @@ import {
  ALLOWED_PATH_PATTERN,
  BASE_PORT_REPROBE_MS,
  CLINE_CHAT_URL,
+ DEFAULT_PORT,
  HOST,
  KILO_CHAT_URL,
  KILO_RESPONSES_URL,
@@ -38,6 +40,7 @@ import {
 import {
 	convertSseToJson,
 	enforceOpencodeFingerprint,
+	looksLikeSse,
 	repairJsonToolArguments,
 	sseToChatCompletionJson,
 	type CaseRestoreMap,
@@ -283,8 +286,24 @@ async function handleClineRequest(opts: {
  chatBody.stream = true;
  let upstreamRes: Response;
  let limitHint: ClineLimitHint | undefined;
+ // Client-gone abort: a roll left running after the caller's socket died
+ // leaves its upstream body paused forever and the handler never finishes.
+ // `res.writableEnded` is false for a destroyed socket, so the roll carries
+ // our signal (injected through the roll's fetch) and the resolved body is
+ // cancelled at the check below.
+ const clineController = new AbortController();
+ const abortClineOnClientGone = () => {
+  if (!res.writableEnded) clineController.abort();
+ };
+ res.once("close", abortClineOnClientGone);
+ req.once("error", abortClineOnClientGone);
  try {
-  const result = await rollChat({ body: JSON.stringify(chatBody), chatUrl: CLINE_CHAT_URL, refreshImpl: clineRefreshImpl, fetchImpl: fetchWithSystemCA });
+  const result = await rollChat({
+   body: JSON.stringify(chatBody),
+   chatUrl: CLINE_CHAT_URL,
+   refreshImpl: clineRefreshImpl,
+   fetchImpl: (url, init) => fetchWithSystemCA(url, { ...init, signal: clineController.signal }),
+  });
   upstreamRes = result.res;
   // The roll returns the last upstream failure when the pool is exhausted,
   // so "served by" must only log on an actual success.
@@ -303,8 +322,11 @@ async function handleClineRequest(opts: {
    res.end(JSON.stringify({ error: "upstream error" }));
   }
   return;
+ } finally {
+  res.off("close", abortClineOnClientGone);
+  req.off("error", abortClineOnClientGone);
  }
- if (res.writableEnded) {
+ if (res.destroyed || res.writableEnded) {
   try { await upstreamRes.body?.cancel(); } catch { }
   return;
  }
@@ -610,6 +632,10 @@ async function handleKiloRequest(opts: {
    reqId,
   );
   if (response.status === 400 && !res.writableEnded) {
+   // Token-clamp retry only. The model is NEVER reassigned: a 400 must
+   // surface as upstream's verdict for the model the caller asked for, not
+   // be answered from another model's stream with only the `model` field as
+   // a trace (a silent substitution the product forbids).
    const retryBody = { ...parsedBody };
    let changed = false;
    if (typeof retryBody.max_output_tokens === "number" && retryBody.max_output_tokens > 4096) {
@@ -618,10 +644,6 @@ async function handleKiloRequest(opts: {
    }
    if (typeof retryBody.max_tokens === "number" && retryBody.max_tokens > 4096) {
     retryBody.max_tokens = 4096;
-    changed = true;
-   }
-   if (retryBody.model === "dots-studio/dots-3-note-preview:free") {
-    retryBody.model = "nvidia/nemotron-3.5-lightning:free";
     changed = true;
    }
    if (changed) {
@@ -640,7 +662,7 @@ async function handleKiloRequest(opts: {
       reqId,
      );
      if (retryRes.ok) {
-      log("info", `kilo 400 recovery succeeded with model ${String(retryBody.model)}`, { model: retryBody.model }, reqId);
+      log("info", `kilo 400 recovery succeeded with clamped tokens for model ${String(retryBody.model)}`, { model: retryBody.model }, reqId);
       response = retryRes;
      }
     } catch { }
@@ -819,14 +841,36 @@ export function sanitizeHeaders(
  sanitized.connection = "keep-alive";
  return sanitized;
 }
+/**
+ * Host header allowlist: only names that resolve to this loopback listener.
+ * A hostile page can point a hostname at 127.0.0.1 (DNS rebinding), and the
+ * token is a file this process reads — not a value a browser has — so the
+ * Host check keeps the port from being reached under a foreign origin.
+ */
+const ALLOWED_HOST_PATTERN = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?$/i;
+
+/** True when the request's Host header names this loopback listener. */
+export function isAllowedHostHeader(host: string | undefined): boolean {
+ if (typeof host !== "string") return false;
+ return ALLOWED_HOST_PATTERN.test(host.trim());
+}
+
+/**
+ * True when a pi-freeflow daemon answers on `port`.
+ *
+ * Uses the unauthenticated `GET /health` identity shape (service + the port it
+ * is bound to) instead of "any 200 with JSON": a stranger bound to the port
+ * cannot claim those fields, and this probe runs before the client has a token
+ * to prove ownership with.
+ */
 export async function isProxyAlive(port: number, timeoutMs = 600): Promise<boolean> {
  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
  try {
-  const res = await fetch(`http://${HOST}:${port}/v1/models`, {
+  const res = await fetch(`http://${HOST}:${port}/health`, {
    signal: AbortSignal.timeout(timeoutMs),
   });
-  const ct = res.headers.get("content-type") || "";
-  return res.ok && ct.includes("application/json");
+  if (!res.ok) return false;
+  return isDaemonIdentityBody(port, await res.json());
  } catch {
   return false;
  }
@@ -875,9 +919,11 @@ export async function getDaemonHealth(
  port: number,
 ): Promise<DaemonHealthSnapshot> {
  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+ const token = readToken();
  try {
   const res = await fetch(`http://${HOST}:${port}/_health`, {
    signal: AbortSignal.timeout(2500),
+   headers: token ? { authorization: `Bearer ${token}` } : undefined,
   });
   if (!res.ok) return null;
   const data: unknown = await res.json();
@@ -966,12 +1012,61 @@ function killViaProcNet(port: number): boolean {
  return false;
 }
 
+/** What answers `GET /health` on a loopback port (see probePortHolder). */
+export type PortHolderVerdict = "ours" | "foreign" | "silent" | "free";
+
+/** Walk the undici cause chain for an ECONNREFUSED on the loopback probe. */
+function isRefusedConnect(err: unknown): boolean {
+ let cur: unknown = err;
+ for (let depth = 0; depth < 4 && cur && typeof cur === "object"; depth++) {
+  if ("code" in cur && typeof cur.code === "string" && cur.code === "ECONNREFUSED") return true;
+  cur = "cause" in cur ? cur.cause : undefined;
+ }
+ return false;
+}
+
+/**
+ * Classify whatever holds `port` before any kill. `ours` means the
+ * unauthenticated identity probe answered with this daemon's service and the
+ * port it is bound to; `foreign` means something answered HTTP but is not a
+ * pi-freeflow daemon; `silent` means the TCP connection was accepted but no
+ * HTTP answer arrived in the budget (a wedged daemon or a non-HTTP listener);
+ * `free` means the connection was refused.
+ */
+export async function probePortHolder(port: number, timeoutMs = 600): Promise<PortHolderVerdict> {
+ try {
+  const res = await fetch(`http://${HOST}:${port}/health`, {
+   signal: AbortSignal.timeout(timeoutMs),
+  });
+  const body: unknown = await res.json().catch(() => null);
+  return isDaemonIdentityBody(port, body) ? "ours" : "foreign";
+ } catch (e) {
+  return isRefusedConnect(e) ? "free" : "silent";
+ }
+}
+
 export async function killPortHolder(port: number): Promise<boolean> {
  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+ // Test-safety net: `node --test <file>` without test/setup.mjs runs on the
+ // real default port and would otherwise reap the developer's live daemon.
+ if (port === DEFAULT_PORT && process.env.NODE_TEST_CONTEXT) {
+  log("warn", `refusing to kill the default port :${port} from the test runner — run the suite via test/setup.mjs`);
+  return false;
+ }
+ // Never kill an identified process: probe first, and only a holder that
+ // claims (or cannot deny) being this daemon may be dislodged.
+ const holder = await probePortHolder(port);
+ if (holder === "free") return true;
+ if (holder === "foreign") {
+  log("warn", `refusing to kill :${port} — it answers /health as a foreign service, not a pi-freeflow daemon`);
+  return false;
+ }
+ const token = readToken();
 	try {
 		try {
 			await fetch(`http://${HOST}:${port}/_shutdown`, {
 				method: "POST",
+				headers: token ? { authorization: `Bearer ${token}` } : undefined,
 				signal: AbortSignal.timeout(300),
 			});
 			for (let i = 0; i < 6; i++) {
@@ -1074,8 +1169,16 @@ export function handleControlRequest(
    res.end(JSON.stringify({ error: "missing client id" }));
    return;
   }
-  if (reqPathname === "/_client/attach") registerClient(clientId);
-  else if (reqPathname === "/_client/heartbeat") {
+  if (reqPathname === "/_client/attach") {
+   const verdict = registerClient(clientId);
+   if (verdict !== "ok") {
+    const status = verdict === "invalid" ? 400 : 429;
+    log("warn", `client attach rejected (${verdict})`, { id: clientId.slice(0, 32), leases: getLeaseCount() });
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: verdict === "invalid" ? "invalid client id" : "too many clients" }));
+    return;
+   }
+  } else if (reqPathname === "/_client/heartbeat") {
    // Unknown id = daemon restarted since attach. Report ok:false so the
    // client re-attaches instead of heartbeating lease-less.
    if (!renewClient(clientId)) {
@@ -1233,6 +1336,13 @@ export function startProxy(
  overridePort?: number,
 ): Promise<{ server: http.Server | null; port: number }> {
  const basePort = overridePort ?? PORT;
+ // Write/read the installation token before the listener is bound so the host
+ // can never observe a port that answers without a token, and so the daemon
+ // owns the value its own clients will read from the file.
+ const serverToken = ensureToken();
+ if (!serverToken) {
+  log("error", "proxy token unavailable — refusing every request until the data directory is writable");
+ }
 
  const server = http.createServer((req, res) => {
   const clientIP = getClientIP(req);
@@ -1260,10 +1370,31 @@ export function startProxy(
    return;
   }
 
+  // DNS-rebinding guard: a hostile page can resolve a name to 127.0.0.1, so
+  // the Host header must name this loopback listener.
+  if (!isAllowedHostHeader(req.headers.host)) {
+   res.writeHead(403, { "content-type": "application/json" });
+   res.end(JSON.stringify({ error: "forbidden host" }));
+   return;
+  }
+
   let reqPathname: string | null = null;
   try {
    reqPathname = new URL(req.url ?? "/", `http://${HOST}`).pathname;
   } catch { }
+
+  // Loopback is not an authorization boundary: any local process can connect.
+  // Every functional route (the whole /v1/* surface plus the /_* control and
+  // health routes) requires the per-installation token. GET /health is the one
+  // deliberate exception — the unauthenticated identity probe that lets a
+  // client recognise its daemon before it has a token.
+  const isIdentityProbe = req.method === "GET" && reqPathname === "/health";
+  if (!isIdentityProbe && !isAuthorizedBearer(req.headers.authorization, serverToken)) {
+   res.writeHead(401, { "content-type": "application/json" });
+   res.end(JSON.stringify({ error: "unauthorized" }));
+   return;
+  }
+
   if (handleControlRequest(req, res, reqPathname, () => server.close())) return;
   // Loopback-only health endpoint — always accessible even when widget hidden
   if (req.method === "GET" && reqPathname !== null && (reqPathname === "/_health" || reqPathname === "/health")) {
@@ -1724,7 +1855,7 @@ export function startProxy(
          let ct =
           response.headers.get("content-type") ||
           "application/json";
-         if (response.ok && (ct.includes("text/event-stream") || rawText.includes("data:"))) {
+         if (response.ok && (ct.includes("text/event-stream") || looksLikeSse(rawText))) {
           rawText = convertSseToJson(rawText, target.pathname, callerHadTools, callerCaseRestore, callerFindGlob, callerInjected, callerArgSchemas);
           ct = "application/json";
          }
@@ -1914,7 +2045,7 @@ export function startProxy(
        );
       } else if (upstreamRes.body) {
        let rawText = await upstreamRes.text();
-       if (upstreamRes.ok && (outHeaders["content-type"]?.includes("text/event-stream") || rawText.includes("data:"))) {
+       if (upstreamRes.ok && (outHeaders["content-type"]?.includes("text/event-stream") || looksLikeSse(rawText))) {
         rawText = convertSseToJson(rawText, target.pathname, callerHadTools, callerCaseRestore, callerFindGlob, callerInjected, callerArgSchemas);
         outHeaders["content-type"] = "application/json";
        }

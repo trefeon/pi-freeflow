@@ -9,6 +9,7 @@ import {
 } from "../src/relay.ts";
 import {
 	getRelayHealth,
+	isRelayHealthy,
 	resetAllRelayHealth,
 	setActiveRelayState,
 } from "../src/relay-state.ts";
@@ -252,6 +253,48 @@ test("edges-relay: isRetriableStatus 52x band regression lock", () => {
 			"https://dead-relay.vercel.app",
 			"https://healthy-relay.vercel.app",
 		]);
+	});
+
+	test("edges-relay: x-vercel-id alone never rolls an upstream 404", async (t) => {
+		// Both hosts are non-Vercel names: the headers below are what a
+		// Vercel-hosted relay stamps on the response it forwards, and they must
+		// not be read as an edge failure.
+		const RELAY = "https://forwarding-relay.example.com";
+		const SIBLING = "https://sibling-relay.example.com";
+		setActiveRelayState(
+			makeRelayState({
+				enabled: true,
+				url: RELAY,
+				relays: [{ url: RELAY }, { url: SIBLING }],
+			}),
+			false,
+		);
+		resetAllRelayHealth();
+
+		// A genuine upstream verdict forwarded by a healthy relay.
+		const upstream404 = JSON.stringify({ error: { code: "model_not_found", message: "no such model" } });
+		const calls: string[] = [];
+		t.mock.method(globalThis, "fetch", async (url: string) => {
+			calls.push(url);
+			return new Response(upstream404, {
+				status: 404,
+				headers: {
+					// Vercel stamps these on EVERY function response, including a
+					// healthy relay forwarding an upstream JSON 404.
+					"x-vercel-id": "sin1::abc-123",
+					server: "Vercel",
+					"content-type": "application/json",
+				},
+			});
+		});
+
+		const res = await relayFetch(UPSTREAM_URL, { method: "POST" }, "edge-404-forwarded");
+
+		assert.equal(res.status, 404, "the authentic upstream 404 must surface");
+		assert.equal(await res.text(), upstream404, "the upstream body must survive unchanged");
+		assert.deepEqual(calls, [RELAY], "routine Vercel headers must not roll the relay");
+		assert.equal(isRelayHealthy(RELAY), true, "a forwarded 404 must not cool the relay");
+		assert.equal(getRelayHealth(RELAY)?.consecutiveFailures ?? 0, 0, "a forwarded 404 is not a relay failure");
 	});
 
 // ── (8) 504 rolls to next relay instead of breaking to direct ──

@@ -14,6 +14,7 @@ import {
  setActiveRelayState,
 } from "../src/relay-state.ts";
 import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
+import { authHeaders } from "./_auth.ts";
 
 const TEST_PORT_DISABLED = 19185;
 const TEST_PORT_QUOTA = 19186;
@@ -103,7 +104,7 @@ test("proxy 402: exhausted-disabled 503 passes through with code intact", async 
 
    const res = await fetch(`${localPrefix}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify({ model: MODEL, stream: false }),
    });
    assert.equal(res.status, 503);
@@ -145,7 +146,7 @@ test("proxy 402: generic quota 402 passes through byte-identical", async (t) => 
 
    const res = await fetch(`${localPrefix}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify({ model: MODEL, stream: false }),
    });
    assert.equal(res.status, 402, "generic 402 must surface immediately");
@@ -186,7 +187,7 @@ test("proxy 402: direct-path 503 relay_disabled passes through unchanged", async
 
    const res = await fetch(`${localPrefix}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify({ model: MODEL, stream: false }),
    });
    assert.equal(res.status, 503);

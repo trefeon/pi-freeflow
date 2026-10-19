@@ -6,16 +6,24 @@
  * when present; on machines where only bun is installed (npm missing from
  * PATH) the same update runs through the equivalent bun command instead of
  * failing with a manual-install note.
+ *
+ * Every install runs through the asynchronous step runner in update-core.ts:
+ * auto-update is triggered from extension activation, so a blocking
+ * spawnSync install (minutes on npm/bun) would freeze the host TUI.
  */
 
 import { spawnSync } from "node:child_process";
 
 import { getClientPort } from "./client.ts";
-import { fetchLatestVersion, getLocalVersion, compareVersions } from "./update-checker.ts";
-import { killPortHolder } from "./proxy.ts";
+import {
+	compareVersions,
+	fetchLatestVersion,
+	getLocalVersion,
+	runUpdateStep,
+} from "./update-core.ts";
 import { PORT } from "./config.ts";
 
-export interface GlobalUpdatePlan {
+interface GlobalUpdatePlan {
 	/** Binary to run. */
 	cmd: string;
 	/** Arguments to run it with. */
@@ -43,7 +51,7 @@ export function selectGlobalUpdatePlan(opts: {
 	return null;
 }
 
-export interface HostUpdateStep {
+interface HostUpdateStep {
 	/** Binary to run. */
 	cmd: string;
 	/** Arguments to run it with. */
@@ -79,7 +87,8 @@ export function selectHostUpdateSteps(opts: {
 /**
  * True when `cmd --version` runs cleanly, i.e. the binary resolves from PATH.
  * Uses a shell on Windows so *.cmd shims resolve the same way they do for
- * the real update spawn; direct exec elsewhere.
+ * the real update spawn; direct exec elsewhere. Bounded at 10s per probe: the
+ * install steps (the long part) are asynchronous.
  */
 export function isCommandAvailable(cmd: string): boolean {
 	if (!/^[A-Za-z0-9_.-]+$/.test(cmd)) return false;
@@ -99,6 +108,10 @@ export function isCommandAvailable(cmd: string): boolean {
 /**
  * Automatically perform an update to the latest published version and
  * restart the local proxy daemon.
+ *
+ * Never blocks the event loop: each install is awaited asynchronously, and
+ * only the last few lines of its output are kept for a failure message —
+ * a background update must not stream installer noise into the host TUI.
  */
 export async function performAutoUpdate(
 	onProgress?: (message: string) => void,
@@ -111,48 +124,52 @@ export async function performAutoUpdate(
 	}
 	onProgress?.(`Auto-updating pi-freeflow: v${local} → v${latest}…`);
 
-	const hostSteps = selectHostUpdateSteps({
+	const runStep = async (
+		cmd: string,
+		args: string[],
+		manual: string,
+	): Promise<{ code: number; tail: string }> => {
+		onProgress?.(`Running ${manual}…`);
+		let tail = "";
+		const code = await runUpdateStep(cmd, args, {
+			timeoutMs: 120_000,
+			onOutput: (line) => {
+				// Keep only the tail of installer output for a failure message;
+				// a background update must not stream it into the host TUI.
+				const joined = tail ? `${tail}\n${line}` : line;
+				tail = joined.length > 800 ? joined.slice(-800) : joined;
+			},
+			onWarning: (message) => onProgress?.(message),
+		});
+		return { code, tail };
+	};
+
+	let outcome = { code: 1, tail: "" };
+	for (const step of selectHostUpdateSteps({
 		ompAvailable: isCommandAvailable("omp"),
 		piAvailable: isCommandAvailable("pi"),
-	});
-	let code = 1;
-	for (const step of hostSteps) {
-		try {
-			const res = spawnSync(step.cmd, step.args, {
-				stdio: "ignore",
-				timeout: 120_000,
-				windowsHide: true,
-				shell: process.platform === "win32",
-			});
-			if (res.status === 0) {
-				code = 0;
-				break;
-			}
-		} catch { }
+	})) {
+		outcome = await runStep(step.cmd, step.args, step.manual);
+		if (outcome.code === 0) break;
 	}
-	if (code !== 0) {
+	if (outcome.code !== 0) {
 		const plan = selectGlobalUpdatePlan({
 			npmAvailable: isCommandAvailable("npm"),
 			bunAvailable: isCommandAvailable("bun"),
 		});
-		if (plan) {
-			try {
-				const res = spawnSync(plan.cmd, plan.args, {
-					stdio: "ignore",
-					timeout: 120_000,
-					windowsHide: true,
-					shell: process.platform === "win32",
-				});
-				if (res.status === 0) code = 0;
-			} catch { }
-		}
+		if (plan) outcome = await runStep(plan.cmd, plan.args, plan.manual);
 	}
-	if (code === 0) {
+	if (outcome.code === 0) {
 		onProgress?.(`pi-freeflow auto-updated to v${latest} — restarting proxy daemon…`);
 		// Restart the proxy that is actually attached: a walked port (base busy)
 		// must not leave the live daemon serving the old build.
-		await killPortHolder(getClientPort() || PORT);
+		const port = getClientPort() || PORT;
+		// Lazy edge: proxy.ts is the heavy serving sibling and the updater only
+		// needs its port killer after a successful install.
+		const { killPortHolder } = await import("./proxy.ts");
+		await killPortHolder(port);
 		return { ok: true, version: latest };
 	}
-	return { ok: false, error: `update command failed (exit code ${code})` };
+	const detail = outcome.tail.trim() ? `: ${outcome.tail.trim()}` : "";
+	return { ok: false, error: `update command failed (exit code ${outcome.code})${detail}` };
 }

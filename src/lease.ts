@@ -11,7 +11,7 @@
  * /_health for observability, but it no longer gates retirement.
  */
 
-export interface LeaseOptions {
+interface LeaseOptions {
 	/** Lease lifetime (ms); a client that misses ~3 beats is dropped. */
 	ttlMs: number;
 	/** GC sweep interval (ms). */
@@ -30,9 +30,27 @@ let gcTimer: ReturnType<typeof setInterval> | null = null;
 /** First sweep timestamp at which leases were observed empty; null while any lease exists. */
 let emptySince: number | null = null;
 
-/** Register or refresh a client lease. */
-export function registerClient(clientId: string): void {
+/**
+ * Hard caps on the attach registry: `POST /_client/attach` is reachable by any
+ * local process holding the proxy token, so an unbounded id/size turns the
+ * snapshot that /_health publishes into a memory and log-growth vector.
+ */
+export const MAX_CLIENT_ID_LENGTH = 256;
+export const MAX_CLIENTS = 64;
+
+/** Register/refresh verdict: "full" must be answered with HTTP 429. */
+type RegisterClientResult = "ok" | "invalid" | "full";
+
+/**
+ * Register or refresh a client lease. Refreshing a known id never hits the
+ * cap; a new id does, and the caller answers 429 instead of growing the map.
+ * Rejected ids are not stored, so expiry/GC behavior is unchanged.
+ */
+export function registerClient(clientId: string): RegisterClientResult {
+	if (clientId.length === 0 || clientId.length > MAX_CLIENT_ID_LENGTH) return "invalid";
+	if (!leases.has(clientId) && leases.size >= MAX_CLIENTS) return "full";
 	leases.set(clientId, Date.now());
+	return "ok";
 }
 
 /** Renew an existing client lease. Returns false when the id is unknown (daemon restarted). */

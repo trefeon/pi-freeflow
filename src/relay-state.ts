@@ -5,9 +5,9 @@
  * default ~/.pi/agent) under pi-freeflow-relay-state.json.
  */
 
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "./atomic-write.ts";
 import { RELAY_STATE_FILE } from "./config.ts";
 import { ALLOW_UNSAFE_RELAY_ENV } from "./config.ts";
 import { logWarn } from "./logger.ts";
@@ -247,48 +247,27 @@ export function saveRelayState(s: RelayState): void {
   if (!fs.existsSync(dir)) {
    fs.mkdirSync(dir, { recursive: true });
   }
-  // Backup current file before overwrite for recovery
+  // Backup current file before overwrite for recovery.
+  // relay-state.json carries each relay's x-relay-auth secret, so both the
+  // main file and its backup are written 0600 (Windows ignores POSIX modes —
+  // chmod there is a best-effort no-op).
   try {
    if (fs.existsSync(RELAY_STATE_FILE)) {
     const cur = fs.readFileSync(RELAY_STATE_FILE, "utf8");
     // Only backup non-empty states
     const parsed = JSON.parse(cur);
     if (Array.isArray(parsed?.relays) && parsed.relays.length > 0) {
-     fs.writeFileSync(`${RELAY_STATE_FILE}.bak`, cur, "utf8");
+     const bakPath = `${RELAY_STATE_FILE}.bak`;
+     fs.writeFileSync(bakPath, cur, { encoding: "utf8", mode: 0o600 });
+     try {
+      fs.chmodSync(bakPath, 0o600);
+     } catch { }
     }
    }
   } catch { }
-  const tmpPath = `${RELAY_STATE_FILE}.${randomUUID()}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(s, null, 2), "utf8");
-  renameWithRetry(tmpPath, RELAY_STATE_FILE);
+  writeFileAtomic(RELAY_STATE_FILE, JSON.stringify(s, null, 2), { mode: 0o600 });
  } catch (e) {
   logWarn("Could not persist relay state", { error: String(e) });
- }
-}
-
-/** Block synchronously for ms without burning CPU. */
-function sleepSync(ms: number): void {
- Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/**
- * Rename with bounded retry: Windows briefly locks the target when another
- * process holds the state file open, surfacing as EPERM/EACCES/EBUSY.
- * Three attempts with a fixed 50ms backoff; any other error fails immediately.
- */
-function renameWithRetry(from: string, to: string): void {
- const retryable: Record<string, true> = { EPERM: true, EACCES: true, EBUSY: true };
- for (let attempt = 1; ; attempt++) {
-  try {
-   fs.renameSync(from, to);
-   return;
-  } catch (e) {
-   const code = (e as NodeJS.ErrnoException | null)?.code;
-   if (!code || !retryable[code] || attempt >= 3) {
-    throw e;
-   }
-   sleepSync(50);
-  }
  }
 }
 
@@ -420,7 +399,6 @@ export interface RelayHealth {
 }
 
 const relayHealthMap = new Map<string, RelayHealth>();
-let last429Warn = 0;
 // Sliding 60-second window of HTTP 429 events used by markRelayFailure to
 // keep the "burst >5/min" warning honest (see markRelayFailure).
 const RELAY_429_BURST_WINDOW_MS = 60_000;
@@ -489,7 +467,6 @@ export function markRelayFailure(url: string, status?: number, error?: string): 
   recent429Timestamps.push(now);
   if (beforeBurst <= RELAY_429_BURST_THRESHOLD && recent429Timestamps.length > RELAY_429_BURST_THRESHOLD) {
    logWarn("relay 429 burst >5/min, consider adding egress", { relay: clean });
-   last429Warn = now;
   }
  } else if (status === 504) {
   cooldownMs = 60_000;
@@ -544,12 +521,6 @@ export function getRelayHealth(url: string): RelayHealth | undefined {
 export function resetAllRelayHealth(): void {
  relayHealthMap.clear();
  recent429Timestamps.length = 0;
- last429Warn = 0;
-}
-/** Test-only: reset 429 warn throttle */
-export function _reset429WarnForTest(): void {
- recent429Timestamps.length = 0;
- last429Warn = 0;
 }
 /**
  * Mtime of the on-disk state file at the moment we last read or wrote it.

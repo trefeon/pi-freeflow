@@ -19,7 +19,6 @@ import {
 	OMP_CUSTOM_TOOL_NAMES,
 	buildFindGlobRestore,
 	restoreToolNameForCaller,
-	retargetToolChoiceForUpstream,
 	translateToolsForPath,
 	sanitizeUpstreamToolName,
 	upstreamToolNameFor,
@@ -399,22 +398,6 @@ test("omp usage: OMP glob untouched, never triggers find restore", () => {
 	assert.equal(restoreToolNameForCaller("read", restore), "read");
 });
 
-test("omp usage: tool_choice string + named variants carried upstream, never imposed", () => {
-	const globOnly = buildFindGlobRestore([inputFor("chat", OMP_FIXTURES.find((f) => f.name === "glob")!)]);
-	assert.equal(globOnly.renamedFindToGlob, false);
-	assert.equal(retargetToolChoiceForUpstream("auto", globOnly), "auto", "string auto carried");
-	assert.equal(retargetToolChoiceForUpstream("read", globOnly), "read", "string tool name carried");
-	assert.deepEqual(
-		retargetToolChoiceForUpstream({ type: "function", name: "read" }, globOnly),
-		{ type: "function", name: "read" },
-		"named variant carried upstream",
-	);
-	assert.deepEqual(
-		retargetToolChoiceForUpstream({ type: "function", function: { name: "read" } }, globOnly),
-		{ type: "function", function: { name: "read" } },
-		"chat named variant carried upstream",
-	);
-});
 // Settings-gated OMP custom tools (sdk.ts: generate_image rides
 // generate_image.enabled, tts rides speechgen.enabled). CustomToolAdapter wire
 // form: chat-shaped function tools with strict:false on both (image-gen.ts and

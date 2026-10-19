@@ -38,11 +38,30 @@ import {
  waitForReady,
 } from "../src/client.ts";
 import { getStartupPlan } from "../src/commands.ts";
-import { DAEMON_RUNTIME_ENV, DAEMON_SPAWN_ENV, HOST, PORT } from "../src/config.ts";
+import { DAEMON_RUNTIME_ENV, DEFAULT_PORT, HOST, PORT } from "../src/config.ts";
 import { EventEmitter, once } from "node:events";
 import { spawn } from "node:child_process";
 import { killPortHolder } from "../src/proxy.ts";
+import { authHeaders } from "./_auth.ts";
 const isWin = process.platform === "win32";
+
+/**
+ * Reap whatever a previous case left on the suite's proxy port.
+ *
+ * test/setup.mjs re-roots the port to a sandbox value; a bare
+ * `node --test test/daemon-runtime.test.ts` (no --import ./test/setup.mjs)
+ * would resolve 28180 instead and this call would kill the developer's live
+ * daemon. Refuse that combination before reaching the kill path.
+ */
+async function killTestPort(): Promise<boolean> {
+	if (PORT === DEFAULT_PORT) {
+		throw new Error(
+			`daemon-runtime.test.ts: refusing to kill the default proxy port ${DEFAULT_PORT} — ` +
+			`run this file via test/setup.mjs (npm test), which re-roots the port and data dir`,
+		);
+	}
+	return await killPortHolder(PORT);
+}
 
 test("isJsRuntimeExecutable: correctly classifies node binaries", () => {
  assert.equal(isJsRuntimeExecutable("node"), "node");
@@ -324,7 +343,7 @@ test("hasChildExited: false while running, true after exit code or signal", () =
 });
 
 test("ensureDaemon: falls back in-process fast when the spawned child exits (issue #52)", async () => {
-	await killPortHolder(PORT);
+	await killTestPort();
 	_resetClientForTest();
 	const spawnCalls: string[][] = [];
 	/** Real options objects handed to the daemon spawner. */
@@ -362,7 +381,7 @@ test("ensureDaemon: falls back in-process fast when the spawned child exits (iss
 
 
 test("ensureDaemon: concurrent callers share one in-flight attempt (single-flight)", async () => {
-	await killPortHolder(PORT);
+	await killTestPort();
 	_resetClientForTest();
 	const fakeChild = Object.assign(new EventEmitter(), {
 		pid: 424243,
@@ -385,13 +404,19 @@ test("ensureDaemon: concurrent callers share one in-flight attempt (single-fligh
 		// the observable defect of the old early return: it answered with a port
 		// nothing had bound yet.
 		const secondPort = await second;
-		const secondHealth = await fetch(`http://${HOST}:${secondPort}/_health`).then(
+		const secondHealth = await fetch(`http://${HOST}:${secondPort}/health`).then(
 			(res) => res.status,
 			() => 0,
 		);
 		const firstPort = await first;
 
-		assert.equal(secondHealth, 200, `the port the second caller resolved to (:${secondPort}) must answer GET /_health`);
+		assert.equal(secondHealth, 200, `the port the second caller resolved to (:${secondPort}) must answer GET /health`);
+		// Same port, token-gated route: the sandbox token is the only thing
+		// that lets a local caller read the rich snapshot.
+		const anonymous = await fetch(`http://${HOST}:${secondPort}/_health`).then((res) => res.status, () => 0);
+		const authorized = await fetch(`http://${HOST}:${secondPort}/_health`, { headers: { ...authHeaders() } }).then((res) => res.status, () => 0);
+		assert.equal(anonymous, 401, "an unauthenticated local caller must not read /_health");
+		assert.equal(authorized, 200, "the installation token must open /_health");
 		assert.equal(settled.join(","), "first,second", "a concurrent caller must await the in-flight attempt, never resolve ahead of it");
 		assert.equal(secondPort, firstPort, "concurrent ensureDaemon() calls must resolve to the same port");
 		assert.equal(hasFallbackServer(), true, "the shared attempt must land on the in-process fallback");

@@ -5,21 +5,24 @@
  * one bearer key per login slot. Keys live in a 0600 file beside the relay
  * state; a corrupt file reads back as an empty pool (never throws, never
  * logs secrets). Request failover walks the pool in order, trying every slot
- * fresh on every request — no slot is ever locked out.
+ * fresh on every request. A slot whose grant Cline rejected outright is parked
+ * for a cooldown, never dropped: the credential stays in the pool and a fresh
+ * login into that slot clears the pause at once.
  */
 
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "./atomic-write.ts";
 import { RELAY_STATE_FILE } from "./config.ts";
 import { logWarn } from "./logger.ts";
 import type { FetchImpl } from "./cline-device-auth.ts";
 import { isWorkosJwt } from "./cline-device-auth.ts";
 
 /** Env override for the pool file location (tests/CI sandbox). */
-export const CLINE_POOL_FILE_ENV = "PI_FREEFLOW_CLINE_POOL_FILE";
+const CLINE_POOL_FILE_ENV = "PI_FREEFLOW_CLINE_POOL_FILE";
 
 /** Resolve the per-user pool file: beside the relay state file. */
-export function resolveClinePoolPath(): string {
+function resolveClinePoolPath(): string {
  const override = (process.env[CLINE_POOL_FILE_ENV] || "").trim();
  if (override) return override;
  return path.join(path.dirname(RELAY_STATE_FILE), "pi-freeflow-cline-pool.json");
@@ -37,7 +40,7 @@ export const CLINE_POOL_FILE = resolveClinePoolPath();
 export const CLINE_POOL_BACKUP_FILE = `${CLINE_POOL_FILE}.bak`;
 
 /** One saved login slot. The token is only ever sent as an explicit bearer header. */
-export interface ClineAccount {
+interface ClineAccount {
  slot: string;
  token: string;
  addedAt: string;
@@ -49,6 +52,13 @@ export interface ClineAccount {
  accountId?: string;
  /** Login email, shown when choosing which login to remove. */
  email?: string;
+ /**
+  * Epoch ms until which Cline has rejected this slot's grant outright: the
+  * roll skips the slot until then rather than paying a doomed refresh every
+  * turn. The credential itself is never dropped — past the stamp the slot is
+  * tried again, and saving a fresh login into the slot clears it at once.
+  */
+ deadUntil?: number;
 }
 
 export interface ClinePoolState {
@@ -74,7 +84,7 @@ export interface ClinePoolState {
 }
 
 /** One slot's serve counters. See `ClinePoolState.usage`. */
-export interface ClineSlotUsage {
+interface ClineSlotUsage {
  served: number;
  lastAt: number;
  lastModel: string;
@@ -84,7 +94,7 @@ export interface ClineSlotUsage {
  * Fresh tokens minted via the device-login refresh flow. DeviceAuth owns the
  * network call; this module only applies the result to the pool file.
  */
-export interface ClineRefreshResult {
+interface ClineRefreshResult {
  token: string;
  refreshToken?: string;
  expiresAt?: number;
@@ -97,7 +107,7 @@ export interface ClineRefreshResult {
  * dead (invalid_grant — the slot must be logged in again). May throw on
  * transient network faults; callers treat a throw as "keep the stale token".
  */
-export type ClineRefresher = (refreshToken: string) => Promise<ClineRefreshResult | null>;
+type ClineRefresher = (refreshToken: string) => Promise<ClineRefreshResult | null>;
 
 /** Test-only: drop the loadPool mtime cache. */
 export function _resetClinePoolCacheForTest(): void {
@@ -106,7 +116,7 @@ export function _resetClinePoolCacheForTest(): void {
 }
 
 /** Version this proxy reports as its Cline client build. */
-export const CLINE_CLIENT_VERSION = "3.5.54";
+const CLINE_CLIENT_VERSION = "3.5.54";
 
 /**
  * Client headers the Cline API expects. Measured live (2026-09-21): the
@@ -128,7 +138,7 @@ export const CLINE_CLIENT_VERSION = "3.5.54";
  * is retired upstream and no longer requested. Version and User-Agent stay
  * as-is: the feed served the desktop list with them unchanged.
  */
-export const CLINE_CLIENT_HEADERS: Record<string, string> = {
+const CLINE_CLIENT_HEADERS: Record<string, string> = {
  "HTTP-Referer": "https://cline.bot",
  "X-Title": "Cline",
  "X-IS-MULTIROOT": "false",
@@ -148,7 +158,7 @@ export const CLINE_CLIENT_HEADERS: Record<string, string> = {
  * `meta/muse-spark-1.3-contributor`). The limit cache is therefore keyed by the
  * requested id; `modelId` is diagnostics only.
  */
-export interface ClineFreeLimit {
+interface ClineFreeLimit {
  /** Model name as the upstream body spells it. */
  modelId?: string;
  /** Epoch ms the cap lifts; absent when the body stated no delay. */
@@ -191,7 +201,7 @@ export function parseClineFreeLimit(raw: string, now = Date.now()): ClineFreeLim
 }
 
 /** Machine-classified outcome of one Cline chat attempt. */
-export type ClineErrorKind = "ok" | "auth" | "rate-limit" | "exhausted" | "server" | "client";
+type ClineErrorKind = "ok" | "auth" | "rate-limit" | "exhausted" | "server" | "client";
 
 export function mapClineError(status: number): ClineErrorKind {
  if (status >= 200 && status < 300) return "ok";
@@ -277,6 +287,9 @@ function parsePoolDoc(raw: string): ClinePoolState | null {
   return null;
  }
  const accounts: ClineAccount[] = [];
+ // One clock for the whole document: a quarantine stamp and a cap reset are
+ // both compared against the same instant.
+ const now = Date.now();
  for (const entry of doc.accounts as unknown[]) {
   if (typeof entry !== "object" || entry === null) continue;
   const rec: Record<string, unknown> = entry as Record<string, unknown>;
@@ -293,6 +306,10 @@ function parsePoolDoc(raw: string): ClinePoolState | null {
   const accountId = typeof accountIdRaw === "string" && accountIdRaw.trim() ? accountIdRaw.trim() : undefined;
   const emailRaw: unknown = rec.email;
   const email = typeof emailRaw === "string" && emailRaw.trim() ? emailRaw.trim() : undefined;
+  // An elapsed quarantine is dropped on read, so a slot Cline rejected last
+  // week is a normal candidate again and the field never lingers in the file.
+  const deadRaw: unknown = rec.deadUntil;
+  const deadUntil = typeof deadRaw === "number" && Number.isFinite(deadRaw) && deadRaw > now ? deadRaw : undefined;
   accounts.push({
    slot,
    token,
@@ -301,13 +318,14 @@ function parsePoolDoc(raw: string): ClinePoolState | null {
    ...(expiresAt !== undefined ? { expiresAt } : {}),
    ...(accountId ? { accountId } : {}),
    ...(email ? { email } : {}),
+   ...(deadUntil !== undefined ? { deadUntil } : {}),
   });
  }
  const activeRaw: unknown = doc.activeSlot;
  const activeSlot = typeof activeRaw === "string" && accounts.some((a) => a.slot === activeRaw.trim())
   ? activeRaw.trim()
   : undefined;
- const limits = parseLimits(doc.limits, Date.now());
+ const limits = parseLimits(doc.limits, now);
  const usage = parseUsage(doc.usage);
  const state: ClinePoolState = { accounts };
  if (activeSlot) state.activeSlot = activeSlot;
@@ -419,34 +437,47 @@ function accountCountIn(raw: string): number {
  }
 }
 
-/** Block synchronously for ms without burning CPU. */
-function sleepSync(ms: number): void {
- Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/**
+ * Scrub one explicitly removed login out of the recovery copy.
+ *
+ * Largest-wins keeps that copy rich, which is what saves a real pool from an
+ * accidental smaller write — but it also means a logout's token (and its
+ * refresh grant) can sit in `<pool>.bak` and sign the user back in if the main
+ * file is ever lost. A removal is an explicit instruction, so the removed
+ * identity is dropped from the copy too — matched by slot or by bearer, since
+ * a legacy pool can hold one account under two slots. Every other account
+ * stays available for recovery.
+ */
+function forgetAccountInBackup(removed: ClineAccount): void {
+ try {
+  if (!fs.existsSync(CLINE_POOL_BACKUP_FILE)) return;
+  const parsed: unknown = JSON.parse(fs.readFileSync(CLINE_POOL_BACKUP_FILE, "utf8"));
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+  const doc: Record<string, unknown> = parsed as Record<string, unknown>;
+  if (!Array.isArray(doc.accounts)) return;
+  const kept = (doc.accounts as unknown[]).filter((entry) => {
+   if (typeof entry !== "object" || entry === null) return true;
+   const rec: Record<string, unknown> = entry as Record<string, unknown>;
+   if (typeof rec.slot === "string" && rec.slot.trim() === removed.slot) return false;
+   return !(typeof rec.token === "string" && rec.token.length > 0 && rec.token === removed.token);
+  });
+  if (kept.length === doc.accounts.length) return;
+  doc.accounts = kept;
+  fs.writeFileSync(CLINE_POOL_BACKUP_FILE, JSON.stringify(doc, null, 2), { encoding: "utf8", mode: 0o600 });
+  try { fs.chmodSync(CLINE_POOL_BACKUP_FILE, 0o600); } catch { }
+ } catch { }
 }
 
 /**
- * Rename with bounded retry: Windows briefly locks the target when another
- * process holds the pool file open, surfacing as EPERM/EACCES/EBUSY. Three
- * attempts with a fixed 50ms backoff; any other error fails immediately.
+ * Atomically persist the pool with owner-only permissions (temp file + rename,
+ * see src/atomic-write.ts). Never logs secrets.
+ *
+ * Returns false when the pool did not reach the disk, so a caller that tells
+ * the user "saved" can tell the truth instead. The bytes are read back after
+ * the rename: a rename that reported success is not proof that the next read
+ * sees the new pool — a read-only target is the live failure mode.
  */
-function renameWithRetry(from: string, to: string): void {
- const retryable: Record<string, true> = { EPERM: true, EACCES: true, EBUSY: true };
- for (let attempt = 1; ; attempt++) {
-  try {
-   fs.renameSync(from, to);
-   return;
-  } catch (e) {
-   const code = (e as NodeJS.ErrnoException | null)?.code;
-   if (!code || !retryable[code] || attempt >= 3) {
-    throw e;
-   }
-   sleepSync(50);
-  }
- }
-}
-
-/** Atomically persist the pool with owner-only permissions. Never logs secrets. */
-export function savePool(pool: ClinePoolState): void {
+export function savePool(pool: ClinePoolState): boolean {
  try {
   const dir = path.dirname(CLINE_POOL_FILE);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -454,20 +485,24 @@ export function savePool(pool: ClinePoolState): void {
   try {
    if (fs.existsSync(CLINE_POOL_FILE)) keepLargestBackup(fs.readFileSync(CLINE_POOL_FILE, "utf8"));
   } catch { }
-  const tmp = `${CLINE_POOL_FILE}.${Date.now()}.tmp`;
   const serialized = JSON.stringify(pool, null, 2);
-  fs.writeFileSync(tmp, serialized, { encoding: "utf8", mode: 0o600 });
-  try {
-   fs.chmodSync(tmp, 0o600);
-  } catch { }
-  renameWithRetry(tmp, CLINE_POOL_FILE);
+  writeFileAtomic(CLINE_POOL_FILE, serialized, { mode: 0o600 });
+  if (fs.readFileSync(CLINE_POOL_FILE, "utf8") !== serialized) {
+   throw new Error(`pool write did not land at ${CLINE_POOL_FILE}`);
+  }
   // Compare the pool just written too, so growth is never the copy that lags.
   keepLargestBackup(serialized);
   cached = pool;
   cachedMtime = diskMtime();
+  return true;
  } catch (e) {
-  logWarn("could not persist cline pool", { slots: pool.accounts.length });
-  void e;
+  logWarn("could not persist cline pool", { slots: pool.accounts.length, reason: e instanceof Error ? e.message : String(e) });
+  // The in-memory snapshot must not outlive the write that failed: with the
+  // cache dropped, the next load re-reads the disk and sees what actually
+  // landed instead of the pool this process hoped to write.
+  cached = null;
+  cachedMtime = -1;
+  return false;
  }
 }
 
@@ -625,6 +660,9 @@ export function addAccount(
  }
  if (existing) {
   existing.token = token;
+  // A fresh login is proof the grant works again: a quarantine recorded
+  // against the credential it replaces must never outlive it.
+  delete existing.deadUntil;
   if (extras?.refreshToken) existing.refreshToken = extras.refreshToken;
   if (extras?.expiresAt !== undefined) {
    if (Number.isFinite(extras.expiresAt) && extras.expiresAt > 0) existing.expiresAt = extras.expiresAt;
@@ -652,19 +690,43 @@ export function addAccount(
   });
  }
  if (!pool.activeSlot) pool.activeSlot = cleanSlot;
- savePool(pool);
+ // A save that never reached the disk must not report success: the caller
+ // prints "ready to use" on the strength of this return, and the login would
+ // vanish on the next read. The write helper already logged the cause.
+ if (!savePool(pool)) {
+  // Re-read the way the relay deploy path does before blaming the write.
+  let landed = false;
+  try {
+   landed = loadPool().accounts.some((a) => a.slot === cleanSlot && a.token === token);
+  } catch {
+   landed = false;
+  }
+  if (!landed) {
+   throw new Error(
+    `Cline login [${cleanSlot}] could not be saved to ${CLINE_POOL_FILE} — check that the directory is writable and log in again`,
+   );
+  }
+ }
  return pool;
 }
 
 /** Skew so a token expiring mid-flight counts as stale before it breaks a call. */
-export const CLINE_REFRESH_SKEW_MS = 60_000;
+const CLINE_REFRESH_SKEW_MS = 60_000;
+
+/**
+ * How long a slot stays parked after Cline rejects its grant outright. Long
+ * enough that a live session cannot re-pay the refresh round trip on every
+ * turn, short enough that the slot comes back on its own: the pause never
+ * blocks a slot whose credential a fresh login replaced.
+ */
+export const CLINE_DEAD_GRANT_COOLDOWN_MS = 15 * 60_000;
 
 /**
  * True when the slot carries a known expiry that has passed (or passes within
  * the skew window). Slots without `expiresAt` — every legacy key slot — are
  * never stale: they load and serve exactly as before.
  */
-export function isClineTokenStale(account: ClineAccount, skewMs = CLINE_REFRESH_SKEW_MS): boolean {
+function isClineTokenStale(account: ClineAccount, skewMs = CLINE_REFRESH_SKEW_MS): boolean {
  if (typeof account.expiresAt !== "number" || !Number.isFinite(account.expiresAt)) return false;
  return Date.now() + skewMs >= account.expiresAt;
 }
@@ -689,7 +751,16 @@ async function refreshAccountInPlace(
   return null;
  }
  if (!fresh || typeof fresh.token !== "string" || (!fresh.token.startsWith("workos:") && !isWorkosJwt(fresh.token) && !fresh.token.startsWith("clp_"))) {
-  logWarn("cline slot refresh rejected — grant is dead", { slot: account.slot });
+  // Cline rejected the grant outright: park the slot on disk so the next
+  // turns skip it instead of re-paying a refresh that cannot succeed. The
+  // credential stays in the pool — a fresh login into the slot clears this —
+  // and the cooldown ends the pause on its own.
+  account.deadUntil = Date.now() + CLINE_DEAD_GRANT_COOLDOWN_MS;
+  logWarn("cline slot refresh rejected — quarantining slot", {
+   slot: account.slot,
+   forMs: CLINE_DEAD_GRANT_COOLDOWN_MS,
+  });
+  patchAccountOnDisk(account.slot, { deadUntil: account.deadUntil });
   return false;
  }
  account.token = fresh.token;
@@ -719,13 +790,22 @@ export function removeAccount(slot: string): boolean {
  const pool = loadPool();
  const idx = pool.accounts.findIndex((a) => a.slot === cleanSlot);
  if (idx < 0) return false;
- pool.accounts.splice(idx, 1);
+ const [removed] = pool.accounts.splice(idx, 1);
  if (pool.usage?.[cleanSlot] !== undefined) {
   delete pool.usage[cleanSlot];
   if (Object.keys(pool.usage).length === 0) delete pool.usage;
  }
+ // A cap belongs to the login that hit it: keeping it would outlive the slot
+ // it names and key a later login of the same name into a stale window.
+ if (pool.limits?.[cleanSlot] !== undefined) {
+  delete pool.limits[cleanSlot];
+  if (Object.keys(pool.limits).length === 0) delete pool.limits;
+ }
  if (pool.activeSlot === cleanSlot) pool.activeSlot = pool.accounts[0]?.slot;
  savePool(pool);
+ // A logout is explicit: the removed grant must not survive in the recovery
+ // copy, or losing the main file would sign that account back in.
+ forgetAccountInBackup(removed);
  return true;
 }
 
@@ -757,7 +837,7 @@ async function freeLimitFrom(res: Response, now: number): Promise<ClineFreeLimit
  }
 }
 
-export interface ClineRollOpts {
+interface ClineRollOpts {
  /** Serialized chat-completions body, reused verbatim on every attempt. */
  body: string;
  /** Chat completions endpoint (proxy passes its configured URL explicitly). */
@@ -771,7 +851,7 @@ export interface ClineRollOpts {
  refreshImpl?: ClineRefresher;
 }
 
-export interface ClineRollResult {
+interface ClineRollResult {
  res: Response;
  /** Slot that served the response; null when no account was tried. */
  slot: string | null;
@@ -783,6 +863,8 @@ export interface ClineRollResult {
   * exhausted result every one of them was tried, so a caller may name this
   * number when telling the user how many logins are capped. It is never an
   * upstream-attempt count: one login that refreshes and retries is still one.
+  * A slot already parked after a rejected grant is not counted — it was not a
+  * candidate on this roll.
   */
  logins: number;
  /**
@@ -822,7 +904,16 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
  const pool = loadPool();
  const now = Date.now();
  const requestedModel = requestedModelId(opts.body);
- let candidates = [...pool.accounts];
+ // A slot Cline rejected outright is parked for a cooldown: retrying its dead
+ // grant on every turn re-pays a refresh that cannot succeed. The credential
+ // stays in the pool and the stamp expires, so this is a pause, not a
+ // removal — pool order and size are untouched.
+ const quarantinedSlots = new Set(
+  pool.accounts
+   .filter((a) => typeof a.deadUntil === "number" && Number.isFinite(a.deadUntil) && a.deadUntil > now)
+   .map((a) => a.slot),
+ );
+ let candidates = pool.accounts.filter((a) => !quarantinedSlots.has(a.slot));
  if (pool.activeSlot) {
   const at = candidates.findIndex((a) => a.slot === pool.activeSlot);
   if (at > 0) candidates = [candidates[at], ...candidates.slice(0, at), ...candidates.slice(at + 1)];
@@ -840,6 +931,23 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
   candidates = [...open, ...capped];
  }
  if (candidates.length === 0) {
+  if (quarantinedSlots.size > 0) {
+   // Logins are saved but Cline rejected every one of them: telling the user
+   // nothing is saved would point at the wrong problem.
+   logWarn("cline pool fully quarantined — every saved grant was rejected", {
+    slots: pool.accounts.length,
+    quarantined: quarantinedSlots.size,
+   });
+   return {
+    res: exhaustedResponse("Every saved Cline login was rejected by Cline — sign in again with /freeflow cline login", 502),
+    slot: null,
+    exhausted: true,
+    kind: "exhausted",
+    logins: 0,
+    limitOnly: false,
+    earliestResetAt: null,
+   };
+  }
   const reason = "No Cline logins saved — add one with /freeflow cline login";
   logWarn("cline pool empty", { slots: pool.accounts.length });
   return { res: exhaustedResponse(reason, 401), slot: null, exhausted: true, kind: "exhausted", logins: 0, limitOnly: false, earliestResetAt: null };
@@ -847,6 +955,9 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
  let lastRes: Response | null = null;
  let lastSlot: string | null = null;
  let lastKind: ClineErrorKind = "exhausted";
+ // Slots whose grant Cline rejected during this roll: they are now parked on
+ // disk, so the exhausted answer can say "rejected" instead of "unreachable".
+ let rejectedThisRoll = 0;
  // Distinct logins that answered the cap, so one login refreshing and retrying
  // through the 401 path still counts once.
  const cappedSlots = new Set<string>();
@@ -854,12 +965,13 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
  let limitModelId: string | undefined;
  for (const account of candidates) {
   // Stale device-login bearer: one refresh before the attempt. A dead grant
-  // skips the slot for this turn; a transient fault keeps the stale token.
+  // parks the slot (see refreshAccountInPlace); a transient fault keeps the
+  // stale token.
   let refreshedThisSlot = false;
   if (opts.refreshImpl && account.refreshToken && isClineTokenStale(account)) {
    const outcome = await refreshAccountInPlace(account, opts.refreshImpl);
    if (outcome === false) {
-    logWarn("cline slot refresh rejected — skipping slot this turn", { slot: account.slot });
+    rejectedThisRoll += 1;
     continue;
    }
    refreshedThisSlot = outcome === true;
@@ -934,7 +1046,7 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
     try {
      await res.body?.cancel();
     } catch { }
-    logWarn("cline slot refresh rejected — trying next slot", { slot: account.slot });
+    rejectedThisRoll += 1;
     continue;
    }
    // Transient refresh fault: the original response is still intact, so it is
@@ -986,9 +1098,14 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
  // Every slot was skipped before producing a response: its saved login was
  // rejected, or the network call threw. Nothing is rate-limited here, so say
  // what actually happened instead of implying the user should wait.
- logWarn("cline pool exhausted with no upstream response", { slots: candidates.length });
+ logWarn("cline pool exhausted with no upstream response", { slots: candidates.length, rejected: rejectedThisRoll });
  return {
-  res: exhaustedResponse("Every saved Cline login failed to reach Cline — sign in again with /freeflow cline login", 502),
+  res: exhaustedResponse(
+   rejectedThisRoll >= candidates.length
+    ? "Every saved Cline login was rejected by Cline — sign in again with /freeflow cline login"
+    : "Every saved Cline login failed to reach Cline — sign in again with /freeflow cline login",
+   502,
+  ),
   slot: null,
   exhausted: true,
   kind: "exhausted",

@@ -73,12 +73,21 @@ test("zero hardcoded API keys exist in source tree", () => {
 
  // Every Bearer credential line must be a `${token}` interpolation of a
  // credential supplied at call time — nothing else may hardcode a secret.
- // (Kilo and Zen are keyless: no Authorization header is sent for either.)
+ // The proxy does not forward the caller's Authorization: headers are
+ // stripped (STRIP_HEADERS / sanitizeHeaders) and only fixed placeholders are
+ // injected back — the OpenCode/Zen route adds `Authorization: Bearer public`
+ // from opencodeHeaders() in src/config.ts. So a Bearer line may hold only a
+ // `${token}` interpolation, the `Bearer public` literal, the legacy
+ // `kilo-free` literal, or the `<token>` placeholder that doc comments use
+ // when describing the host's header.
  const bearerLines = lines.filter(({ line }) => /Bearer /.test(line));
  assert.ok(bearerLines.length > 0, "expected Bearer credential lines in src");
  for (const { file, line, num } of bearerLines) {
   assert.ok(
-   line.includes("kilo-free") || line.includes("${token}") || line.includes("Bearer public"),
+   line.includes("kilo-free") ||
+    line.includes("${token}") ||
+    line.includes("<token>") ||
+    line.includes("Bearer public"),
    `${file}:${num} hardcodes an unexpected Bearer credential`,
   );
  }

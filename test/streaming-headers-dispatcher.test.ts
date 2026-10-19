@@ -18,6 +18,7 @@ import {
 	setActiveRelayState,
 } from "../src/relay-state.ts";
 import type { RelayState } from "../src/types.ts";
+import { authHeaders } from "./_auth.ts";
 // Disk isolation (relay state, .bak, pin mirror) comes from the shared helper,
 // which resolves every path through src/config.ts — setup.mjs re-roots those
 // into the per-run sandbox, so isolation holds against unpatched src too.
@@ -60,7 +61,7 @@ test("direct streaming forces anti-buffer headers even when upstream omits them"
 			try {
 				const res = await fetch(`${localPrefix}/v1/chat/completions`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: JSON.stringify({ model: STREAM_MODEL, stream: true, messages: [{ role: "user", content: "hi" }] }),
 				});
 				assert.equal(res.status, 200);

@@ -28,6 +28,7 @@ import defaultExtension, {
 } from "../src/index.ts";
 import { createCommandSpec, updateStatusBar } from "../src/commands.ts";
 import { isLinkedInstall } from "../src/update-checker.ts";
+import { ensureToken } from "../src/token.ts";
 import wrapperDefault from "../extensions/index.ts";
 import {
 	HOST,
@@ -54,9 +55,10 @@ type RegistryMode = "reject" | { version: string };
 
 /**
  * URL-aware fetch mock. The activation "reuses" an already-running daemon
- * (instead of binding a real server) by answering the /v1/models probe as
- * alive and /_health with the current PKG_VERSION; the registry is the only
- * other endpoint consulted and can be made to reject (offline) or answer.
+ * (instead of binding a real server) by answering the /health identity probe
+ * with our service+port body, /v1/models with a catalog and /_health with the
+ * current PKG_VERSION; the registry is the only other endpoint consulted and
+ * can be made to reject (offline) or answer.
  */
 function makeFetchHandler(registry: RegistryMode = "reject") {
 	return async (input: RequestInfo | URL): Promise<unknown> => {
@@ -66,6 +68,13 @@ function makeFetchHandler(registry: RegistryMode = "reject") {
 				: input instanceof URL
 					? input.href
 					: ((input as Request)?.url ?? "");
+		if (url.startsWith(`http://${HOST}:${PORT}/health`)) {
+			return {
+				ok: true,
+				headers: { get: () => "application/json" },
+				json: async () => ({ ok: true, service: "pi-freeflow", port: PORT, version: PKG_VERSION }),
+			};
+		}
 		if (url.startsWith(`http://${HOST}:${PORT}/v1/models`)) {
 			return { ok: true, headers: { get: () => "application/json" }, json: async () => [] };
 		}
@@ -73,7 +82,7 @@ function makeFetchHandler(registry: RegistryMode = "reject") {
 			return {
 				ok: true,
 				headers: { get: () => "application/json" },
-				json: async () => ({ version: PKG_VERSION, activeRequests: 0 }),
+				json: async () => ({ port: PORT, version: PKG_VERSION, activeRequests: 0 }),
 			};
 		}
 		if (url.includes("registry.npmjs.org")) {
@@ -293,7 +302,10 @@ test("F: buildProviderConfig emits the host-compatible provider contract", () =>
 		"baseUrl must be loopback",
 	);
 	assert.ok(cfg.baseUrl.includes(`:${port}/v1`), `baseUrl must point at the test port ${port}`);
-	assert.equal(cfg.apiKey, "public");
+	// apiKey carries the installation token so the host authenticates to the
+	// loopback proxy; the proxy strips it before going upstream.
+	assert.equal(cfg.apiKey, ensureToken(), "apiKey must be the local installation token");
+	assert.match(cfg.apiKey, /^[0-9a-f]{64}$/, "the token is 32 bytes of hex");
 	assert.equal(cfg.api, "openai-completions");
 	assert.equal(cfg.compat?.supportsDeveloperRole, false);
 	assert.ok(cfg.models.length >= 26, "at least 26 static models registered");

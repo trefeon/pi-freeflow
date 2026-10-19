@@ -3,11 +3,15 @@ import assert from "node:assert/strict";
 import {
 	BUNDLED_CLINE_WORKOS_CLIENT_ID,
 	CLINE_WORKOS_CLIENT_ID_ENV,
+	DEFAULT_DEVICE_CODE_EXPIRES_IN_S,
+	MAX_DEVICE_POLL_BUDGET_MS,
+	MIN_DEVICE_POLL_BUDGET_MS,
 	deriveExpiry,
 	pollDeviceToken,
 	refreshClineToken,
 	registerClineToken,
 	resolveClineWorkosClientId,
+	resolvePollBudgetMs,
 	startDeviceAuth,
 	toApiKey,
 	ClineAuthError,
@@ -181,6 +185,35 @@ describe("pollDeviceToken", () => {
 		);
 	});
 
+	it("times out at the code's own lifetime, not after a multiple of the interval", async () => {
+		const realNow = Date.now.bind(Date);
+		let offset = 0;
+		let calls = 0;
+		const fetchImpl = (async () => {
+			calls += 1;
+			// The code's 5-minute lifetime has just run out.
+			offset = 6 * 60_000;
+			return jsonResponse({ error: "authorization_pending" }, 400);
+		}) as FetchImpl;
+		Date.now = () => realNow() + offset;
+		try {
+			// The cancel signal is the escape hatch: without the deadline this
+			// poll would keep going for the interval-derived 50 minutes.
+			await assert.rejects(
+				pollDeviceToken("https://b.example", "dev-1", 5, {
+					fetchImpl,
+					expiresIn: 300,
+					timeoutMs: 5_000,
+					signal: AbortSignal.timeout(2_000),
+				}),
+				/WorkOS device authorization timed out/,
+			);
+		} finally {
+			Date.now = realNow;
+		}
+		assert.equal(calls, 1, "the deadline must end the poll on the first try past it");
+	});
+
 	it("honours cooperative cancel", async () => {
 		const controller = new AbortController();
 		const fetchImpl = (async () => {
@@ -199,6 +232,31 @@ describe("pollDeviceToken", () => {
 				return true;
 			},
 		);
+	});
+});
+
+describe("resolvePollBudgetMs", () => {
+	it("budgets the device code's lifetime, never a multiple of the interval", () => {
+		assert.equal(resolvePollBudgetMs({ expiresIn: 600 }), 600_000);
+		// The old default was interval-derived: a 5 s cadence polled for 50 min.
+		assert.notEqual(resolvePollBudgetMs({ expiresIn: 300 }), 5_000 * 60 * 10);
+	});
+
+	it("floors an unusably short lifetime and ceilings an implausible one", () => {
+		assert.equal(resolvePollBudgetMs({ expiresIn: 5 }), MIN_DEVICE_POLL_BUDGET_MS);
+		assert.equal(resolvePollBudgetMs({ expiresIn: 48 * 3_600 }), MAX_DEVICE_POLL_BUDGET_MS);
+	});
+
+	it("falls back to WorkOS's documented lifetime when none was stated", () => {
+		const expected = DEFAULT_DEVICE_CODE_EXPIRES_IN_S * 1_000;
+		assert.equal(resolvePollBudgetMs(), expected);
+		assert.equal(resolvePollBudgetMs({ expiresIn: Number.NaN }), expected);
+	});
+
+	it("lets a usable explicit maxWaitMs win over the lifetime", () => {
+		assert.equal(resolvePollBudgetMs({ expiresIn: 600, maxWaitMs: 5_000 }), 5_000);
+		// A nonsense budget is not honoured: it falls back to the lifetime.
+		assert.equal(resolvePollBudgetMs({ maxWaitMs: 0 }), DEFAULT_DEVICE_CODE_EXPIRES_IN_S * 1_000);
 	});
 });
 

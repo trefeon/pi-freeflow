@@ -360,6 +360,49 @@ test("403 gate hint is visible inside error.message", () => {
  });
 });
 
+test("persisted gate schema carries only the upstream that can trip (zen)", () => {
+ withIsolatedHealthFiles(() => {
+  // Two consecutive gate 403s flip the gate, which forces a persist.
+  recordUpstreamFailure("zen", 403, GATE_BODY);
+  recordUpstreamFailure("zen", 403, GATE_BODY);
+  const onDisk = JSON.parse(fs.readFileSync(HEALTH_FILE, "utf8")) as {
+   gates?: Record<string, { gated?: boolean }>;
+  };
+  assert.deepEqual(
+   Object.keys(onDisk.gates ?? {}),
+   ["zen"],
+   "the dead kilo gate entry must not be persisted",
+  );
+  assert.equal(onDisk.gates?.["zen"]?.gated, true, "the live zen gate still persists");
+ });
+});
+
+test("legacy state files carrying a dead kilo gate entry still load", () => {
+ withIsolatedHealthFiles(() => {
+  fs.writeFileSync(
+   HEALTH_FILE,
+   JSON.stringify({
+    version: 1,
+    sessions: {},
+    gates: {
+     zen: { gated: true, consecutiveFreeTier403: 2, firstGatedAt: 1, lastTransitionAt: 1, lastCanaryAt: 0 },
+     kilo: { gated: true, consecutiveFreeTier403: 9, firstGatedAt: 1, lastTransitionAt: 1, lastCanaryAt: 0 },
+    },
+   }),
+   "utf8",
+  );
+  // Pin a distinct mtime so the reload never depends on timestamp granularity.
+  fs.utimesSync(HEALTH_FILE, new Date(1_700_000_000_000), new Date(1_700_000_000_000));
+
+  assert.equal(isUpstreamGated("zen"), true, "the live zen gate still loads from a legacy file");
+  assert.equal(
+   isUpstreamGated("kilo"),
+   false,
+   "the dead kilo gate entry is ignored on load, never adopted",
+  );
+ });
+});
+
 test("health file changed by another process is reloaded on the next read", () => {
  withIsolatedHealthFiles(() => {
   // Phase 0: no file yet — this process starts from an empty snapshot.

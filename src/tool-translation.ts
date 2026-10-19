@@ -32,8 +32,9 @@
  * - First-seen wins on duplicate names, compared case-insensitively on the
  *   upstream name (so `Bash` never duplicates `bash`, `find` collapses with
  *   `glob`). Re-translating translated output adds zero tools (idempotent).
- * - `tool_choice` is never imposed; use retargetToolChoiceForUpstream to carry
- *   a caller choice across the find->glob rename. Request-side only: no
+ * - `tool_choice` is never imposed and never rewritten: Zen accepts only
+ *   "auto", so the fingerprint lane drops every other choice (see
+ *   enforceAutoToolChoice) and no carrier is needed. Request-side only: no
  *   response path carries a choice back to the caller.
  */
 
@@ -491,44 +492,6 @@ export function restoreToolNameForCaller(name: string, restore: FindGlobRestore)
 	if (restore.renamedFindToGlob && name.trim().toLowerCase() === "glob") return "find";
 	return name;
 }
-function retargetChoice(value: unknown, from: string, to: string): unknown {
- if (typeof value === "string") {
-  return value.trim().toLowerCase() === from ? to : value;
- }
- if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
- const rec = value as Record<string, unknown>;
- let changed = false;
- let out: Record<string, unknown> = rec;
- const clone = (): void => {
-  if (!changed) {
-   out = { ...rec };
-   changed = true;
-  }
- };
- if (typeof rec.name === "string" && rec.name.trim().toLowerCase() === from) {
-  clone();
-  out.name = to;
- }
- const fn = rec.function;
- if (typeof fn === "object" && fn !== null && !Array.isArray(fn)) {
-  const fnRec = fn as Record<string, unknown>;
-  if (typeof fnRec.name === "string" && fnRec.name.trim().toLowerCase() === from) {
-   clone();
-   out.function = { ...fnRec, name: to };
-  }
- }
- return out;
-}
-/**
- * Carry a caller `tool_choice` upstream across the rename (`find`->`glob`).
- * Strings, `{ name }`, and `{ function: { name } }` shapes are retargeted;
- * everything else (notably `"auto"`) passes through untouched. Never imposed:
- * callers without a choice get no choice added.
- */
-export function retargetToolChoiceForUpstream(choice: unknown, restore: FindGlobRestore): unknown {
- if (!restore.renamedFindToGlob) return choice;
- return retargetChoice(choice, "find", "glob");
-}
 /** Extra top-level caller fields survive cross-shape conversion verbatim. */
 function carryExtraFields(
  rec: Record<string, unknown>,
@@ -558,7 +521,7 @@ function carryExtraFields(
  * entry passes through verbatim. Duplicates collapse first-seen-wins on the
  * lowercased upstream name, so `Bash` never duplicates `bash`. Re-translating
  * translated output adds zero tools. Never returns null entries.
- * `tool_choice` is never imposed here; use the retarget helpers to carry it.
+ * `tool_choice` is never imposed here.
  *
  * Names ride the caller's own unless `forFingerprint` is set — that flag exists
  * for the OpenCode free tier alone, whose gate expects the sextet name `glob`

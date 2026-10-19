@@ -101,6 +101,25 @@ jobs:
               --body-file drift-report.md
           fi
 
+      - name: Close Recovered Drift Issue
+        if: steps.check.outputs.exit_code == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LABEL="opencode-drift"
+          # Only a clean run (exit 0) closes the alert: exit 1 is drift and
+          # exit 2 is a watcher infra failure, where upstream was never read.
+          EXISTING_ISSUE=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number')
+          if [ -z "$EXISTING_ISSUE" ]; then
+            echo "No open $LABEL issue to close"
+          else
+            CURRENT_DATE=$(date -u +'%Y-%m-%d %H:%M UTC')
+            echo "Upstream drift recovered — closing drift issue #$EXISTING_ISSUE"
+            gh issue comment "$EXISTING_ISSUE" --body "OpenCode upstream drift is back in sync as of ${CURRENT_DATE}. Auto-closing this drift alert."
+            gh issue close "$EXISTING_ISSUE" --reason completed
+          fi
+
       - name: Update State and Commit
         if: env.DRIFT_DETECTED == 'true'
         env:

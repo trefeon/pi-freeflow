@@ -855,7 +855,7 @@ test("command spec: /freeflow deploy surfaces the live URL plus a manual add whe
  });
 });
 
-test("command spec: /freeflow deploy warns with exact retry/remove commands when the new relay is unreachable", async (t) => {
+test("command spec: /freeflow deploy refuses to activate a relay that fails its probe", async (t) => {
  await withSavedDiskState(async () => {
   resetAllRelayHealth();
   setActiveRelayState({ mode: "auto", enabled: true, url: "", relays: [] }, false);
@@ -874,11 +874,64 @@ test("command spec: /freeflow deploy warns with exact retry/remove commands when
    confirmValue: true,
   });
   await spec.handler("deploy", ctx);
-  const done = notifications.find((n) => n.message.includes("Deployed & active"));
-  assert.ok(done, `deploy must still activate, got: ${JSON.stringify(notifications)}`);
-  assert.ok(done.message.includes(`/freeflow test ${liveUrl}`), "must give the exact retry probe command");
-  assert.ok(done.message.includes(`/freeflow remove ${liveUrl}`), "must give the exact remove command");
-  assert.equal(loadRelayState().url, liveUrl, "unreachable deploy stays active-primary by explicit warn, never silent");
+  const failure = notifications.find((n) => n.type === "error" && n.message.includes(liveUrl));
+  assert.ok(failure, `deploy must report the failed probe, got: ${JSON.stringify(notifications)}`);
+  assert.ok(
+   failure.message.includes("NOT added to the pool"),
+   `the failure notice must state the relay was not pooled, got: ${failure.message}`,
+  );
+  assert.ok(failure.message.includes(`/freeflow test ${liveUrl}`), "must give the exact retry probe command");
+  assert.ok(failure.message.includes(`/freeflow add ${liveUrl}`), "must give the keep-anyway command");
+  assert.ok(
+   !notifications.some((n) => n.message.includes("Deployed & active")),
+   "an unverified deploy must never claim activation",
+  );
+  const onDisk = loadRelayState();
+  assert.equal(onDisk.url, "", "an unverified deploy must not become the sticky primary");
+  assert.equal(onDisk.relays.length, 0, "an unverified deploy must not enter the pool");
+ });
+});
+
+test("command spec: /freeflow deploy keeps the previous relay when the probe fails", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  const keepUrl = "https://relay-keep-case.vercel.app";
+  const seed: RelayState = {
+   mode: "auto",
+   enabled: true,
+   url: keepUrl,
+   relays: [{ url: keepUrl, label: "keep" }],
+  };
+  setActiveRelayState(seed, false);
+  fs.writeFileSync(RELAY_STATE_FILE, JSON.stringify(seed), "utf8");
+  const liveUrl = "https://relay-flaky-case.vercel.app";
+  t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
+   if (url.endsWith("/v1/models")) return { status: 502, body: {} };
+   if (url.includes("/v13/deployments/")) return { body: { readyState: "READY", url: "relay-flaky-case.vercel.app" } };
+   if (url.includes("/v13/deployments") && init?.method === "POST") return { body: { id: "dep1", projectId: "proj1" } };
+   if (url.includes("/v9/projects/")) return { body: {} };
+   return { status: 500, body: {} };
+  }));
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext({
+   selectValue: VERCEL_OPTION,
+   inputValues: ["fake-token-12345", "flaky-run"],
+   confirmValue: true,
+  });
+  await spec.handler("deploy", ctx);
+  const failure = notifications.find((n) => n.type === "error" && n.message.includes(liveUrl));
+  assert.ok(failure, `deploy must report the failed probe, got: ${JSON.stringify(notifications)}`);
+  assert.ok(
+   failure.message.includes("the existing pool is unchanged"),
+   `the failure notice must say the working relay was kept, got: ${failure.message}`,
+  );
+  const onDisk = loadRelayState();
+  assert.equal(onDisk.url, keepUrl, "a failed re-deploy must not steal the sticky primary");
+  assert.deepEqual(
+   onDisk.relays.map((r) => r.url),
+   [keepUrl],
+   "the working pool entry must survive a failed re-deploy untouched",
+  );
  });
 });
 

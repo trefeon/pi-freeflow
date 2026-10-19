@@ -13,6 +13,7 @@ import { isRelayEligibleModel, startProxy } from "../src/proxy.ts";
 import { resetAllRelayHealth, setActiveRelayState } from "../src/relay-state.ts";
 import type { KnownRelay, RelayState } from "../src/types.ts";
 import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
+import { authHeaders } from "./_auth.ts";
 
 const ZEN_FREE = "nemotron-3.5-super-vl-free";
 const KILO_FREE = "dots-studio/dots-3-note-preview:free";
@@ -112,7 +113,7 @@ test("unknown-model POST bypasses the relay pool while free-model POST uses it",
     // Free catalog model rides the relay even with the pool on.
     const freeRes = await fetch(`${localPrefix}/v1/chat/completions`, {
      method: "POST",
-     headers: { "content-type": "application/json" },
+     headers: { "content-type": "application/json", ...authHeaders() },
      body: chatBody(ZEN_FREE),
     });
     assert.equal(freeRes.status, 200);
@@ -126,7 +127,7 @@ test("unknown-model POST bypasses the relay pool while free-model POST uses it",
     seen.length = 0;
     const paidRes = await fetch(`${localPrefix}/v1/chat/completions`, {
      method: "POST",
-     headers: { "content-type": "application/json" },
+     headers: { "content-type": "application/json", ...authHeaders() },
      body: chatBody(UNKNOWN_MODEL),
     });
     assert.equal(paidRes.status, 200);
@@ -187,7 +188,7 @@ test("ovh-model POST bypasses the relay pool while a zen free-model POST uses it
     // Zen free model rides the relay: the pool is armed and reachable.
     const zenRes = await fetch(`${localPrefix}/v1/chat/completions`, {
      method: "POST",
-     headers: { "content-type": "application/json" },
+     headers: { "content-type": "application/json", ...authHeaders() },
      body: chatBody(ZEN_FREE),
     });
     assert.equal(zenRes.status, 200);
@@ -202,7 +203,7 @@ test("ovh-model POST bypasses the relay pool while a zen free-model POST uses it
      seen.length = 0;
      const ovhRes = await fetch(`${localPrefix}/v1/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...authHeaders() },
       body: chatBody(model),
      });
      assert.equal(ovhRes.status, 200);

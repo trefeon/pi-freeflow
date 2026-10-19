@@ -13,6 +13,7 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,8 +51,30 @@ export function isCertError(e: unknown): boolean {
  return /self[-\s]?signed certificate|unable to verify/i.test(msg);
 }
 
-const BUNDLE_CACHE = path.join(os.tmpdir(), "pi-freeflow-system-ca.pem");
 const BUNDLE_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * The OS trust bundle is a trust input, so it lives in a 0700 directory only
+ * this process created (mkdtemp), never at a predictable path in the shared
+ * temp dir where another local user could pre-plant a bundle or race the
+ * exporter script. The directory is per process: the 24h cache survives every
+ * call inside a run, and the daemon is long-lived.
+ */
+let bundleDir: string | null = null;
+
+function privateBundleDir(): string {
+ if (bundleDir !== null) {
+  try {
+   if (fs.statSync(bundleDir).isDirectory()) return bundleDir;
+  } catch { }
+  bundleDir = null;
+ }
+ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-freeflow-ca-"));
+ try {
+  fs.chmodSync(dir, 0o700);
+ } catch { }
+ bundleDir = dir;
+ return dir;
+}
 
 function readPemFile(p: string): string[] {
  try {
@@ -101,30 +124,47 @@ const EXPORT_PS1 = [
 ].join("\r\n");
 
 function windowsBundle(): string[] {
+ // Private per-process dir; the 24h cache lives inside it, so a stale or
+ // planted bundle at a shared temp path can never be trusted.
+ const dir = privateBundleDir();
+ const bundle = path.join(dir, "system-ca.pem");
  try {
-  const stat = fs.statSync(BUNDLE_CACHE);
+  const stat = fs.statSync(bundle);
   if (Date.now() - stat.mtimeMs < BUNDLE_TTL_MS) {
-   const cached = readPemFile(BUNDLE_CACHE);
+   const cached = readPemFile(bundle);
    if (cached.length > 0) return cached;
   }
  } catch { }
+ // Exporter script: unique 0600 name inside the private dir, executed by
+ // absolute path and deleted straight after the run — nothing predictable is
+ // left for another process to swap between write and exec (TOCTOU).
+ const script = path.join(dir, `export-ca-${process.pid}-${randomBytes(6).toString("hex")}.ps1`);
  try {
-  const script = `${BUNDLE_CACHE}.ps1`;
-  fs.writeFileSync(script, EXPORT_PS1, "utf8");
-  execFileSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, BUNDLE_CACHE], {
+  fs.writeFileSync(script, EXPORT_PS1, { encoding: "utf8", mode: 0o600 });
+  try {
+   fs.chmodSync(script, 0o600);
+  } catch { }
+  execFileSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, bundle], {
    timeout: 30_000,
    windowsHide: true,
   });
-  return readPemFile(BUNDLE_CACHE);
+  try {
+   fs.chmodSync(bundle, 0o600);
+  } catch { }
+  return readPemFile(bundle);
  } catch {
   return [];
+ } finally {
+  try {
+   fs.unlinkSync(script);
+  } catch { }
  }
 }
 
 let systemCaCache: string[] | null = null;
 
 /** OS trust bundle: platform store plus NODE_EXTRA_CA_CERTS when set. */
-export function systemCaBundle(): string[] {
+function systemCaBundle(): string[] {
  if (systemCaCache) return systemCaCache;
  const extra = nodeExtraCa();
  const platform = process.platform === "win32" ? windowsBundle() : linuxBundle();
@@ -138,7 +178,7 @@ export function systemCaBundle(): string[] {
 }
 
 /** Test-only: drop the cached bundle so tests re-read the platform store. */
-export function _resetSystemCaCacheForTest(): void {
+function _resetSystemCaCacheForTest(): void {
  systemCaCache = null;
 }
 

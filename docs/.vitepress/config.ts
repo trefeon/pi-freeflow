@@ -15,7 +15,7 @@ export default defineConfig({
     ],
     nav: [
       { text: 'Home', link: '/' },
-      { text: 'GitHub', link: 'git+https://github.com/trefeon/pi-freeflow' },
+      { text: 'GitHub', link: 'https://github.com/trefeon/pi-freeflow' },
     ],
   },
   lang: 'en-US',

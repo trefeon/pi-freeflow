@@ -48,6 +48,7 @@ src/
 ├── responses.ts             # Responses-API reasoning portability for rejected encrypted blobs
 ├── stream-pipe.ts           # Resilient SSE stream pass-through with thinking sniffing
 ├── system-ca-fetch.ts       # Cline fetch that falls back to the OS trust store under TLS interception
+├── token.ts                 # Per-installation loopback token: create/read + constant-time bearer check
 ├── tool-args.ts             # Schema-driven repair of malformed model tool-call arguments
 ├── tool-translation.ts      # Tool schema translation across the chat, responses and messages wire shapes
 ├── types.ts                 # Core domain types, Pi/OMP ExtensionAPI and UI contracts
@@ -60,12 +61,74 @@ src/
 
 When OMP dispatches parallel subagents, each spawns a child process. Rather than each binding its own port, pi-freeflow uses a cooperative master/worker protocol:
 
-1. **Startup Probe**: On extension load, sends a lightweight probe to `http://127.0.0.1:28180/v1/models` (1500ms timeout).
+1. **Startup Probe**: On extension load, sends a lightweight probe to `http://127.0.0.1:28180/health` (150ms timeout on the attach path; the generic liveness probe defaults to 600ms) and requires the daemon identity body — `service: "pi-freeflow"` plus the port it is bound to — so a stranger on the port cannot claim it.
 2. **Worker Reuse**: If the probe succeeds, the process reuses the existing master daemon — 0ms startup overhead.
 3. **Master Daemon**: If the probe fails, the process binds port 28180 and becomes the master proxy.
 4. **Race Guard**: Concurrent bind attempts on 28180 are handled gracefully — the loser re-probes and attaches to the winner.
 5. **Stale-Daemon Heal**: On upgrade, an existing daemon may run older code (e.g. before an auth or routing fix). The health endpoint reports the daemon's internal version; if it mismatches the running package, the new session replaces the stale holder and binds fresh code — no manual kill or full host restart needed.
 6. **Teardown**: Only the master process closes the HTTP listener on `session_shutdown`; workers exit cleanly.
+
+## Local Proxy Security
+
+The daemon binds loopback only (`127.0.0.1`), and every request to it carries a
+per-machine bearer token:
+
+- **Token file**: `<data dir>/token` — 32 random bytes as 64 hex characters, no
+  trailing newline, written with mode `0600`. The data dir is
+  `$PI_FREEFLOW_DATA_DIR`, else `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`; the
+  proxy creates the file at startup if it is missing.
+- **Required header**: `Authorization: Bearer <token>` on every `/v1/*` route
+  **and** every `/_*` route (`/_health`, `/_shutdown`,
+  `/_client/attach|heartbeat|detach`). A missing or wrong token answers
+  `401 {"error":"unauthorized"}`; a request whose `Host` is not
+  `127.0.0.1[:port]`, `localhost[:port]` or `[::1][:port]` answers
+  `403 {"error":"forbidden host"}`.
+- **Exception**: `GET /health` stays unauthenticated and returns only
+  `{"ok":true,"service":"pi-freeflow","port":28180,"version":"<package version>"}`.
+  It is the identity probe other sessions use to detect a live daemon. The rich
+  `/_health` snapshot now requires the token.
+
+Hosts never handle this by hand: `buildProviderConfig` sets the host provider's
+`apiKey` to the proxy token, so OMP/Pi send `Authorization: Bearer <token>`
+automatically, and the proxy strips that client authorization before going
+upstream. Any **external** tool talking to the proxy must read the file itself:
+
+```bash
+# Linux / macOS / Git Bash. On Windows: $(cat "$USERPROFILE/.pi/agent/token")
+curl http://127.0.0.1:28180/v1/models \
+  -H "Authorization: Bearer $(cat ~/.pi/agent/token)"
+```
+
+The unauthenticated liveness probe needs no header:
+
+```bash
+curl http://127.0.0.1:28180/health
+# {"ok":true,"service":"pi-freeflow","port":28180,"version":"<package version>"}
+```
+
+## Configuration (Environment Variables)
+
+Runtime knobs, all read in `src/config.ts`. "Unset" means the default applies.
+
+| Variable | Default | Effect |
+| :--- | :--- | :--- |
+| `PI_FREEFLOW_PORT` | `28180` | Loopback port the proxy binds; values outside 1–65535 are ignored. |
+| `PI_FREEFLOW_DATA_DIR` | `$PI_CODING_AGENT_DIR` → `~/.pi/agent` | Re-roots every pi-freeflow data file (token, log, caches, relay state). |
+| `PI_FREEFLOW_ALLOW_UNSAFE_RELAY` | unset | **Unsafe.** When `1`, accepts `http://` and private-host relay URLs (tests/dev). It opens the relay allowlist to SSRF-shaped targets — do not set it in normal use. |
+| `PI_FREEFLOW_NO_KILL` | unset | When `1`, never replace a version-mismatched (stale) daemon. |
+| `PI_FREEFLOW_DAEMON_SPAWN` | enabled | When `0`, never spawn a detached proxy daemon (tests/CI only). |
+| `PI_FREEFLOW_DAEMON_RUNTIME` | auto | Explicit node/bun executable path for the detached daemon. |
+| `PI_FREEFLOW_DAEMON_TTL_MS` | `30000` | Client lease TTL; expired leases are dropped by the daemon GC. |
+| `PI_FREEFLOW_DAEMON_HEARTBEAT_MS` | `8000` (Windows) / `10000` | Client heartbeat interval (kept well under the lease TTL). |
+| `PI_FREEFLOW_DAEMON_GC_MS` | `5000` | Daemon lease-GC sweep interval. |
+| `PI_FREEFLOW_DAEMON_GRACE_MS` | `15000` (Windows) / `10000` | Lease-less persistence window before the daemon exits. |
+| `PI_FREEFLOW_DAEMON_READY_TIMEOUT_MS` | `5000` | How long a client waits for a freshly spawned daemon to answer `/_health`. |
+| `PI_FREEFLOW_DAEMON_CONTROL_TIMEOUT_MS` | `3000` (Windows) / `1500` | Timeout for one loopback control call (attach/heartbeat/detach). |
+| `PI_FREEFLOW_DAEMON_WATCHDOG_MS` | `5000` | How often the client polls `/_health` for version + failed-SSE rate. |
+| `PI_FREEFLOW_OPENCODE_USER_AGENT` | live npm lookup | Pin the exact `opencode/<version>` UA (or bare version) sent upstream. |
+| `PI_FREEFLOW_OPENCODE_VERSION_CACHE` | beside the update cache | Override the UA-probe cache file location. |
+| `PI_FREEFLOW_CLINE_POOL_FILE` | beside the relay state file | Override the per-user Cline login pool file. |
+| `PI_FREEFLOW_CLINE_WORKOS_CLIENT_ID` | bundled default | Override the Cline/WorkOS client id used for browser login. |
 
 ## Atomic Disk Catalog Cache
 

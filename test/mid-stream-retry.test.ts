@@ -25,6 +25,7 @@ import {
 import type { RelayState } from "../src/types.ts";
 import { _resetUpstreamHealthForTest } from "../src/upstream-health.ts";
 import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
+import { authHeaders } from "./_auth.ts";
 import {
 	isTransientModelFailureFrame,
 	getMidStreamFaultStats,
@@ -138,7 +139,7 @@ test("mid-stream cut on primary re-fires once on next relay; client gets respons
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: streamBody(),
 				});
 				assert.equal(res.status, 200);
@@ -197,7 +198,7 @@ test("clean terminal marker never re-fires", async () => {
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: streamBody(),
 				});
 				assert.equal(res.status, 200);
@@ -259,7 +260,7 @@ test("client abort mid-stream never re-fires and never penalizes the relay", asy
 				const ctl = new AbortController();
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: streamBody(),
 					signal: ctl.signal,
 				});
@@ -335,7 +336,7 @@ test("both relays cut: exactly two attempts, client still gets a terminal marker
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: streamBody(),
 				});
 				assert.equal(res.status, 200);
@@ -397,7 +398,7 @@ test("tool-call turn cut mid-stream never re-fires: no duplicate execution", asy
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					// The caller advertises fetch_docs (production-shaped): the cloak must
 					// pass its calls through with markers intact so the resume veto sees
 					// them. A tool-less caller would have them stripped as injected.
@@ -516,7 +517,7 @@ test("mid-stream response.failed server_error text-only re-fires once; client ge
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: streamBody(),
 				});
 				assert.equal(res.status, 200);
@@ -584,7 +585,7 @@ test("mid-stream response.failed server_error after tool calls never re-fires", 
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: JSON.stringify({ model: MODEL, stream: true, input: "tool turn", tools: [{ type: "function", name: "fetch_docs", description: "fetch docs", parameters: { type: "object", properties: {} } }] }),
 				});
 				assert.equal(res.status, 200);
@@ -703,7 +704,7 @@ test("deterministic response.failed verdicts never re-fire: forwarded verbatim, 
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: streamBody(),
 				});
 				assert.equal(res.status, 200);
@@ -816,7 +817,7 @@ test("failed rescue forwards the genuine upstream verdict: exactly two attempts,
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: streamBody(),
 				});
 				assert.equal(res.status, 200);
@@ -892,7 +893,7 @@ test("empty-output transient frame on a text-only turn still re-fires", async ()
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: streamBody(),
 				});
 				assert.equal(res.status, 200);
@@ -960,7 +961,7 @@ test("transient failure after an arguments-delta-only tool turn never re-fires",
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: toolBody(),
 				});
 				assert.equal(res.status, 200);
@@ -1317,7 +1318,7 @@ test("held failure with a dead rescue relay still forwards the genuine verdict",
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: streamBody(),
 				});
 				assert.equal(res.status, 200);
@@ -1402,7 +1403,7 @@ test("mid-stream failure with chunk boundary split mid-delta preserves SSE frami
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: JSON.stringify({
 						model: MODEL,
 						stream: true,
@@ -1491,7 +1492,7 @@ test("mid-stream cut mid-delta with dead rescue relay terminates cleanly without
 			try {
 				const res = await fetch(`${localPrefix}/v1/responses`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: JSON.stringify({
 						model: MODEL,
 						stream: true,

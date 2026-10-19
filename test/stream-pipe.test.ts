@@ -209,6 +209,77 @@ test("clean upstream end without terminal marker keeps relay healthy", async () 
 	assert.equal(count(res.body(), "[DONE]"), 1);
 });
 
+test("a complete final event that lost its blank line is forwarded, then the synthetic terminal fires", async () => {
+	resetAllRelayHealth();
+	const stream = new PassThrough();
+	const { res } = pipe(stream, "/v1/chat/completions", RELAY_URL);
+
+	const drained = once(stream, "data");
+	stream.push(Buffer.from('data: {"delta":"hello"}\n\n', "utf8"));
+	await drained;
+	const second = once(stream, "data");
+	// No trailing blank line: the block never completed, but the FIN below
+	// proves the upstream was done writing it. Reproduced loss: the frame was
+	// dropped and the client saw hello + a synthetic [DONE], never world.
+	stream.push(Buffer.from('data: {"delta":"world"}', "utf8"));
+	await second;
+	stream.end();
+	await once(stream, "close");
+
+	const body = res.body();
+	assert.ok(body.includes('{"delta":"hello"}'), "the first frame is forwarded");
+	assert.ok(body.includes('{"delta":"world"}'), "the finished final event must not be dropped");
+	assert.ok(
+		body.includes('data: {"delta":"world"}\n\n'),
+		"the flushed tail is framed, so the terminal that follows starts a fresh block",
+	);
+	assert.equal(count(body, "[DONE]"), 1, "the marker-less FIN still gets exactly one synthetic terminal");
+});
+
+test("a block cut inside its value is still dropped, not forwarded half-written", async () => {
+	resetAllRelayHealth();
+	const stream = new PassThrough();
+	const { res } = pipe(stream, "/v1/chat/completions", RELAY_URL);
+
+	const drained = once(stream, "data");
+	stream.push(Buffer.from('data: {"delta":"hi"}\n\n', "utf8"));
+	await drained;
+	const second = once(stream, "data");
+	stream.push(Buffer.from('data: {"delta":"tru', "utf8"));
+	await second;
+	stream.end();
+	await once(stream, "close");
+
+	const body = res.body();
+	assert.ok(body.includes('{"delta":"hi"}'), "complete frames still flow");
+	assert.ok(!body.includes('{"delta":"tru'), "a payload cut mid-JSON must never reach the host's parser");
+	assert.equal(count(body, "[DONE]"), 1, "the host still gets its terminal");
+});
+
+test("a marker-less upstream FIN records a failed watchdog sample, not a success", async () => {
+	resetAllRelayHealth();
+	const statsBefore = getSseStats();
+	const stream = new PassThrough();
+	const { res } = pipe(stream, "/v1/chat/completions", RELAY_URL);
+
+	const drained = once(stream, "data");
+	stream.push(Buffer.from('data: {"delta":"hi"}\n\n', "utf8"));
+	await drained;
+	stream.end();
+	await once(stream, "close");
+
+	assert.equal(count(res.body(), "[DONE]"), 1, "the host still gets its synthetic terminal");
+	const statsAfter = getSseStats();
+	assert.equal(statsAfter.total, statsBefore.total + 1, "the turn records exactly one watchdog outcome");
+	assert.equal(
+		statsAfter.failures,
+		statsBefore.failures + 1,
+		"a FIN with no terminal marker is the truncation the failed-SSE window exists to catch",
+	);
+	assert.equal(isRelayHealthy(RELAY_URL), true, "the relay is still never blamed for a clean endpoint");
+	assert.equal(getRelayHealth(RELAY_URL), undefined);
+});
+
 test("[DONE] beyond the first 2000 bytes of the final chunk completes without penalty", async () => {
 	resetAllRelayHealth();
 	const stream = new PassThrough();

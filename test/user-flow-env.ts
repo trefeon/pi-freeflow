@@ -70,11 +70,12 @@ const jsonResponse = (body: unknown): Response =>
 /**
  * URL-aware fetch stub for suites that boot the real extension — the same
  * shape test/host-compat.test.ts installs. The sandbox daemon port answers as
- * a live daemon, so activation attaches to it instead of binding an in-process
- * fallback (which would outlive the test), and the npm registry answers
- * offline, so neither the background update check nor the OpenCode UA lookup
- * reaches the network. Loopback servers a test binds itself are delegated to
- * the real fetch.
+ * a live daemon (the unauthenticated GET /health identity shape plus the
+ * token-gated /v1/models and /_health routes), so activation attaches to it
+ * instead of binding an in-process fallback (which would outlive the test),
+ * and the npm registry answers offline, so neither the background update
+ * check nor the OpenCode UA lookup reaches the network. Loopback servers a
+ * test binds itself are delegated to the real fetch.
  * Install per test: `t.mock.method(globalThis, "fetch", harnessFetchHandler())`.
  */
 export function harnessFetchHandler(): typeof fetch {
@@ -87,8 +88,12 @@ export function harnessFetchHandler(): typeof fetch {
      ? input.href
      : input.url;
   if (url.startsWith(SANDBOX_DAEMON_PREFIX)) {
+   // Identity probe: isProxyAlive() recognises the stub daemon by service+port.
+   if (url.endsWith("/health")) {
+    return jsonResponse({ ok: true, service: "pi-freeflow", port: TEST_PROXY_PORT, version: pkgVersion });
+   }
    if (url.endsWith("/v1/models")) return jsonResponse([]);
-   if (url.endsWith("/_health")) return jsonResponse({ version: pkgVersion, activeRequests: 0 });
+   if (url.endsWith("/_health")) return jsonResponse({ port: TEST_PROXY_PORT, version: pkgVersion, activeRequests: 0 });
    throw new Error("mocked offline");
   }
   if (/^http:\/\/(127\.0\.0\.1|localhost)(:|\/)/.test(url)) return realFetch(input, init);

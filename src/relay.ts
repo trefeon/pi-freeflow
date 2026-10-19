@@ -106,6 +106,31 @@ function isRelayDeploymentDisabled(res: Response, bodyText: string | null): bool
 	return bodyText !== null && bodyText.toLowerCase().includes("deployment_disabled");
 }
 /**
+ * Relay-host auth rejection: the deployed worker answers
+ * `401 {"error":"unauthorized"}` from its own handler — before forwarding —
+ * when the pool entry's x-relay-auth no longer matches its RELAY_AUTH secret
+ * (deploy.ts). Any other 401, including a genuine upstream credential error
+ * the relay merely forwarded, is not a relay fault: keying on the status
+ * alone cooled healthy relays. Only the worker's exact body shape qualifies;
+ * an unreadable or non-matching body reads as an upstream verdict.
+ */
+async function isRelayAuthRejection(res: Response): Promise<boolean> {
+	if (res.status !== 401) return false;
+	let bodyText: string | null = null;
+	try {
+		bodyText = (await res.clone().text()).slice(0, 8192);
+	} catch {
+		bodyText = null;
+	}
+	if (bodyText === null) return false;
+	try {
+		const parsed = JSON.parse(bodyText) as { error?: unknown };
+		return parsed?.error === "unauthorized";
+	} catch {
+		return false;
+	}
+}
+/**
  * Per-conversation reasoning affinity. Callers sending caller-bound reasoning
  * pass the relay that issued it; `onServed` reports the relay that actually
  * produced the response (`null` = direct fallback).
@@ -383,11 +408,13 @@ export async function relayFetch(
 			// Relay host infrastructure 404 (e.g. Vercel DEPLOYMENT_NOT_FOUND or non-JSON 404):
 			// When a relay URL is deleted, misconfigured, or has no deployment, Vercel/Cloudflare
 			// returns edge 404. This is a relay failure, not an upstream API response.
+			// Only x-vercel-error qualifies as an edge marker: Vercel stamps
+			// x-vercel-id (and server: Vercel) on EVERY function response, so
+			// keying on those would misroll a genuine upstream JSON 404 forwarded
+			// by a healthy relay — cooling it and hiding the authentic verdict.
 			const isRelayEdge404 =
 				res.status === 404 &&
 				(Boolean(res.headers.get("x-vercel-error")) ||
-					Boolean(res.headers.get("x-vercel-id")) ||
-					res.headers.get("server")?.toLowerCase().includes("vercel") ||
 					!res.headers.get("content-type")?.includes("json"));
 
 			if (isRelayEdge404) {
@@ -473,20 +500,38 @@ export async function relayFetch(
 
 			// Bounded bare-500 roll-once: a transient model-side 500 carries no
 			// relay-fault signal (413 precedent: roll without health penalty), so
-			// retry once on the next candidate instead of surfacing. A second
-			// consecutive 500 falls through to the terminal passthrough below.
-			if (res.status === 500 && !sawBare500) {
-				sawBare500 = true;
+			// retry once on the next candidate instead of surfacing.
+			if (res.status === 500) {
+				if (!sawBare500) {
+					sawBare500 = true;
+					lastResponse?.body?.cancel().catch(() => {});
+					lastResponse = res;
+					lastResponseRelay = targetUrl;
+					log(
+						"warn",
+						`relay ${targetUrl} returned HTTP 500 in ${elapsed}s — rolling once to next relay`,
+						{ upstream: url, status: 500 },
+						rid,
+					);
+					continue;
+				}
+				// Second 500 of the turn: the cap is spent and this is the
+				// terminal verdict. Store it like the 413 branch but never run
+				// the success path — a 500 must not reset the relay's cooldown or
+				// failure counters, record an EWMA sample from an error, or
+				// rewrite the machine-wide sticky primary to the relay that just
+				// failed.
 				lastResponse?.body?.cancel().catch(() => {});
 				lastResponse = res;
 				lastResponseRelay = targetUrl;
 				log(
 					"warn",
-					`relay ${targetUrl} returned HTTP 500 in ${elapsed}s — rolling once to next relay`,
+					`relay ${targetUrl} returned a second HTTP 500 in ${elapsed}s — surfacing without a health mark`,
 					{ upstream: url, status: 500 },
 					rid,
 				);
-				continue;
+				affinity.onServed?.(targetUrl);
+				return res;
 			}
 
 			// Relay-host rejection: 401 = a deployed worker whose RELAY_AUTH no
@@ -501,9 +546,12 @@ export async function relayFetch(
 			// EWMA reset, no roll, so it kept serving the pool until something
 			// else noticed. A 403 is no longer treated as a terminal upstream
 			// verdict: rolls are bounded by pool size, and the gate state machine
-			// only primes on a 403 the direct path produced (proxy.ts). Non-401/403
-			// client errors keep their non-penalizing terminal path below.
-			if (res.status === 401 || res.status === 403) {
+			// only primes on a 403 the direct path produced (proxy.ts). A 401 is
+			// gated on the worker's own body shape: an upstream credential error
+			// the relay merely forwarded keeps the non-penalizing terminal path
+			// below instead of cooling a healthy relay. Non-401/403 client errors
+			// keep their non-penalizing terminal path below too.
+			if (res.status === 403 || (res.status === 401 && (await isRelayAuthRejection(res)))) {
 				const authRejected = res.status === 401;
 				markRelayFailure(
 					targetUrl,
@@ -538,9 +586,13 @@ export async function relayFetch(
 				}
 				continue;
 			}
-			markRelaySuccess(targetUrl, Date.now() - attemptStart);
-
 			// SUCCESS or non-retriable client error (e.g. 200, 404):
+			// The turn settles on this relay: an earlier rolled candidate's
+			// stored response is abandoned for good, so cancel its unread body
+			// now — a multi-MB error body would otherwise hold its connection
+			// out of the shared relay agent until GC.
+			lastResponse?.body?.cancel().catch(() => {});
+			markRelaySuccess(targetUrl, Date.now() - attemptStart);
 			// If we switched to a different relay because previous failed, update sticky active relay!
 			//
 			// Exception: a winner that is the caller's preferred (affinity) relay

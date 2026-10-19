@@ -16,7 +16,7 @@ import {
  WATCHDOG_SSE_MIN_SAMPLES,
  WATCHDOG_SSE_WINDOW,
 } from "./config.ts";
-import { cloakMessagesContent, type CaseRestoreMap, type FindGlobRestore } from "./opencode-fingerprint.ts";
+import { cloakMessagesContent, looksLikeSse, type CaseRestoreMap, type FindGlobRestore } from "./opencode-fingerprint.ts";
 import { restoreToolNameForCaller } from "./tool-translation.ts";
 import { repairToolArguments } from "./tool-args.ts";
 
@@ -32,9 +32,10 @@ export const SUBSTANTIAL_MIN_BYTES = 100 * 1024;
 // evidence, then classifies the body itself (raw passthrough on overflow —
 // a genuine SSE body opens with its first field line long before this).
 const SNIFF_WINDOW_BYTES = 8192;
-// SSE field line at a line start (`data:`/`event:`), CRLF-tolerant. Consulted
-// only while the body kind is undecided (upstream sent no content-type).
-const SSE_START_RE = /(^|\n)(data|event):/;
+// Body-kind evidence is the shared `looksLikeSse` predicate (a `data:`/`event:`
+// field line at a line start, CRLF-tolerant) — one source of truth with
+// convertSseToJson's guard and the proxy's aggregate gates. Consulted only
+// while the body kind is undecided (upstream sent no content-type).
 // Wire markers proving the forwarded bytes already contain a tool call the
 // host may execute (responses + chat shapes). A re-fired turn would
 // regenerate those calls, so their presence vetoes the silent resume and
@@ -89,6 +90,39 @@ export function isTransientModelFailureFrame(s: string): boolean {
  if (!s.includes("response.failed") && !s.includes('"status":"failed"')) return false;
  for (const m of DETERMINISTIC_FAILURE_MARKERS) if (s.includes(m)) return false;
  for (const m of TRANSIENT_MODEL_FAILURE_MARKERS) if (s.includes(m)) return true;
+ return false;
+}
+
+/**
+ * True when a trailing (framing-less) SSE block ends on a finished field line:
+ * the upstream FIN'd right after a complete `data:`/`event:` value and only the
+ * closing blank line is missing. Such a block carries a real event the client
+ * was owed — dropping it lost the turn's last delta (probe: `data:
+ * {"delta":"hello"}\n\n` then `data: {"delta":"world"}` + FIN delivered hello
+ * and a synthetic [DONE], never world).
+ *
+ * A block cut inside its value (`data: {"a":`) or ending on anything other
+ * than a `data:`/`event:` line stays dropped: forwarding it would put the
+ * host's parser on a broken frame.
+ */
+function endsOnFinishedSseLine(tail: string): boolean {
+ const lines = tail.split(/\r?\n/);
+ // A trailing newline terminates the last line; judge the last non-empty one.
+ let index = lines.length - 1;
+ if (index > 0 && lines[index] === "") index -= 1;
+ const line = lines[index] ?? "";
+ if (line.startsWith("data:")) {
+  const payload = line.slice(5).trim();
+  if (payload === "[DONE]") return true;
+  try {
+   JSON.parse(payload);
+   return true;
+  } catch {
+   // Not a complete JSON value: the block was cut mid-payload.
+   return false;
+  }
+ }
+ if (line.startsWith("event:")) return line.slice(6).trim().length > 0;
  return false;
 }
 
@@ -1071,9 +1105,14 @@ export function pipeUpstreamStream(
   isError = false,
   errorMsg?: string,
   penalizeRelay = true,
+  // Watchdog-window verdict for this stream. Defaults to the relay-health
+  // verdict; the marker-less FIN below overrides it: that truncation is
+  // exactly what the failed-SSE window exists to catch, so it must count as a
+  // failure even though a clean endpoint (not a relay fault) produced it.
+  recordFailed = penalizeRelay || isError,
  ) => {
   if (hasTerminalEvent || res.writableEnded) return;
-  if (!clientAborted) recordOnce(penalizeRelay || isError);
+  if (!clientAborted) recordOnce(recordFailed);
   // Only genuine upstream-side truncation penalizes relay health.
   // Client disconnects and clean upstream ends leave it untouched.
   if (penalizeRelay && relayUrl && relayUrl !== "direct") {
@@ -1220,7 +1259,7 @@ export function pipeUpstreamStream(
     const buf = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
     gateChunks.push(buf);
     gateBytes += buf.length;
-    const isSse = SSE_START_RE.test(Buffer.concat(gateChunks, gateBytes).toString("utf8"));
+    const isSse = looksLikeSse(Buffer.concat(gateChunks, gateBytes).toString("utf8"));
     if (!isSse && gateBytes < SNIFF_WINDOW_BYTES) return;
     if (!isSse) {
      bodyGate = "raw";
@@ -1333,6 +1372,17 @@ export function pipeUpstreamStream(
     } else {
      forwardText(tail);
     }
+   } else if (endsOnFinishedSseLine(tail)) {
+    // A complete final event that merely lost its trailing blank line: forward
+    // it, framed as a finished block, so neither the synthetic terminal below
+    // nor a re-fire's replacement bytes can splice onto its last line. A
+    // genuinely partial block was refused above and stays dropped.
+    if (cloakState && cloak) {
+     const rewritten = rewriteSseBlock(tail, cloakState, cloak);
+     if (rewritten !== null) forwardText(`${rewritten}\n\n`);
+    } else {
+     forwardText(tail.endsWith("\n") ? `${tail}\n` : `${tail}\n\n`);
+    }
    }
   }
  // Buffered tool arguments are released on the call's terminal event, which a
@@ -1352,12 +1402,16 @@ export function pipeUpstreamStream(
    // terminal below. A resumed turn keeps streaming into the same client
    // response; the final outcome is logged when that stream ends.
    if (await tryRefire()) return;
-   // Clean upstream end without a detectable marker: keep the host
-   // contract (synthetic terminal) but never blame the relay.
+   // A FIN with no terminal marker is the truncation the failed-SSE window
+   // exists to catch, so the watchdog counts it as a failure (the relay is
+   // still never blamed — the endpoint completed the connection cleanly, it
+   // just never said the turn was done). Keep the host contract with a
+   // synthetic terminal.
    ensureTerminalEvent(
     false,
     "upstream ended without terminal marker",
     false,
+    true,
    );
   }
   if (thinkingChunks > 0) {
@@ -1405,10 +1459,13 @@ export function pipeUpstreamStream(
    } else if (!hasTerminalEvent && totalChunks > 0) {
     if (clientAborted || upstreamEnded) {
      // Client disconnect teardown or post-end cleanup — the relay
-     // is not at fault; still give the host a terminal event.
+     // is not at fault; still give the host a terminal event. The
+     // watchdog verdict is a failure either way: a clean FIN with no
+     // terminal marker is the truncation the failed-SSE window catches
+     // (and a real client abort is skipped inside ensureTerminalEvent).
      sseBuffer = "";
      terminalScanCarry = Buffer.alloc(0);
-     ensureTerminalEvent(false, "stream interrupted by client", false);
+     ensureTerminalEvent(false, "stream interrupted by client", false, true);
     } else {
      // Same offer as the clean-end path above: one silent re-fire before
      // marking this relay and terminating the turn.

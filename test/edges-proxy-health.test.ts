@@ -2,6 +2,7 @@
  * Edge-case health and proxy security tests
  *
  * Covers:
+ * - Local proxy requires the installation token: /v1/* and /_* without it → 401
  * - Unknown path → 404 (not 403)
  * - Path traversal → 403 (locked by proxy-server.test.ts)
  * - Query-string /v1/models?foo=bar → 200
@@ -13,6 +14,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { startProxy } from "../src/proxy.ts";
 import { handleHealthRequest } from "../src/health.ts";
+import { authHeaders } from "./_auth.ts";
 
 /** Create a mock ServerResponse for direct handleHealthRequest calls. */
 function makeMockRes() {
@@ -38,7 +40,7 @@ test("unknown path returns 404 (not 403)", async () => {
 	const port = 29183;
 	const { server } = await startProxy(port);
 	try {
-		const res = await fetch(`http://127.0.0.1:${port}/some-unknown-path`);
+		const res = await fetch(`http://127.0.0.1:${port}/some-unknown-path`, { headers: { ...authHeaders() } });
 		assert.equal(res.status, 404);
 		const json = await res.json() as { error: string };
 		assert.equal(json.error, "not found");
@@ -51,7 +53,7 @@ test("POST /_health returns 404 (method guard)", async () => {
 	const port = 29184;
 	const { server } = await startProxy(port);
 	try {
-		const res = await fetch(`http://127.0.0.1:${port}/_health`, { method: "POST" });
+		const res = await fetch(`http://127.0.0.1:${port}/_health`, { method: "POST", headers: { ...authHeaders() } });
 		assert.equal(res.status, 404);
 	} finally {
 		await new Promise<void>((r) => server!.close(() => r()));
@@ -62,7 +64,7 @@ test("/v1/models with query string returns 200", async () => {
 	const port = 29185;
 	const { server } = await startProxy(port);
 	try {
-		const res = await fetch(`http://127.0.0.1:${port}/v1/models?foo=bar`);
+		const res = await fetch(`http://127.0.0.1:${port}/v1/models?foo=bar`, { headers: { ...authHeaders() } });
 		assert.equal(res.status, 200);
 		const json = await res.json() as { object: string; data: Array<{ id: string }> };
 		assert.equal(json.object, "list");
@@ -83,7 +85,7 @@ test("/v1/models/../secret returns 403 (path traversal)", async () => {
 	try {
 		const status = await new Promise<number>((resolve, reject) => {
 			const req = http.request(
-				{ host: "127.0.0.1", port, path: "/v1/models/../secret", method: "GET" },
+				{ host: "127.0.0.1", port, path: "/v1/models/../secret", method: "GET", headers: { ...authHeaders() } },
 				(res) => resolve(res.statusCode ?? 0),
 			);
 			req.on("error", reject);

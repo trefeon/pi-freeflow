@@ -7,8 +7,8 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 [![npm version](https://img.shields.io/npm/v/pi-freeflow?style=flat-square&color=00E5FF)](https://www.npmjs.com/package/pi-freeflow)
 [![npm downloads](https://img.shields.io/npm/dm/pi-freeflow?style=flat-square)](https://www.npmjs.com/package/pi-freeflow)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
-[![Pi](https://img.shields.io/badge/Powered%20by-Pi-7c3aed?style=flat-square)](https://github.com/badlogic/pi-ai)
-[![Oh My Pi](https://img.shields.io/badge/Compatible-OMP-black?style=flat-square)](https://github.com/coder/oh-my-pi)
+[![Pi](https://img.shields.io/badge/Powered%20by-Pi-7c3aed?style=flat-square)](https://github.com/earendil-works/pi)
+[![Oh My Pi](https://img.shields.io/badge/Compatible-OMP-black?style=flat-square)](https://github.com/can1357/oh-my-pi)
 
 ---
 
@@ -20,7 +20,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 | **Relay pool** | Route requests through your own relays: a self-hosted egress pool (many egress IPs on one small host) or Cloudflare Workers / Deno Deploy / Vercel Edge workers. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your host or platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`; the two Cline models have no alias and must be typed in full. | **$0** |
-| **Shared local proxy** | One daemon on `127.0.0.1:28180` serves every session on the machine, so parallel subagents reuse it instead of opening their own connections. | **$0** |
+| **Shared local proxy** | One daemon on `127.0.0.1:28180` serves every session on the machine, so parallel subagents reuse it instead of opening their own connections. Loopback-only and token-gated: hosts send the token automatically, external tools read `~/.pi/agent/token`. | **$0** |
 | **Logs you can read** | `~/.pi/agent/pi-freeflow.log`, rotated at 10MB. Tail it with `/freeflow logs`. | **$0** |
 
 ---
@@ -183,6 +183,7 @@ The same command set works identically in OMP and Pi:
 
 ```bash
 /freeflow status                  # View active relay, pool status, and candidates
+/freeflow hide|show               # Hide or restore the status-bar widget (also `widget hide`/`widget show`)
 /freeflow list                    # List all relays with real-time health badges
 /freeflow use <url|index|label>   # Switch active relay
 /freeflow url <url>               # Set the active relay URL directly
@@ -190,12 +191,16 @@ The same command set works identically in OMP and Pi:
 /freeflow label <index|url> <name># Assign a friendly label to a relay
 /freeflow remove <index|url|label># Remove a relay from the pool
 /freeflow test <index|url|label>  # Probe a relay for reachability and latency
-/freeflow on|off|auto|spread     # Relay mode (auto = enabled for freeflow, spread = rotate pool)
+/freeflow on|off|auto|sticky|spread  # Relay mode (auto/sticky = sticky primary, spread = rotate pool)
 /freeflow deploy <platform>       # Guided relay deploy: vercel|cloudflare|deno, token in-memory, auto-adds
 /freeflow logs [lines]            # Inspect recent proxy logs
 /freeflow trace [req-id]          # Tail logs filtered by request correlation ID
 /freeflow refresh                 # Reload the model catalog from live upstreams
+/freeflow reload models           # Alias of refresh
 /freeflow update                  # Check for and install a package update
+/freeflow autoupdate [on|off]     # View or toggle automatic background updates
+/freeflow install-startup         # Install the login-startup hook so the daemon comes up with your session
+/freeflow uninstall-startup       # Remove the login-startup hook
 /freeflow debug on | off          # Toggle full HTTP lifecycle debug logging
 /freeflow kill                    # Stop the shared proxy daemon now (restarts on next use)
 /freeflow cline login               # Sign in through the browser, save to the per-user pool
@@ -304,14 +309,14 @@ cat ~/.pi/agent/pi-freeflow.log | tail -n 50
 
 This package stays thin. It ships three things: a model catalog, a relay proxy, and a log. There is no build step and one runtime dependency (`undici`). Thinking and prompt normalization stay with the host (`pi-ai`).
 
-About 45k lines including tests: `src/` is roughly 17.7k across 27 files, and the 82 test files add roughly 27k more. The full suite (sandboxed, network-mocked) and typecheck pass before every release. See CHANGELOG.md.
+About 52k lines including tests: `src/` is roughly 19.4k across 30 files, and the 90 test files add roughly 32.4k more. The full suite (sandboxed, network-mocked) and typecheck pass before every release. See CHANGELOG.md.
 
 ---
 
 ### FAQ
 
 **Do I need API keys?**
-No. OpenCode and Kilo free models are both keyless: the proxy sends no `Authorization` header at all, and a placeholder credential is rejected rather than merely unused — `Bearer kilo-free` answers `401 INVALID_TOKEN`, while sending nothing answers 200 for every free catalog model. You never paste a key. Cline free models need a browser login instead: `/freeflow cline login` saves it to a per-user pool on your machine. OVHcloud AI Endpoints models need no account and no key at all.
+No. OpenCode and Kilo free models need no key of your own. The proxy strips the placeholder credential the host provider registers with — forwarding it upstream gets a `401` (for Kilo, `Bearer kilo-free` answers `401 INVALID_TOKEN`) — so your key, if any, never leaves the machine. For OpenCode Zen it then adds the fixed `Authorization: Bearer public` the current `/inference/v1` gateway requires; the Kilo and OVHcloud lanes go out with no `Authorization` header at all. You never paste a key. Cline free models need a browser login instead: `/freeflow cline login` saves it to a per-user pool on your machine. OVHcloud AI Endpoints models need no account and no key at all.
 
 **What if all relays hit rate limits?**
 The proxy tries direct upstream. If that is also rate-limited, the host shows the limit. That number is the shared upstream cap; without relays you would hit the same wall sooner.

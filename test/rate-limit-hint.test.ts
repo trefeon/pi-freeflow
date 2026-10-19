@@ -24,6 +24,7 @@ import {
  resetAllRelayHealth,
  setActiveRelayState,
 } from "../src/relay-state.ts";
+import { authHeaders } from "./_auth.ts";
 import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
 /** The exact hint string clients receive in a natural-429 body. */
@@ -74,7 +75,7 @@ test("429 hint: natural direct 429 carries guidance, throttled 10 min, resettabl
    const postChat = (stream: boolean): Promise<Response> =>
     fetch(`${localPrefix}/v1/chat/completions`, {
      method: "POST",
-     headers: { "content-type": "application/json" },
+     headers: { "content-type": "application/json", ...authHeaders() },
      body: JSON.stringify({ model: MODEL, stream }),
     });
 
@@ -156,7 +157,7 @@ test("429 hint: exhausted relay pool 429 carries guidance", async (t) => {
 
    const res = await fetch(`${localPrefix}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify({ model: MODEL, stream: false }),
    });
    assert.equal(res.status, 429);
@@ -211,7 +212,7 @@ test("429 hint: object-shaped error gains guidance inside message", async (t) =>
 
    const res = await fetch(`${localPrefix}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify({ model: MODEL, stream: false }),
    });
    assert.equal(res.status, 429);

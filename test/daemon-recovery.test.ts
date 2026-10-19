@@ -4,13 +4,14 @@
  * The shared loopback proxy serves every model from one baseUrl, so a dead
  * daemon fails ALL models with a refused loopback connection. These tests pin:
  *  1. The /_shutdown control path leaves an info log line (was silent).
- *  2. A port holder that answers neither /v1/models nor /_health is
+ *  2. A port holder that answers neither our identity nor /v1/models is
  *     reclaimable (was left untouched, deadlocking respawn behind EADDRINUSE).
  *  3. Loopback-refused errors classify explicitly (vs per-model connect noise).
  *  4. The pre-request readiness probe retries after one respawn, then reports
  *     proxy-down explicitly instead of failing silently per model.
- *  5. A /_health answer is OUR daemon only when it carries our shape (numeric
- *     `port`); a stranger answering `{}` is reclaimed, never attached to.
+ *  5. A holder is OUR daemon only when the unauthenticated GET /health identity
+ *     body names our service and the bound port; a stranger answering `{}` is
+ *     reclaimed, never attached to.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -28,6 +29,7 @@ import {
 	proxyDownMessage,
 	shouldReclaimDarkHolder,
 } from "../src/client.ts";
+import { authHeaders } from "./_auth.ts";
 import { withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
 
 // ── 1. Shutdown is visible ───────────────────────────────────────────────
@@ -43,6 +45,7 @@ test("control /_shutdown leaves an info log line", async () => {
 			const closedP = once(server, "close");
 			const res = await fetch(`http://${HOST}:${port}/_shutdown`, {
 				method: "POST",
+				headers: { ...authHeaders() },
 				signal: AbortSignal.timeout(1500),
 			});
 			assert.equal(res.status, 200);
@@ -65,11 +68,11 @@ test("control /_shutdown leaves an info log line", async () => {
 
 // ── 2. Dark-holder reclaim decision ──────────────────────────────────────
 
-test("dark holder (held but answering nothing) is reclaimable; free and live are not", () => {
+test("dark holder (held but answering nothing of ours) is reclaimable; free and live are not", () => {
 	assert.equal(
 		shouldReclaimDarkHolder({ alive: false, bound: true, healthOurs: false }),
 		true,
-		"a held port answering neither models nor health must be reclaimable",
+		"a held port answering neither our identity nor models must be reclaimable",
 	);
 	assert.equal(
 		shouldReclaimDarkHolder({ alive: false, bound: false, healthOurs: false }),
@@ -77,14 +80,14 @@ test("dark holder (held but answering nothing) is reclaimable; free and live are
 		"a free port is not a dark holder (issue #52: treating it as one cost ~2s per cold start)",
 	);
 	assert.equal(
-		shouldReclaimDarkHolder({ alive: true, bound: true, healthOurs: false }),
+		shouldReclaimDarkHolder({ alive: true, bound: true, healthOurs: true }),
 		false,
-		"a holder answering /v1/models is live, not dark",
+		"a holder answering our /health identity is live, not dark",
 	);
 	assert.equal(
 		shouldReclaimDarkHolder({ alive: false, bound: true, healthOurs: true }),
 		false,
-		"a holder answering /_health in OUR shape is a daemon (stale/live path owns it), not dark",
+		"a holder answering our identity on a slow second probe is a daemon (stale/live path owns it), not dark",
 	);
 });
 
@@ -102,11 +105,12 @@ test("isPortBound: true for a held port, false once released (issue #52)", async
 	assert.equal(await isPortBound(port), false, "a released port must not be reported as bound");
 });
 
-// ── 2b. Only an OUR-shape /_health answer counts as a daemon ─────────────
+// ── 2b. Only an OUR-identity /health answer counts as a daemon ───────────
 
 /**
- * Minimal loopback holder: /_health answers `body(port)`, everything else
- * (including /v1/models) 404s, so only the /_health shape can identify it.
+ * Minimal loopback holder: /health answers `body(port)`, everything else
+ * (including /v1/models and /_health) 404s, so only the identity shape can
+ * identify it.
  */
 async function listenHolder(
 	body: (port: number) => Record<string, unknown> | null,
@@ -114,7 +118,7 @@ async function listenHolder(
 	let port = 0;
 	const server = createServer((req, res) => {
 		const payload = body(port);
-		if (payload !== null && (req.url === "/_health" || req.url === "/health")) {
+		if (payload !== null && (req.url === "/health" || req.url === "/_health")) {
 			res.writeHead(200, { "content-type": "application/json" });
 			res.end(JSON.stringify(payload));
 			return;
@@ -132,24 +136,29 @@ async function listenHolder(
 	};
 }
 
-test("a stranger answering /_health with {} is not our daemon and stays reclaimable", async () => {
+test("a stranger answering our identity routes with {} is not our daemon and stays reclaimable", async () => {
 	const holder = await listenHolder(() => ({}));
 	try {
 		assert.equal(
 			isOurDaemonHealthBody(holder.port, {}),
 			false,
-			"arbitrary JSON is not our /_health shape",
+			"arbitrary JSON is not our identity shape",
 		);
 		assert.equal(isOurDaemonHealthBody(holder.port, null), false, "no body at all is not our shape");
 		assert.equal(
-			isOurDaemonHealthBody(holder.port, { version: "9.9.9", activeRequests: 0 }),
+			isOurDaemonHealthBody(holder.port, { ok: true, service: "some-other-daemon", port: holder.port }),
 			false,
-			"a version-answering stranger is still a stranger",
+			"a different service marker is not our daemon",
 		);
 		assert.equal(
 			isOurDaemonHealthBody(holder.port, { port: holder.port + 1 }),
 			false,
 			"a port field naming a different port is not this holder",
+		);
+		assert.equal(
+			isOurDaemonHealthBody(holder.port, { version: "9.9.9", activeRequests: 0 }),
+			false,
+			"a version-only stranger is still a stranger",
 		);
 		const probe = await probeDarkHolder(holder.port);
 		assert.deepEqual(
@@ -167,8 +176,14 @@ test("a stranger answering /_health with {} is not our daemon and stays reclaima
 	}
 });
 
-test("our /_health shape (numeric port) is accepted as ours", async () => {
+test("our /health identity body is accepted as ours; a legacy rich body still identifies the daemon", async () => {
 	const holder = await listenHolder((port) => ({
+		ok: true,
+		service: "pi-freeflow",
+		port,
+		version: "9.9.9",
+	}));
+	const legacy = await listenHolder((port) => ({
 		port,
 		active: "auto",
 		mode: "auto",
@@ -176,43 +191,54 @@ test("our /_health shape (numeric port) is accepted as ours", async () => {
 		version: "9.9.9",
 	}));
 	try {
-		const res = await fetch(`http://${HOST}:${holder.port}/_health`);
+		const res = await fetch(`http://${HOST}:${holder.port}/health`);
 		assert.equal(res.status, 200);
 		const body: unknown = await res.json();
 		assert.equal(
 			isOurDaemonHealthBody(holder.port, body),
 			true,
-			"our shape (object carrying the listening port) is accepted",
+			"the identity body carrying the listening port is accepted",
 		);
 		const probe = await probeDarkHolder(holder.port);
-		assert.deepEqual(probe, { alive: false, bound: true, healthOurs: true });
+		assert.deepEqual(probe, { alive: true, bound: true, healthOurs: true });
 		assert.equal(
 			shouldReclaimDarkHolder(probe),
 			false,
-			"a holder answering in our shape is owned by the stale/live path, not reclaimed as dark",
+			"a live holder is owned by the stale/live path, not reclaimed as dark",
+		);
+
+		// Pre-token daemons answered /health with the rich snapshot: recognise
+		// them so the version-mismatch path replaces them instead of stranding.
+		assert.equal(
+			isOurDaemonHealthBody(legacy.port, { port: legacy.port, version: "1.0.0" }),
+			true,
+			"a legacy rich body naming the bound port still identifies our daemon",
 		);
 	} finally {
 		await holder.close();
+		await legacy.close();
 	}
 });
 
-test("a real daemon's /_health body satisfies the shape predicate", async () => {
+test("a real daemon's identity body satisfies the shape predicate", async () => {
 	await withIsolatedSandboxFiles(async () => {
 		_resetLeaseStateForTest();
 		const r = await startProxy(0);
 		assert.ok(r.server);
 		const server = r.server;
 		try {
-			const res = await fetch(`http://${HOST}:${r.port}/_health`);
+			const res = await fetch(`http://${HOST}:${r.port}/health`);
 			assert.equal(res.status, 200);
 			const body: unknown = await res.json();
 			assert.equal(
 				isOurDaemonHealthBody(r.port, body),
 				true,
-				"src/health.ts must keep reporting the bound port — the shape gate depends on it",
+				"src/health.ts must keep reporting the bound port — the identity gate depends on it",
 			);
+			const rich = await fetch(`http://${HOST}:${r.port}/_health`, { headers: { ...authHeaders() } });
+			assert.equal(rich.status, 200);
 			const probe = await probeDarkHolder(r.port);
-			assert.equal(probe.alive, true, "a real daemon answers /v1/models");
+			assert.equal(probe.alive, true, "a real daemon answers the identity probe");
 			assert.equal(shouldReclaimDarkHolder(probe), false);
 		} finally {
 			_resetLeaseStateForTest();

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { startProxy } from "../src/proxy.ts";
+import { authHeaders } from "./_auth.ts";
 import { OPENCODE_FINGERPRINT_TOOLS, toolNameOf } from "../src/opencode-fingerprint.ts";
 import { _resetUpstreamHealthForTest } from "../src/upstream-health.ts";
 import { _resetFreeTierHintForTest } from "../src/upstream-health.ts";
@@ -49,7 +50,7 @@ test("proxy: OpenCode chat request without tools receives injected fingerprint a
 			port: effectivePort,
 			path: "/v1/chat/completions",
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: { "content-type": "application/json", ...authHeaders() },
 		});
 
 		const clientResPromise = new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>(
@@ -163,7 +164,7 @@ test("proxy: OpenCode Responses request without tools (like advisor watchdog) re
 			port: effectivePort,
 			path: "/v1/responses",
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: { "content-type": "application/json", ...authHeaders() },
 		});
 
 		const clientResPromise = new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>(
@@ -265,7 +266,7 @@ test("proxy: upstream receives live UA + ses_ headers with stream:true and the f
 						port: effectivePort,
 						path: "/v1/chat/completions",
 						method: "POST",
-						headers: { "content-type": "application/json" },
+						headers: { "content-type": "application/json", ...authHeaders() },
 					},
 					(res) => {
 						const chunks: Buffer[] = [];

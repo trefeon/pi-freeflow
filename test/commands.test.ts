@@ -210,6 +210,46 @@ test("command spec: /freeflow logs --follow tails via setInterval 1s", async () 
 });
 
 /**
+ * `lower in LOG_LEVEL_ORDER` walks the prototype chain: an Object.prototype key
+ * (constructor, __proto__, …) read as a level and silently filtered every line
+ * out. Only emitted levels may act as a level filter; anything else is unknown
+ * and defaults to info, exactly like "boguslevel".
+ */
+test("command spec: /freeflow logs does not treat a prototype key as a log level", async () => {
+	const hadLog = fs.existsSync(LOG_FILE);
+	const backup = hadLog ? fs.readFileSync(LOG_FILE, "utf8") : null;
+	try {
+		fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+		fs.writeFileSync(LOG_FILE, "[DEBUG] debug noise line\n[INFO] important info line\n[ERROR] error line\n");
+		const spec = createCommandSpec(mockApi);
+		const { ctx, notifications } = createMockContext();
+
+		await spec.handler("logs constructor", ctx);
+
+		const header = notifications.find((n) => n.message.includes("logs ("));
+		assert.ok(header, `logs must emit a header, got: ${JSON.stringify(notifications)}`);
+		assert.ok(
+			header.message.includes("level=info"),
+			`an unknown token must default to info, got: ${header.message}`,
+		);
+		assert.ok(
+			header.message.includes("[INFO] important info line"),
+			"the info line must survive the filter",
+		);
+		assert.ok(
+			!notifications.some((n) => n.message.includes("level=constructor")),
+			"a prototype key must never become a level filter",
+		);
+	} finally {
+		if (hadLog && backup !== null) {
+			fs.writeFileSync(LOG_FILE, backup);
+		} else if (!hadLog) {
+			try { fs.unlinkSync(LOG_FILE); } catch {}
+		}
+	}
+});
+
+/**
  * Make the /freeflow update environment deterministic for one test: package
  * managers on PATH, the registry version and the three restart dependencies.
  * The update command probes the real PATH for host/global managers, so omp/pi/

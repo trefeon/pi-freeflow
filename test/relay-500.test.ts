@@ -13,6 +13,7 @@ import {
 	getActiveRelayState,
 	getRelayHealth,
 	isRelayHealthy,
+	markRelayFailure,
 	resetAllRelayHealth,
 	setActiveRelayState,
 } from "../src/relay-state.ts";
@@ -59,6 +60,70 @@ function stubResponse(
 	return stub;
 }
 
+test("relay 500: post-cap 500 never resets the failing relay's health or cooldown", async (t) => {
+	await withIsolatedRelayFiles(async () => {
+		setActiveRelayState(poolState(), false);
+		resetAllRelayHealth();
+		_resetRollNotifyForTest();
+
+		// B already carries a real failure history from an earlier turn.
+		markRelayFailure(RELAY_B, 502, "earlier gateway error");
+		const before = getRelayHealth(RELAY_B);
+		assert.ok(before && before.consecutiveFailures >= 1, "B must start with a failure record");
+		assert.ok(before.cooldownUntil > Date.now(), "B must start cooling");
+
+		const cancelled: number[] = [];
+		const seenUrls: string[] = [];
+		const fetchMock = t.mock.method(globalThis, "fetch", async (input: unknown) => {
+			seenUrls.push(String(input));
+			return stubResponse(500, cancelled, SERVER_ERROR_BODY);
+		});
+
+		const out = await relayFetch(UPSTREAM_URL, { method: "POST" }, "t500noreset");
+
+		assert.equal(out.status, 500, "the second 500 of the turn must surface");
+		assert.equal(fetchMock.mock.callCount(), 2, "one roll, then the per-turn cap");
+		assert.deepEqual(seenUrls, [RELAY_A, RELAY_B], "cooling B stays the second candidate");
+
+		const after = getRelayHealth(RELAY_B);
+		assert.ok(after, "B keeps its failure record");
+		assert.equal(after.successCount ?? 0, 0, "a 500 must never be recorded as a success");
+		assert.equal(after.ewmaSamples ?? 0, 0, "no EWMA sample may be taken from an error");
+		assert.equal(after.consecutiveFailures, before.consecutiveFailures, "failure counters must not reset");
+		assert.equal(after.cooldownUntil, before.cooldownUntil, "the cooldown must not be cleared");
+		assert.equal(getActiveRelayState().url, RELAY_A, "the sticky primary must not follow a failing relay");
+	}, { onRestore: () => resetAllRelayHealth() });
+});
+
+test("relay 401: an upstream-forwarded 401 surfaces without cooling the relay", async (t) => {
+	await withIsolatedRelayFiles(async () => {
+		setActiveRelayState(poolState(), false);
+		resetAllRelayHealth();
+		_resetRollNotifyForTest();
+
+		const cancelled: number[] = [];
+		const seenUrls: string[] = [];
+		const upstream401 = JSON.stringify({
+			error: { code: "invalid_api_key", message: "Incorrect API key provided" },
+		});
+		const fetchMock = t.mock.method(globalThis, "fetch", async (input: unknown) => {
+			seenUrls.push(String(input));
+			return stubResponse(401, cancelled, upstream401);
+		});
+
+		const out = await relayFetch(UPSTREAM_URL, { method: "POST" }, "t401fwd");
+
+		assert.equal(out.status, 401, "the upstream credential verdict must surface");
+		assert.equal(await out.text(), upstream401, "the upstream body must pass through unchanged");
+		assert.equal(fetchMock.mock.callCount(), 1, "a forwarded 401 must not roll");
+		assert.deepEqual(seenUrls, [RELAY_A], "the first relay answers and the turn ends there");
+		assert.equal(isRelayHealthy(RELAY_A), true, "a forwarded 401 must not cool the relay");
+		const health = getRelayHealth(RELAY_A);
+		assert.equal(health?.consecutiveFailures ?? 0, 0, "a forwarded 401 is not a relay failure");
+		assert.equal(health?.lastStatus, undefined, "no failure status may be recorded");
+	}, { onRestore: () => resetAllRelayHealth() });
+});
+
 test("relay 500: transient server_error rolls once to sibling", async (t) => {
 	await withIsolatedRelayFiles(async () => {
 		setActiveRelayState(poolState(), false);
@@ -104,6 +169,11 @@ test("relay 500: bounded cap — second server_error surfaces, third sibling nev
 		assert.equal(out.status, 500, "second consecutive server_error must surface");
 		assert.equal(fetchMock.mock.callCount(), 2, "cap is 1 extra attempt per turn");
 		assert.deepEqual(seenUrls, [RELAY_A, RELAY_B], "third sibling must never be tried on back-to-back 500s");
+		// The post-cap 500 is a terminal passthrough, never a success: the relay
+		// that just failed must not be recorded healthy (no cooldown reset, no
+		// EWMA sample from an error) and the sticky primary must not move to it.
+		assert.equal(getRelayHealth(RELAY_B), undefined, "post-cap 500 must not create a health record");
+		assert.equal(getActiveRelayState().url, RELAY_A, "post-cap 500 must not rewrite the sticky primary");
 	}, { onRestore: () => resetAllRelayHealth() });
 });
 

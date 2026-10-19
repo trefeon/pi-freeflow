@@ -10,7 +10,7 @@
  *  - all relays fail -> direct fallback -> 200
  *  - all relays fail AND direct fails -> last response returned
  *  - kilo model routing to api.kilo.ai
- *  - /v1/models catalog + /health
+ *  - /v1/models catalog + /health identity probe + /_health snapshot
  *
  * Relay/upstream fetches are stubbed; requests to the local proxy pass
  * through to the real fetch so the full HTTP path is exercised.
@@ -23,6 +23,7 @@ import {
  setActiveRelayState,
 } from "../src/relay-state.ts";
 import type { RelayState } from "../src/types.ts";
+import { authHeaders } from "./_auth.ts";
 import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
 /** Response stub with a proper ReadableStream body (the proxy pipes upstream.body). */
@@ -60,6 +61,10 @@ function makeState(relays: Array<{ url: string }>, enabled = true): RelayState {
 
 /**
  * Run a scenario: start the proxy, stub fetch, drive the flow, assert.
+ *
+ * Local-proxy requests are delegated to the real fetch with the sandbox
+ * installation token attached here, once: every `/v1/*` and `/_*` route is
+ * token-gated, and the tests below then only describe the flow.
  */
 async function withProxyScenario(
  opts: { state: RelayState },
@@ -76,7 +81,9 @@ async function withProxyScenario(
   const fetchMock = test.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
    const u = String(url);
    if (u.startsWith(localPrefix)) {
-    return realFetch(u, init);
+    const headers = new Headers(init?.headers);
+    for (const [name, value] of Object.entries(authHeaders())) headers.set(name, value);
+    return realFetch(u, { ...init, headers });
    }
    return upstreamStub(u, init);
   });
@@ -266,18 +273,28 @@ test("mock upstream: /v1/models serves the 35-model catalog", async () => {
  });
 });
 
-// ── 8. /health endpoint ─────────────────────────────────────────────────────
+// ── 8. health endpoints ─────────────────────────────────────────────────────
 
-test("mock upstream: /health reports active pool", async () => {
+test("mock upstream: /_health reports active pool; /health is the identity probe", async () => {
  await withIsolatedRelayFiles(async () => {
   await withProxyScenario(
    { state: makeState([{ url: "https://relay1.example.com" }]) },
    async () => stubResponse(200, "{}"),
    async (port) => {
-    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    const res = await fetch(`http://127.0.0.1:${port}/_health`);
     assert.equal(res.status, 200);
-    const json = (await res.json()) as { relay?: string; relays?: number; enabled?: boolean };
+    const json = (await res.json()) as { enabled?: boolean; active?: string; port?: number };
     assert.equal(json.enabled, true);
+    assert.equal(json.active, "https://relay1.example.com");
+
+    // Unauthenticated identity probe: exactly ok/service/port/version.
+    const identity = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.equal(identity.status, 200);
+    const body = (await identity.json()) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(body).sort(), ["ok", "port", "service", "version"]);
+    assert.equal(body.ok, true);
+    assert.equal(body.service, "pi-freeflow");
+    assert.equal(body.port, port);
    },
   );
  });

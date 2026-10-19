@@ -21,6 +21,7 @@ import { createCommandSpec, stopLogsFollow, updateStatusBar } from "./commands.t
 import { HOST, ONBOARDED_FLAG_FILE, PORT } from "./config.ts";
 import { logInfo, logWarn } from "./logger.ts";
 import { ALL_MODELS, MODEL_MAP, getModelUpstream, resolveCanonicalModelId } from "./models.ts";
+import { ensureToken } from "./token.ts";
 import { checkForUpdateInBackground } from "./update-checker.ts";
 import {
  ensureRelay,
@@ -105,6 +106,11 @@ export function bindWidgetClick(ui: ExtensionUIContext): void {
 
 /**
  * Construct standard ProviderConfig for pi-ai / OMP registration.
+ *
+ * `apiKey` carries the local installation token (src/token.ts) so the host
+ * sends `Authorization: Bearer <token>` on every /v1 request; the proxy
+ * validates it and strips it before going upstream. Read-or-create: the host
+ * may build its provider config before the daemon has written the file.
  */
 export function buildProviderConfig(
  models: RegisteredModel[],
@@ -112,7 +118,7 @@ export function buildProviderConfig(
 ): ProviderConfig {
  return {
   baseUrl: `http://${HOST}:${port}/v1`,
-  apiKey: "public",
+  apiKey: ensureToken(),
   api: "openai-completions",
   compat: { supportsDeveloperRole: false },
   models: models.map((m) => {

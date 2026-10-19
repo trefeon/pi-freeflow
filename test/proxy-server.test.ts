@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { startProxy, isProxyAlive, sanitizeHeaders } from "../src/proxy.ts";
 import { ALL_MODELS } from "../src/models.ts";
+import { authHeaders } from "./_auth.ts";
 
 test("proxy starts, responds to /v1/models, and shuts down cleanly", async () => {
 	const testPort = 19180;
@@ -19,7 +20,9 @@ test("proxy starts, responds to /v1/models, and shuts down cleanly", async () =>
 		assert.equal(isAlive, true);
 
 		// Fetch catalog from proxy
-		const res = await fetch(`http://127.0.0.1:${testPort}/v1/models`);
+		const res = await fetch(`http://127.0.0.1:${testPort}/v1/models`, {
+			headers: { ...authHeaders() },
+		});
 		assert.equal(res.status, 200);
 		const json = await res.json() as { object: string; data: Array<{ id: string }> };
 		assert.equal(json.object, "list");
@@ -29,16 +32,21 @@ test("proxy starts, responds to /v1/models, and shuts down cleanly", async () =>
 		// Test 405 on disallowed method
 		const putRes = await fetch(`http://127.0.0.1:${testPort}/v1/models`, {
 			method: "PUT",
+			headers: { ...authHeaders() },
 		});
 		assert.equal(putRes.status, 405);
 
 		// Test 404 on unknown path (fetch normalizes "..", so /v1/../admin → /admin → unknown)
-		const trapRes = await fetch(`http://127.0.0.1:${testPort}/v1/../admin`);
+		const trapRes = await fetch(`http://127.0.0.1:${testPort}/v1/../admin`, {
+			headers: { ...authHeaders() },
+		});
 		assert.equal(trapRes.status, 404);
 		// Test server is unref'd so CLI commands like omp plugin install exit cleanly
 		// In Node.js, an unref'd server has its underlying handle unref'd.
 		// We can verify fetch still succeeds on unref server:
-		const modelsRes = await fetch(`http://127.0.0.1:${testPort}/v1/models`);
+		const modelsRes = await fetch(`http://127.0.0.1:${testPort}/v1/models`, {
+			headers: { ...authHeaders() },
+		});
 		assert.equal(modelsRes.status, 200);
 	} finally {
 		await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -63,6 +71,7 @@ test("proxy rejects oversized bodies with 413 before buffering", async () => {
 					headers: {
 						"content-type": "application/json",
 						"content-length": String(64 * 1024 * 1024),
+						...authHeaders(),
 					},
 				},
 				resolve,
@@ -85,7 +94,10 @@ test("proxy OPTIONS preflight returns 204 without CORS headers", async () => {
 	const { server, port } = await startProxy(testPort);
 	assert.ok(server);
 	try {
-		const res = await fetch(`http://127.0.0.1:${port}/v1/models`, { method: "OPTIONS" });
+		const res = await fetch(`http://127.0.0.1:${port}/v1/models`, {
+			method: "OPTIONS",
+			headers: { ...authHeaders() },
+		});
 		assert.equal(res.status, 204);
 		assert.equal(
 			res.headers.get("access-control-allow-origin"),
@@ -104,7 +116,7 @@ test("sanitizeHeaders forwards only allowlisted headers", () => {
 			host: "127.0.0.1:28180",
 			"content-type": "application/json",
 			accept: "application/json",
-			authorization: "Bearer client-token",
+			...authHeaders(),
 			"x-request-id": "req-123",
 			"x-opencode-session": "sess-1",
 			"x-relay-auth": "secret",

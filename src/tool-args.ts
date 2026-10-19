@@ -42,6 +42,16 @@ import { canonicalizeTool } from "./tool-translation.ts";
 const MAX_DEPTH = 8;
 
 /**
+ * Bounds on the prefix-glue salvage (see parseArguments). The scan is
+ * O(candidates × payload): a brace-heavy model emission used to spend 34.5 s
+ * on 80 KB on the single-threaded proxy. 64 KB is far beyond any tool call a
+ * host actually sends (the live glued payloads are a short echo plus one
+ * object), and the observed real call always sits within the first few braces.
+ */
+const SALVAGE_MAX_BYTES = 64 * 1024;
+const SALVAGE_MAX_CANDIDATES = 128;
+
+/**
  * Text ending in a bare numeric literal (`"timeout":18`, `"n":1.`, `"n":1e`).
  * A complete JSON value is never followed by a digit, so this can only be a
  * literal the model was still writing when the stream cut — see
@@ -504,7 +514,10 @@ export function buildArgRepairSchemas(tools: unknown[]): Map<string, Record<stri
  * the candidate with its closers appended. That offer is made only at the first
  * brace and only when a fragment precedes it; see appendClosers.
  *
- * Returns undefined when nothing salvageable is present.
+ * Returns undefined when nothing salvageable is present, and also when the
+ * payload is beyond the salvage bounds (see SALVAGE_MAX_BYTES /
+ * SALVAGE_MAX_CANDIDATES): the host then sees its own schema error instead of
+ * the proxy hanging on a quadratic scan.
  */
 function parseArguments(argsJson: string): { value: Record<string, unknown>; salvaged: boolean } | undefined {
   try {
@@ -514,6 +527,13 @@ function parseArguments(argsJson: string): { value: Record<string, unknown>; sal
   } catch {
     // fall through to the salvage scan
   }
+ // The scan below re-slices and re-parses at every offered brace, so a
+ // brace-heavy payload costs O(candidates × n) — quadratic before the bound
+ // (measured 34.5 s for 80 KB of malformed model output on the single-threaded
+ // proxy). Both bounds refuse only work the live shapes never need: the glue
+ // is one short echo in front of the caller's own object, never a call this
+ // large or this deep into a candidate list.
+ if (argsJson.length > SALVAGE_MAX_BYTES) return undefined;
  // Only a brace that OPENS a top-level object can start the caller's call: a
  // brace nested inside an already-unterminated object belongs to that outer
  // object, so promoting it would drop the declared key that wraps it
@@ -556,13 +576,20 @@ function parseArguments(argsJson: string): { value: Record<string, unknown>; sal
  * must NOT promote its inner `{"a":1}` (a `:` sits between, so the outer
  * object is a real one and its declared key would be dropped), while the
  * observed prefix junk `}{` must still reach the real call that follows it.
+ *
+ * Stops after SALVAGE_MAX_CANDIDATES offsets: every candidate costs a slice
+ * and a parse of the remaining text, and the live shapes carry the caller's
+ * object within the first few braces of the junk.
  */
 function topLevelObjectStarts(text: string): number[] {
  const starts: number[] = [];
  const openAt: number[] = [];
  for (let i = 0; i < text.length; i++) {
   if (text[i] === "{") {
-   if (openAt.length === 0 || !text.slice(openAt[openAt.length - 1] + 1, i).includes(":")) starts.push(i);
+   if (openAt.length === 0 || !text.slice(openAt[openAt.length - 1] + 1, i).includes(":")) {
+    starts.push(i);
+    if (starts.length >= SALVAGE_MAX_CANDIDATES) return starts;
+   }
    openAt.push(i);
    continue;
   }

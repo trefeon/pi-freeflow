@@ -14,6 +14,7 @@ import {
 	setActiveRelayState,
 	resetAllRelayHealth,
 	getRelayHealth,
+	markRelayFailure,
 } from "../src/relay-state.ts";
 
 const UPSTREAM = "https://opencode.ai/zen/v1/chat/completions";
@@ -75,6 +76,45 @@ test("hedge fires after grace: first headers wins, loser aborted and unmarked", 
 		assert.equal(getRelayHealth(R1), undefined, "cancelled loser stays unmarked");
 		const winnerHealth = getRelayHealth(R2);
 		assert.ok(winnerHealth && (winnerHealth.successCount ?? 0) >= 1, "winner records the EWMA sample");
+	} finally {
+		restoreGrace();
+		restorePool();
+	}
+});
+
+test("hedge never fires when the neighbour is cooling", async (t) => {
+	const restoreGrace = _setHedgeGraceForTest(0);
+	try {
+		usePool([R1, R2]);
+		// R2 is rate-limited from an earlier turn, so it sits at the tail of the
+		// candidate order. The hedge gate must refuse to fire a second parallel
+		// attempt into a relay that is already cooling.
+		markRelayFailure(R2, 429);
+
+		const calls: string[] = [];
+		const gate = Promise.withResolvers<Response>();
+		t.mock.method(globalThis, "fetch", async (url: string) => {
+			calls.push(url);
+			if (url === R1) return await gate.promise;
+			return new Response("neighbour", { status: 200 });
+		});
+
+		let served: string | null | undefined;
+		const pending = relayFetch(UPSTREAM, { method: "POST" }, "hedge4", {
+			onServed: (r) => { served = r; },
+		});
+		// The grace is 0ms: a hedge into R2 would have fired by the time this
+		// macrotask runs. Only the solo attempt to R1 may be in flight.
+		await new Promise<void>((r) => setImmediate(r));
+		assert.deepEqual(calls, [R1], "a cooling neighbour must never be hedged into");
+
+		gate.resolve(new Response("solo-ok", { status: 200 }));
+		const res = await pending;
+		assert.equal(res.status, 200);
+		assert.equal(await res.text(), "solo-ok", "the solo response wins unchanged");
+		assert.equal(served, R1, "the stalled-but-healthy primary serves");
+		assert.deepEqual(calls, [R1], "the cooling neighbour is never fetched");
+		assert.equal(getRelayHealth(R1)?.successCount ?? 0, 1, "the sole attempt records its success");
 	} finally {
 		restoreGrace();
 		restorePool();

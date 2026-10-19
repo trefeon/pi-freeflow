@@ -26,13 +26,14 @@ import type { RegisteredModel } from "../src/types.ts";
 import { getHealthData } from "../src/health.ts";
 import { getActiveRequests, startProxy } from "../src/proxy.ts";
 import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
+import { authHeaders } from "./_auth.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 async function jsonPost(port: number, pathname: string, body: unknown): Promise<{ status: number; json: unknown }> {
 	const res = await fetch(`http://${HOST}:${port}${pathname}`, {
 		method: "POST",
-		headers: { "content-type": "application/json" },
+		headers: { "content-type": "application/json", ...authHeaders() },
 		body: JSON.stringify(body),
 		signal: AbortSignal.timeout(1500),
 	});
@@ -45,6 +46,7 @@ async function jsonPost(port: number, pathname: string, body: unknown): Promise<
 
 async function getJson(port: number, pathname: string): Promise<{ status: number; json: unknown }> {
 	const res = await fetch(`http://${HOST}:${port}${pathname}`, {
+		headers: { ...authHeaders() },
 		signal: AbortSignal.timeout(1500),
 	});
 	let json: unknown = null;
@@ -304,6 +306,7 @@ test("proxy control: /_shutdown is loopback-only and closes the server", async (
 	try {
 		const res = await fetch(`http://${HOST}:${port}/_shutdown`, {
 			method: "POST",
+			headers: { ...authHeaders() },
 			signal: AbortSignal.timeout(1500),
 		});
 		assert.equal(res.status, 200);

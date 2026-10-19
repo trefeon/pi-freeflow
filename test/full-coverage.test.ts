@@ -19,6 +19,7 @@ import {
  setActiveRelayState,
  getActiveRelayState,
  getOrderedRelayUrls,
+ getRelayHealth,
  markRelayFailure,
  markRelaySuccess,
  resetAllRelayHealth,
@@ -28,6 +29,7 @@ import {
 import { isRetriableStatus, relayFetch } from "../src/relay.ts";
 import { validatePath, sanitizeHeaders, isProxyAlive, startProxy } from "../src/proxy.ts";
 import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
+import { authHeaders } from "./_auth.ts";
 import { getHealthData, isLoopbackIP } from "../src/health.ts";
 import type { RegisteredModel } from "../src/types.ts";
 
@@ -101,11 +103,70 @@ test("cooldown escalates and success resets (via setActiveRelayState)", () => {
  resetAllRelayHealth();
  const url = "https://example.com";
  setActiveRelayState({ relays: [{ url, label: "t", auth: "" }], mode: "on", enabled: true, url }, false);
- markRelayFailure(url, 429);
+
+ // Escalation: the cooldown grows with the consecutive-failure streak and caps
+ // at 4x the base for that status, whatever that base is.
  markRelayFailure(url, 503);
- markRelayFailure(url, 504);
+ const one = getRelayHealth(url);
+ assert.ok(one, "a failure must create a health record");
+ assert.equal(one.consecutiveFailures, 1);
+ const base = one.cooldownUntil - one.lastFailureTime;
+ assert.ok(base > 0, "a failure must arm a cooldown");
+
+ markRelayFailure(url, 503);
+ const two = getRelayHealth(url);
+ assert.ok(two);
+ assert.equal(two.consecutiveFailures, 2);
+ assert.equal(two.cooldownUntil - two.lastFailureTime, base * 2, "the second failure doubles the base cooldown");
+
+ markRelayFailure(url, 503);
+ const three = getRelayHealth(url);
+ assert.ok(three);
+ assert.equal(three.cooldownUntil - three.lastFailureTime, base * 3, "the third failure triples it");
+
+ markRelayFailure(url, 503);
+ markRelayFailure(url, 503);
+ const capped = getRelayHealth(url);
+ assert.ok(capped);
+ assert.equal(capped.consecutiveFailures, 5);
+ assert.equal(capped.cooldownUntil - capped.lastFailureTime, base * 4, "cooldown escalation caps at 4x the base");
+
+ // The base itself is per status: a rate limit parks a relay longer than a 5xx.
+ const [relay503, relay504, relay429] = ["https://a.example.com", "https://b.example.com", "https://c.example.com"];
+ markRelayFailure(relay503, 503);
+ markRelayFailure(relay504, 504);
+ markRelayFailure(relay429, 429);
+ const cooldownOf = (relay: string): number => {
+  const health = getRelayHealth(relay);
+  assert.ok(health, `expected a health record for ${relay}`);
+  return health.cooldownUntil - health.lastFailureTime;
+ };
+ assert.ok(
+  cooldownOf(relay503) < cooldownOf(relay504),
+  `a 504 must back off longer than a bare 5xx (${cooldownOf(relay503)} vs ${cooldownOf(relay504)})`,
+ );
+ assert.ok(
+  cooldownOf(relay504) < cooldownOf(relay429),
+  `a 429 must back off longer than a 504 (${cooldownOf(relay504)} vs ${cooldownOf(relay429)})`,
+ );
+
  markRelaySuccess(url, 20);
+ const recovered = getRelayHealth(url);
+ assert.ok(recovered);
+ assert.equal(recovered.consecutiveFailures, 0, "success resets the failure streak");
+ assert.equal(recovered.cooldownUntil, 0, "success clears the cooldown");
+ assert.equal(recovered.recovering, false);
+
  markRelayFailure(url, 429);
+ const restarted = getRelayHealth(url);
+ assert.ok(restarted);
+ assert.equal(restarted.consecutiveFailures, 1, "the streak restarts from 1 after a success");
+ assert.equal(
+  restarted.cooldownUntil - restarted.lastFailureTime,
+  cooldownOf(relay429),
+  "the first failure after a success is back to 1x the base cooldown",
+ );
+
  resetAllRelayHealth();
  setActiveRelayState({ relays: [], mode: "auto", enabled: false, url: "" }, false);
 });
@@ -205,7 +266,13 @@ test("payload size guard via startProxy 413", async () => {
       port,
       path: "/v1/chat/completions",
       method: "POST",
-      headers: { "content-type": "application/json", "content-length": String(33 * 1024 * 1024) },
+      // The local proxy gates /v1/* behind its per-install bearer token: the
+      // size guard is only reached by an authenticated caller (test/_auth.ts).
+      headers: {
+       "content-type": "application/json",
+       "content-length": String(33 * 1024 * 1024),
+       ...authHeaders(),
+      },
      },
      (res) => resolve({ status: res.statusCode ?? 0 }),
     );

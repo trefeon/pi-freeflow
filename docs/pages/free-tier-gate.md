@@ -151,37 +151,52 @@ Once all four axes are present, these make no difference to the outcome:
 - `x-opencode-client: cli` vs `desktop`
 - `x-opencode-project`, whether the SHA-1 of the upstream git remote, the
   literal `global`, a random hex value, or empty
-- `x-opencode-session-id` and `x-opencode-request` — sent on every request, and
-  neither is one of the two session headers the gateway reads
+- `x-opencode-session-id` and `x-opencode-request` — on the pre-migration
+  gateway both ride every request, and neither is one of the two session
+  headers the gateway reads (the current `/inference/v1` gateway wants
+  `x-opencode-request` omitted entirely)
 - payload size, from ~100 B to ~640 KB
 - a fresh session id per request vs one session reused across four requests
 - the timestamp encoded in the session id, from 2000 to 2050
 
 An earlier version of this page claimed request identity was not load-bearing at
 all — "good hygiene, not the mechanism" — and was wrong. `User-Agent` and a
-canonical session id are two of the four axes. pi-freeflow sends the full set
-from `src/config.ts`: a `User-Agent`, `x-opencode-client`, `x-opencode-project`,
-the canonical `ses_…` session on `x-opencode-session`, `x-opencode-session-id`
-and `x-session-affinity`, and a per-turn `msg_…` request id. The three the
-gateway does not read are kept because they cost nothing and matching the real
-client is the safer default.
+canonical session id are two of the four axes. For the current
+`/inference/v1` gateway, `src/config.ts` sends: `Authorization: Bearer public`,
+a `User-Agent`, `x-opencode-client`, `x-opencode-project`, the canonical `ses_…`
+session on `x-opencode-session`, `x-opencode-session-id`, `x-session-affinity`
+and `x-session-id`. It deliberately omits `x-opencode-request` (`msg_…`): on the
+post-migration gateway that header marks the caller as a non-OpenCode client and
+is refused with `403 FreeTierError`. The identity headers the gateway does not
+read are kept because they cost nothing and matching the real client is the
+safer default.
 
-## What is wrong about the popular workaround
+## The popular workaround, revisited
 
 A widely-copied third-party plugin states that the lane is called with
-`Authorization: Bearer public`. Measured live, that header is
-**actively harmful**:
+`Authorization: Bearer public`. On the **old** `/zen/v1` gateway (measured
+2026-10-08) that header was **actively harmful**:
 
 | Authorization header | Status | Body |
 | --- | --- | --- |
 | *(none)* | `200` | completion |
 | `Bearer public` | `401` | "Invalid API key." |
 
-pi-freeflow deliberately sends no `Authorization` on this lane —
-`src/proxy.ts` documents why in `sanitizeHeaders`: the host provider registers
-with a dummy key, every free upstream here is keyless, and forwarding that
-dummy gets a `401`. Sending `Bearer public` would put it in the same trap from
-the other direction.
+The 2026-10-15 migration to `/inference/v1` flipped this: that gateway
+**requires** `Authorization: Bearer public` (see the migration note above), and
+pi-freeflow now sends exactly that. Two different pieces of the code are easy to
+conflate here:
+
+- `sanitizeHeaders` in `src/proxy.ts` strips the caller's own `Authorization`,
+  because the host provider registers with a dummy key and forwarding that
+  placeholder upstream gets `401 Invalid API key`.
+- `opencodeHeaders()` in `src/config.ts` then injects
+  `Authorization: Bearer public`, which `sanitizeHeaders` copies onto the
+  outbound request for the Zen lane. The Kilo and OVHcloud lanes stay keyless
+  and send no `Authorization` at all.
+
+So the placeholder-key trap above is real, but `Bearer public` is not it — it is
+the credential the current gateway expects.
 
 The same plugin describes the tool gate as a *fingerprint* the client must
 present. The gate is not a fingerprint. The OpenCode client at tag `v1.18.35`

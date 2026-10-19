@@ -12,6 +12,7 @@ import {
 	_resetUpstreamHealthForTest,
 } from "../src/upstream-health.ts";
 import { startProxy } from "../src/proxy.ts";
+import { authHeaders } from "./_auth.ts";
 
 const CHAT_MODEL = "cat-jam-free";
 const RESPONSES_MODEL = "nemotron-3.5-super-vl-free";
@@ -58,7 +59,7 @@ function postJson(
 	return new Promise((resolve, reject) => {
 		const data = JSON.stringify(payload);
 		const req = http.request(
-			{ host: "127.0.0.1", port, path, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) } },
+			{ host: "127.0.0.1", port, path, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data), ...authHeaders() } },
 			(res) => {
 				const chunks: Buffer[] = [];
 				res.on("data", (chunk: Buffer) => chunks.push(chunk));

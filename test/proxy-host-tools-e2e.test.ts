@@ -9,6 +9,7 @@ import {
 } from "../src/cline-accounts.ts";
 import http from "node:http";
 import { startProxy } from "../src/proxy.ts";
+import { authHeaders } from "./_auth.ts";
 import {
 	OPENCODE_FINGERPRINT_TOOLS,
 	convertSseToJson,
@@ -80,7 +81,7 @@ function postJson(port: number, path: string, payload: unknown): Promise<{ statu
 			port,
 			path,
 			method: "POST",
-			headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) },
+			headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data), ...authHeaders() },
 		});
 		req.on("response", (res) => {
 			const chunks: Buffer[] = [];
@@ -97,13 +98,15 @@ function postJson(port: number, path: string, payload: unknown): Promise<{ statu
  * Start a mock upstream capturing its request body, redirect global fetch at
  * it, start the real proxy, run the client flow, then tear everything down.
  * `capture.path` (optional) receives the upstream pathname, for assertions
- * about which endpoint a lane actually called.
+ * about which endpoint a lane actually called; `capture.bodies` receives every
+ * upstream request body in order, so a test can prove a retry happened (or
+ * never happened) and which model each attempt asked for.
  */
 async function withProxyAndMock(
 	proxyPort: number,
 	respond: (res: http.ServerResponse) => void,
 	client: (port: number) => Promise<void>,
-	capture?: { path?: string },
+	capture?: { path?: string; bodies?: Array<Record<string, unknown>> },
 ): Promise<Record<string, unknown> | null> {
 	_resetUpstreamHealthForTest();
 	_resetFreeTierHintForTest();
@@ -113,7 +116,9 @@ async function withProxyAndMock(
 		req.on("data", (c) => chunks.push(c as Buffer));
 		req.on("end", () => {
 			if (capture) capture.path = req.url ?? "";
-			upstreamReceivedBody = JSON.parse(Buffer.concat(chunks).toString());
+			const received = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
+			upstreamReceivedBody = received;
+			capture?.bodies?.push(received);
 			respond(res);
 		});
 	});
@@ -810,5 +815,138 @@ test("proxy e2e: kilo repairs a non-stream JSON answer", async () => {
 	const calls = message.tool_calls as Array<Record<string, unknown>>;
 	const bashArgs = JSON.parse((calls[1].function as Record<string, unknown>).arguments as string) as { command: string };
 	assert.equal(bashArgs.command, "git status --short", "a non-streaming kilo answer is repaired too");
+});
+
+test("proxy e2e: a plain-JSON answer that merely mentions data: passes through byte-identical", async () => {
+	// Reproduced live: the Kilo lane forwards `stream:false` untouched, so a
+	// non-streaming caller gets plain JSON. The aggregator guard tested
+	// `includes("data:")`, which this bash command triggers — the JSON body was
+	// fed to the SSE parser and replaced by an empty synthesized completion
+	// (content null, tool call gone, HTTP 200). The guard is line-anchored now:
+	// a body with no `data:`/`event:` field line is not an event stream.
+	const answer = {
+		id: "chatcmpl-data",
+		object: "chat.completion",
+		model: "dots-3",
+		choices: [{
+			index: 0,
+			message: {
+				role: "assistant",
+				content: null,
+				tool_calls: [
+					{ id: "c0", type: "function", function: { name: "bash", arguments: JSON.stringify({ command: 'grep -n "data:" src/stream-pipe.ts' }) } },
+				],
+			},
+			finish_reason: "tool_calls",
+		}],
+	};
+	const upstreamJson = JSON.stringify(answer);
+	let clientBody = "";
+	const upstream = await withProxyAndMock(29332, (res) => {
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(upstreamJson);
+	}, async (port) => {
+		const res = await postJson(port, "/v1/chat/completions", {
+			model: KILO_MODEL,
+			messages: [{ role: "user", content: "hi" }],
+			stream: false,
+			tools: piCallerTools(),
+		});
+		assert.equal(res.status, 200);
+		assert.ok(res.headers["content-type"]?.includes("application/json"));
+		clientBody = res.body;
+	});
+	assert.ok(upstream);
+	assert.equal(clientBody, upstreamJson, "a non-SSE 200 must reach the client exactly as upstream wrote it");
+	const client = JSON.parse(clientBody) as { choices: Array<{ message: { content: unknown; tool_calls: Array<{ function: { arguments: string } }> } }> };
+	assert.equal(client.choices[0].message.tool_calls.length, 1, "the tool call must not be swallowed by an SSE aggregation");
+	const bashArgs = JSON.parse(client.choices[0].message.tool_calls[0].function.arguments) as { command: string };
+	assert.equal(bashArgs.command, 'grep -n "data:" src/stream-pipe.ts', "the arguments survive verbatim");
+});
+
+test("proxy e2e: a kilo 400 surfaces upstream's verdict for the requested model — one call, no substitution", async () => {
+	// The 400 recovery used to rewrite `dots-studio/dots-3-note-preview:free`
+	// to `nvidia/nemotron-3.5-lightning:free` and retry, so the caller could be
+	// handed another model's answer (or another model's error body) with only
+	// the `model` field as a trace. The upstream verdict must surface as-is.
+	const upstreamError = JSON.stringify({ error: { message: "dots-3-note-preview is not available right now" } });
+	const capture: { bodies: Array<Record<string, unknown>> } = { bodies: [] };
+	await withProxyAndMock(29333, (res) => {
+		res.writeHead(400, { "content-type": "application/json" });
+		res.end(upstreamError);
+	}, async (port) => {
+		const res = await postJson(port, "/v1/chat/completions", {
+			model: KILO_MODEL,
+			messages: [{ role: "user", content: "hi" }],
+			stream: false,
+			tools: piCallerTools(),
+		});
+		assert.equal(res.status, 400);
+		assert.equal(res.body, upstreamError, "the authentic upstream 400 body must reach the caller");
+	}, capture);
+	assert.equal(capture.bodies.length, 1, "a named-model 400 must never be retried on another model");
+	assert.equal(capture.bodies[0].model, KILO_MODEL, "upstream saw the model the caller asked for");
+});
+
+test("proxy e2e: a client that abandons a cline turn aborts the upstream roll", async () => {
+	// The cline lane aborted only on `res.writableEnded`, which stays false for
+	// a socket the caller destroyed: an abandoned turn left the upstream body
+	// paused forever and the handler never finished. The roll now carries an
+	// AbortController wired to the response's close.
+	const read = (p: string): string | null => (fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null);
+	const mainBefore = read(CLINE_POOL_FILE);
+	const bakBefore = read(CLINE_POOL_BACKUP_FILE);
+	try {
+		fs.rmSync(CLINE_POOL_FILE, { force: true });
+		fs.rmSync(CLINE_POOL_BACKUP_FILE, { force: true });
+		_resetClinePoolCacheForTest();
+		savePool({ accounts: [{ slot: "main", token: "workos:test-key-aaa111", addedAt: new Date().toISOString() }] });
+		_resetClinePoolCacheForTest();
+		// The mock has the upstream request; the roll's socket was closed;
+		// the safety valve released the held turn itself.
+		const upstreamSeen = Promise.withResolvers<void>();
+		const aborted = Promise.withResolvers<void>();
+		const releasedByValve = Promise.withResolvers<void>();
+		let valveFired = false;
+		await withProxyAndMock(29334, (res) => {
+			upstreamSeen.resolve();
+			res.req.once("close", () => {
+				(valveFired ? releasedByValve : aborted).resolve();
+			});
+			// The held turn must not wedge the harness when no abort ever
+			// arrives (the pre-fix behaviour this test locks out). A real
+			// socket cannot be released by fake timers.
+			setTimeout(() => {
+				valveFired = true;
+				try { res.destroy(); } catch { }
+			}, 3000).unref();
+		}, async (port) => {
+			const data = JSON.stringify({ model: CLINE_MODEL, input: "hi", stream: false });
+			const clientReq = http.request({
+				hostname: "127.0.0.1",
+				port,
+				path: "/v1/responses",
+				method: "POST",
+				headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data), ...authHeaders() },
+			});
+			clientReq.on("error", () => { });
+			clientReq.write(data);
+			// The roll is in flight once upstream has the request; walk away.
+			await upstreamSeen.promise;
+			clientReq.destroy();
+			const verdict = await Promise.race([
+				aborted.promise.then(() => "aborted" as const),
+				releasedByValve.promise.then(() => "held" as const),
+			]);
+			assert.equal(verdict, "aborted", "abandoning the caller must abort the in-flight upstream roll");
+		});
+	} finally {
+		_resetClinePoolCacheForTest();
+		if (mainBefore !== null) fs.writeFileSync(CLINE_POOL_FILE, mainBefore, "utf8");
+		else fs.rmSync(CLINE_POOL_FILE, { force: true });
+		if (bakBefore !== null) fs.writeFileSync(CLINE_POOL_BACKUP_FILE, bakBefore, "utf8");
+		else fs.rmSync(CLINE_POOL_BACKUP_FILE, { force: true });
+		_resetClinePoolCacheForTest();
+	}
 });
 

@@ -698,3 +698,54 @@ test("messages stream: arguments survive a block that never stops", () => {
 	assert.deepEqual(args.list.map((p) => p.phase), ["Research", "Synthesis"]);
 	assert.ok(closing!.indexOf("input_json_delta") < closing!.indexOf("message_stop"), "the recovered input precedes message_stop");
 });
+
+test("a brace-heavy payload beyond the salvage budget answers fast instead of scanning quadratically", () => {
+	// The salvage re-slices and re-parses at every top-level brace, so a
+	// brace-heavy emission costs O(candidates x payload): measured 2092 ms for
+	// this 83 KB payload (34.5 s at 80 KB in a live capture) on the
+	// single-threaded proxy, and the scan even returned a salvage it then had
+	// to discard. The bound refuses the scan and hands the payload back
+	// unharmed, so the host answers with its own schema error instead.
+	const bash = buildArgRepairSchemas([
+		{
+			type: "function",
+			name: "bash",
+			description: "Run a shell command",
+			parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+		},
+	]);
+	const huge = '{"command":"check"}'.repeat(4_400);
+	assert.ok(huge.length > 64 * 1024, `payload must exceed the byte budget, got ${huge.length}`);
+	const started = performance.now();
+	const out = repairToolArguments("bash", huge, bash);
+	const elapsedMs = performance.now() - started;
+	assert.equal(out, huge, "nothing salvaged: the payload rides through unchanged");
+	assert.ok(elapsedMs < 1000, `the bound must keep this under 1 s, took ${Math.round(elapsedMs)} ms`);
+
+	// Under the byte budget the candidate cap carries the bound: a complete
+	// call sitting behind 200 junk objects lies past the offered offsets, so it
+	// is never handed to the parser (a live glue is one short echo, not 200).
+	const capped = `${'{"a":1}'.repeat(200)}{"command":"check"}`;
+	assert.equal(repairToolArguments("bash", capped, bash), capped, "past the candidate cap nothing is salvaged");
+});
+
+test("the salvage still repairs the live glue shapes under the bounds", () => {
+	// The bound must not cost the shapes it exists for: a short echo in front
+	// of the caller's own object, and the same with its closing brace missing.
+	const bash = buildArgRepairSchemas([
+		{
+			type: "function",
+			name: "bash",
+			description: "Run a shell command",
+			parameters: { type: "object", properties: { i: { type: "string" }, command: { type: "string" }, timeout: { type: "number" }, cwd: { type: "string" } }, required: ["command"] },
+		},
+	]);
+	assert.deepEqual(
+		JSON.parse(repairToolArguments("bash", '{"async":true}{"command":"ls","timeout":180}', bash)),
+		{ command: "ls", timeout: 180 },
+	);
+	assert.deepEqual(
+		JSON.parse(repairToolArguments("bash", 'reelane-proxy"}{"i": "Confirming the files", "command": "git status --short"}', bash)),
+		{ i: "Confirming the files", command: "git status --short" },
+	);
+});

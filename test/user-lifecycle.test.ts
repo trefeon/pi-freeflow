@@ -195,8 +195,13 @@ async function startFakeDaemon(
 ): Promise<http.Server> {
 	const server = http.createServer((req, res) => {
 		const url = req.url ?? "";
-		if (url === "/_health" || url === "/health") {
-			const data: Record<string, unknown> = { version: health.version };
+		// Unauthenticated identity probe: what isProxyAlive() recognises.
+		if (url === "/health") {
+			writeHealthJson(res, 200, { ok: true, service: "pi-freeflow", port, version: health.version });
+			return;
+		}
+		if (url === "/_health") {
+			const data: Record<string, unknown> = { port, version: health.version };
 			if (health.activeRequests !== undefined) data.activeRequests = health.activeRequests;
 			writeHealthJson(res, 200, data);
 			return;
@@ -228,8 +233,12 @@ const server = http.createServer((req, res) => {
 		res.writeHead(status, { 'content-type': 'application/json', connection: 'close' });
 		res.end(JSON.stringify(data));
 	};
-	if (url === '/_health' || url === '/health') {
-		json(200, { version: version, activeRequests: activeRequests });
+	if (url === '/health') {
+		json(200, { ok: true, service: 'pi-freeflow', port: port, version: version });
+		return;
+	}
+	if (url === '/_health') {
+		json(200, { port: port, version: version, activeRequests: activeRequests });
 		return;
 	}
 	if (url.indexOf('/v1/') === 0) {
@@ -540,55 +549,81 @@ test("catalog cache [g3] corrupt cache falls back to the static catalog without 
 // ── 10. Update checker: LINK-skip ──────────────────────────────────────────
 
 /**
- * isLinkedInstall() lstat()s the fixed <repo>/extensions/index.ts path. The
- * named `lstatSync` binding is frozen (cannot be mocked at the module level),
- * so the LINK case uses a real junction at that path and restores the original
- * file afterwards; the NOT-linked case is the repo's actual non-symlink file.
+ * Probe a linked install without touching the checkout.
+ *
+ * isLinkedInstall() lstat()s `<pkg>/extensions/index.ts` next to the running
+ * module, so the production checker cannot be pointed at a scratch path. The
+ * probe therefore copies the package layout (src/, package.json,
+ * extensions/index.ts) into a temp dir, turns THAT entry into a junction, and
+ * runs the check in a child process whose module URL lives in the copy. The
+ * repo's real extensions/index.ts is only ever read — an interrupted or
+ * failing run can no longer delete or replace it.
  */
-async function withLinkedInstall(fn: () => Promise<void>): Promise<void> {
-	const orig = fs.readFileSync(EXTENSIONS_ENTRY, "utf8");
-	let target: string | null = null;
+const LINK_MIRROR_PROBE = `
+const calls = [];
+globalThis.fetch = async (url) => { calls.push(String(url)); throw new Error("network disabled"); };
+// Dynamic import: this script exercises module resolution against the copied
+// layout, where the module path (and the link it lstat()s) only exists at run
+// time — a static import cannot express it.
+const mod = await import("./src/update-checker.ts");
+const linked = mod.isLinkedInstall();
+mod.checkForUpdateInBackground(null);
+await new Promise((resolve) => setImmediate(resolve));
+process.stdout.write(JSON.stringify({ linked, calls }));
+`;
+
+async function probeMirroredLinkedInstall(): Promise<{ linked: boolean; calls: string[] }> {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pff-link-mirror-"));
 	try {
-		fs.unlinkSync(EXTENSIONS_ENTRY);
-		target = fs.mkdtempSync(path.join(os.tmpdir(), "pf-link-target-"));
-		fs.symlinkSync(target, EXTENSIONS_ENTRY, "junction");
-		await fn();
+		fs.cpSync(path.join(repoRoot, "src"), path.join(root, "src"), { recursive: true });
+		fs.copyFileSync(path.join(repoRoot, "package.json"), path.join(root, "package.json"));
+		fs.mkdirSync(path.join(root, "extensions"), { recursive: true });
+		fs.copyFileSync(EXTENSIONS_ENTRY, path.join(root, "extensions", "index.ts"));
+		fs.mkdirSync(path.join(root, "link-target"), { recursive: true });
+		// Bare imports (undici) must resolve for the mirrored module graph.
+		fs.symlinkSync(path.join(repoRoot, "node_modules"), path.join(root, "node_modules"), "junction");
+		// The linked install itself: the published entry becomes a junction.
+		fs.unlinkSync(path.join(root, "extensions", "index.ts"));
+		fs.symlinkSync(path.join(root, "link-target"), path.join(root, "extensions", "index.ts"), "junction");
+		fs.writeFileSync(path.join(root, "probe.mjs"), LINK_MIRROR_PROBE, "utf8");
+
+		const child = spawn(
+			process.execPath,
+			["--experimental-strip-types", "--no-warnings", path.join(root, "probe.mjs")],
+			{
+				cwd: root,
+				env: { ...process.env, PI_FREEFLOW_DATA_DIR: path.join(root, "data") },
+				stdio: ["ignore", "pipe", "pipe"],
+			},
+		);
+		let stdout = "";
+		let stderr = "";
+		child.stdout?.on("data", (chunk: Buffer) => {
+			stdout += chunk.toString("utf8");
+		});
+		child.stderr?.on("data", (chunk: Buffer) => {
+			stderr += chunk.toString("utf8");
+		});
+		const { promise: exited, resolve: onExit } = Promise.withResolvers<number | null>();
+		child.once("exit", (c) => onExit(c));
+		const code = await exited;
+		if (code !== 0 || stdout.trim() === "") {
+			throw new Error(`linked-install mirror probe failed (exit ${code}): ${stderr.trim() || stdout.trim()}`);
+		}
+		return JSON.parse(stdout) as { linked: boolean; calls: string[] };
 	} finally {
 		try {
-			fs.unlinkSync(EXTENSIONS_ENTRY);
+			fs.rmSync(root, { recursive: true, force: true });
 		} catch {}
-		if (target) {
-			try {
-				fs.rmSync(target, { recursive: true, force: true });
-			} catch {}
-		}
-		fs.writeFileSync(EXTENSIONS_ENTRY, orig, "utf8");
 	}
 }
 
 test("update checker [h1] linked install skips the registry fetch", async (t: TestContext) => {
 	await withIsolatedSandboxFiles(async () => {
 		clearSandboxFiles();
+		let probe: { linked: boolean; calls: string[] };
 		try {
-			await withLinkedInstall(async () => {
-				assert.equal(isLinkedInstall(), true, "junction must be detected as a linked install");
-
-				const fetchMock = test.mock.method(globalThis, "fetch", async (url: unknown) => {
-					const u = String(url);
-					assert.ok(!u.includes("registry.npmjs.org"), `linked install must not fetch: ${u}`);
-					return new Response(JSON.stringify({ version: "9.9.9" }), {
-						status: 200,
-						headers: { "content-type": "application/json" },
-					});
-				});
-				try {
-					checkForUpdateInBackground(null);
-					await awaitImmediate();
-					assert.equal(fetchMock.mock.calls.length, 0, "linked install must skip the registry fetch");
-				} finally {
-					fetchMock.mock.restore();
-				}
-			});
+			probe = await probeMirroredLinkedInstall();
 		} catch (e: unknown) {
 			const err = e as NodeJS.ErrnoException;
 			if (err?.code === "EPERM" || err?.code === "EACCES" || err?.code === "ELOOP") {
@@ -597,6 +632,8 @@ test("update checker [h1] linked install skips the registry fetch", async (t: Te
 			}
 			throw e;
 		}
+		assert.equal(probe.linked, true, "junction must be detected as a linked install");
+		assert.deepEqual(probe.calls, [], "linked install must skip the registry fetch");
 	});
 });
 

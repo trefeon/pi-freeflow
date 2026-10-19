@@ -12,7 +12,7 @@ hero:
       link: /pages/architecture
     - theme: alt
       text: View on GitHub
-      link: git+https://github.com/trefeon/pi-freeflow
+      link: https://github.com/trefeon/pi-freeflow
 
 features:
   - title: "35 Curated Free Models"

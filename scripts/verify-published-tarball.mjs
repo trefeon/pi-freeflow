@@ -61,6 +61,26 @@ function localFileList() {
  }
 }
 
+/**
+ * Mismatch lines for the tree-vs-tarball comparison, in BOTH directions:
+ * a file this tree would ship but the tarball lacks, and — the direction the
+ * first release gate missed — a file the published tarball carries that this
+ * tree does not (a tarball packed from a newer or dirty tree).
+ * Exported so the focused test drives the shipped comparison, not a copy.
+ */
+export function compareFileLists(localFiles, publishedFiles) {
+ const local = new Set(localFiles);
+ const published = new Set(publishedFiles);
+ const lines = [];
+ for (const file of local) {
+  if (!published.has(file)) lines.push(`missing-from-tarball ${file}`);
+ }
+ for (const file of published) {
+  if (!local.has(file)) lines.push(`not-in-tree          ${file}`);
+ }
+ return lines;
+}
+
 /** Compare one published file against its counterpart in this tree. */
 async function compareFile(published, mismatches, eolOnly) {
  const repoBytes = await fs.readFile(path.join(REPO_ROOT, published.relative)).catch(() => null);
@@ -118,10 +138,7 @@ async function main() {
    console.error("failed to list the files this tree would ship (npm pack --dry-run --json)");
    return 1;
   }
-  const publishedPaths = new Set(published.map((file) => file.relative));
-  for (const relative of local) {
-   if (!publishedPaths.has(relative)) mismatches.push(`missing-from-tarball ${relative}`);
-  }
+  mismatches.push(...compareFileLists(local, published.map((file) => file.relative)));
 
   if (eolOnly.length > 0) {
    console.log(`note: ${eolOnly.length} file(s) differ only by line endings: ${eolOnly.join(", ")}`);
@@ -137,4 +154,13 @@ async function main() {
  }
 }
 
-process.exitCode = await main();
+// Execute only as a CLI, so the focused test can import compareFileLists
+// without packing the published tarball.
+const isDirectCall =
+ process.argv[1] &&
+ (fileURLToPath(import.meta.url) === path.resolve(process.argv[1]) ||
+  process.argv[1].endsWith("verify-published-tarball.mjs"));
+
+if (isDirectCall) {
+ process.exitCode = await main();
+}

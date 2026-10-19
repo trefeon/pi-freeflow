@@ -4,7 +4,6 @@
  * log viewing, debug level configuration, and live catalog refreshing.
  */
 
-import { spawn } from "node:child_process";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,14 +12,15 @@ import { fileURLToPath } from "node:url";
 import { getClientPort, isJsRuntimeExecutable, materializeDaemonSources, resolveDaemonRuntime } from "./client.ts";
 import { refreshCatalog, setAliveCatalog } from "./catalog.ts";
 import { DAEMON_SPAWN_ENV, DATA_DIR_ENV, DEBUG_STATE_FILE, HOST, LOG_FILE, PORT, RELAY_STATE_FILE } from "./config.ts";
+import { getCachedUpdate, isLinkedInstall } from "./update-checker.ts";
 import {
  compareVersions,
  fetchLatestVersion,
- getCachedUpdate,
- isLinkedInstall,
  getLocalVersion,
-} from "./update-checker.ts";
+ runUpdateStep,
+} from "./update-core.ts";
 import { isCommandAvailable, selectGlobalUpdatePlan, selectHostUpdateSteps } from "./updater.ts";
+import { readToken } from "./token.ts";
 import {
  deployCloudflareWorker,
  deployDenoRelay,
@@ -32,6 +32,7 @@ import {
  LOG_LEVEL_ORDER,
  getMinLogLevel,
  isDebugEnabled,
+ isEmittedLogLevel,
  loadDebugState,
  readRecentLogs,
  saveDebugState,
@@ -98,6 +99,24 @@ export function _setDeployProbeOptionsForTest(
  deployProbeRetryDelayMs = opts?.retryDelayMs ?? null;
 }
 
+/**
+ * How the POSIX startup hook talks to the user systemd manager. A seam
+ * because CI (and this Windows dev box) has no user bus: tests must be able to
+ * prove both the enabled and the systemd-less outcome deterministically.
+ */
+let startupHookRunner: (cmd: string) => void = (cmd: string): void => {
+ execSync(cmd, { timeout: 10_000, stdio: "ignore" });
+};
+
+/** Test-only: replace the user-systemd runner (null restores execSync). */
+export function _setStartupHookRunnerForTest(runner: ((cmd: string) => void) | null): void {
+ startupHookRunner =
+  runner ??
+  ((cmd: string): void => {
+   execSync(cmd, { timeout: 10_000, stdio: "ignore" });
+  });
+}
+
 export interface StartupPlan {
  platform: string;
  taskName: string;
@@ -114,6 +133,21 @@ function daemonEntryForStartup(scriptOverride?: string): string {
  } catch {
   return path.join("src", "daemon.ts");
  }
+}
+
+/**
+ * The `/tr` payload for a Windows scheduled task action.
+ *
+ * A task action is launched by CreateProcess, which has no single-quote
+ * syntax: the old `'…'` substitution handed it a first token carrying a
+ * literal `'` ("The filename, directory name, or volume label syntax is
+ * incorrect"), so the startup task could never start. Double quotes are the
+ * only grouping CreateProcess understands, so keep them and escape them for
+ * cmd.exe (`\"`); schtasks stores the resulting action verbatim, which is
+ * exactly the quoted runtime command the task must run.
+ */
+export function escapeSchTasksAction(quotedCommand: string): string {
+ return quotedCommand.replace(/"/g, '\\"');
 }
 
 /**
@@ -156,7 +190,7 @@ export function getStartupPlan(opts?: {
   }
  }
  if (platform === "win32") {
-  const command = `schtasks /create /tn "${STARTUP_TASK_NAME}" /tr "${quoted.replace(/"/g, "'")}" /sc onlogon /rl limited /f`;
+  const command = `schtasks /create /tn "${STARTUP_TASK_NAME}" /tr "${escapeSchTasksAction(quoted)}" /sc onlogon /rl limited /f`;
   return {
    platform,
    taskName: STARTUP_TASK_NAME,
@@ -228,10 +262,25 @@ export function installStartupHook(opts?: {
    return { ok: true, changed: false, undo: plan.undo, detail: `already installed — ${plan.filePath} up to date (undo: ${plan.undo})` };
   }
   fs.writeFileSync(plan.filePath, plan.fileContent, "utf8");
-  try {
-   execSync("systemctl --user daemon-reload", { timeout: 10_000, stdio: "ignore" });
-   execSync(plan.command, { timeout: 10_000, stdio: "ignore" });
-  } catch { }
+  // Writing the unit file arms nothing by itself: `systemctl --user enable`
+  // creates the login symlink. WSL, containers and hosts without a user
+  // manager fail here, and reporting ok:true left the hook silently dead.
+  let enableError = "";
+  for (const cmd of ["systemctl --user daemon-reload", plan.command]) {
+   try {
+    startupHookRunner(cmd);
+   } catch (e) {
+    enableError = enableError || String(e);
+   }
+  }
+  if (enableError !== "") {
+   return {
+    ok: false,
+    changed: true,
+    undo: plan.undo,
+    detail: `installed ${plan.filePath} but could not enable it at login: ${enableError} — enable by hand: "${plan.command}" (undo: ${plan.undo})`,
+   };
+  }
   return { ok: true, changed: true, undo: plan.undo, detail: `installed ${plan.filePath} (undo: ${plan.undo})` };
  } catch (e) {
   return { ok: false, changed: false, undo: plan.undo, detail: `install failed: ${String(e)} (undo: ${plan.undo})` };
@@ -285,42 +334,11 @@ function spawnWithProgress(
  ctx: ExtensionContext,
  timeoutMs = 120_000,
 ): Promise<number> {
- const { promise, resolve } = Promise.withResolvers<number>();
- try {
-  const child = spawn(cmd, args, {
-   shell: process.platform === "win32",
-   stdio: "pipe",
-   windowsHide: true,
-  });
-  const timer = setTimeout(() => {
-   try { child.kill(); } catch { }
-   ctx.ui.notify(`spawn ${cmd} timed out after ${timeoutMs}ms — killed`, "warning");
-   resolve(1);
-  }, timeoutMs);
-  try { timer.unref?.(); } catch { }
-  const done = (code: number | null): void => {
-   clearTimeout(timer);
-   resolve(code ?? 0);
-  };
-  child.stdout?.on("data", (d: Buffer) => {
-   const s = String(d).trim();
-   if (s) ctx.ui.notify(s, "info");
-  });
-  child.stderr?.on("data", (d: Buffer) => {
-   const s = String(d).trim();
-   if (s) ctx.ui.notify(s, "info");
-  });
-  child.on("error", (err: Error) => {
-   clearTimeout(timer);
-   ctx.ui.notify(`spawn ${cmd} failed: ${err.message}`, "warning");
-   resolve(1);
-  });
-  child.on("close", done);
- } catch (e) {
-  ctx.ui.notify(`spawn ${cmd} failed: ${(e as Error).message}`, "warning");
-  resolve(1);
- }
- return promise;
+ return runUpdateStep(cmd, args, {
+  timeoutMs,
+  onOutput: (line) => ctx.ui.notify(line, "info"),
+  onWarning: (message) => ctx.ui.notify(message, "warning"),
+ });
 }
 
 /**
@@ -787,28 +805,10 @@ export function createCommandSpec(
       ctx.ui.notify(m, "info"),
      );
      const finalUrl = url.trim().replace(/\/+$/, "");
-     relayState = withRelayState((s) => {
-      const prevLabel = s.relays.find((r) => r.url === finalUrl)?.label;
-      const r = ensureRelay(s, finalUrl, `deployed ${cleanName}`);
-      if (auth) r.auth = auth;
-      else delete r.auth;
-      // A re-deploy at an existing address refreshes the secret but keeps a
-      // user-chosen short name; only stock `deployed …` labels roll forward.
-      if (prevLabel && !prevLabel.startsWith("deployed ")) r.label = prevLabel;
-      s.enabled = true;
-      s.url = finalUrl;
-      return s;
-     });
-     persist();
-     // saveRelayState swallows disk errors, so confirm the pool entry landed:
-     // otherwise a live deployment would silently vanish on the next restart.
-     let poolSaved = false;
-     try {
-      poolSaved = loadRelayState().relays.some((r) => r.url === finalUrl);
-     } catch {
-      poolSaved = false;
-     }
+     // Probe BEFORE writing anything: a deployment that cannot answer must not
+     // become the sticky, enabled pool entry (nor evict a working relay).
      let probeNote = "";
+     let reachable = false;
      try {
       const retryDelay =
        deployProbeRetryDelayMs ?? (process.env[DATA_DIR_ENV] ? 10 : 2000);
@@ -822,8 +822,9 @@ export function createCommandSpec(
         );
        },
       });
+      reachable = probe.ok;
       if (!probe.ok) {
-       probeNote = ` ⚠ deployed but unreachable (${probe.error || `HTTP ${probe.status}`}) — run /freeflow test ${finalUrl} to retry, or /freeflow remove ${finalUrl} to drop it`;
+       probeNote = `unreachable (${probe.error || `HTTP ${probe.status}`})`;
       } else {
        // Reachability is not enough: a relay can answer /v1/models while its
        // egress is transformed in flight (Deno Deploy rewrites the outbound
@@ -849,6 +850,35 @@ export function createCommandSpec(
       }
      } catch {
       // probeRelay never throws, but keep the notify safe regardless
+     }
+     if (!reachable) {
+      updateStatusBar(ctx.ui);
+      ctx.ui.notify(
+       `⚠ Deployed ${finalUrl} but the probe failed: ${probeNote} — NOT added to the pool or activated, so the existing pool is unchanged. Run /freeflow test ${finalUrl} to retry, or /freeflow add ${finalUrl} to keep it anyway`,
+       "error",
+      );
+      return;
+     }
+     relayState = withRelayState((s) => {
+      const prevLabel = s.relays.find((r) => r.url === finalUrl)?.label;
+      const r = ensureRelay(s, finalUrl, `deployed ${cleanName}`);
+      if (auth) r.auth = auth;
+      else delete r.auth;
+      // A re-deploy at an existing address refreshes the secret but keeps a
+      // user-chosen short name; only stock `deployed …` labels roll forward.
+      if (prevLabel && !prevLabel.startsWith("deployed ")) r.label = prevLabel;
+      s.enabled = true;
+      s.url = finalUrl;
+      return s;
+     });
+     persist();
+     // saveRelayState swallows disk errors, so confirm the pool entry landed:
+     // otherwise a live deployment would silently vanish on the next restart.
+     let poolSaved = false;
+     try {
+      poolSaved = loadRelayState().relays.some((r) => r.url === finalUrl);
+     } catch {
+      poolSaved = false;
      }
      if (!poolSaved) {
       const secretNote = auth
@@ -1241,8 +1271,12 @@ export function createCommandSpec(
    } else if (sub === "kill" || sub === "stop" || sub === "shutdown") {
     const port = getClientPort() || PORT;
     try {
+     // /_shutdown is token-gated like every other /_* route: without the
+     // bearer header this is an unauthorized request, not a stopped daemon.
+     const token = readToken();
      const res = await fetch(`http://${HOST}:${port}/_shutdown`, {
       method: "POST",
+      headers: token ? { authorization: `Bearer ${token}` } : {},
       signal: AbortSignal.timeout(1500),
      });
      if (res.ok) {
@@ -1470,20 +1504,11 @@ export function createCommandSpec(
       "info",
      );
     } else if (arg.startsWith("level")) {
-     const lvl = arg.split(/\s+/)[1] as LogLevel | undefined;
-     // Allowlist only levels that actually have emitters. 'audit' exists in
-     // LOG_LEVEL_ORDER but nothing ever logs at it, so accepting it here
-     // silently suppressed ALL log output until manually reset.
-     const EMITTED_LEVELS: readonly LogLevel[] = [
-      "debug",
-      "info",
-      "warn",
-      "error",
-     ];
-     if (
-      lvl &&
-      (EMITTED_LEVELS as readonly string[]).includes(lvl)
-     ) {
+     const lvl = arg.split(/\s+/)[1];
+     // Allowlist only levels that actually have emitters (isEmittedLogLevel).
+     // 'audit' exists in LOG_LEVEL_ORDER but nothing ever logs at it, so
+     // accepting it here silently suppressed ALL log output until reset.
+     if (lvl && isEmittedLogLevel(lvl)) {
       saveDebugState({ debug: false, level: lvl });
       ctx.ui.notify(
        `Log level set to ${lvl} (persisted to ${DEBUG_STATE_FILE})`,
@@ -1537,8 +1562,11 @@ export function createCommandSpec(
         expectRelay = true;
         continue;
        }
-       if (lower in LOG_LEVEL_ORDER) {
-        filterLevel = lower as LogLevel;
+       // `lower in LOG_LEVEL_ORDER` also matches Object.prototype keys
+       // (toString, constructor…), so a text token walked the prototype chain
+       // and became an unknown level filter. Only emitted levels are levels.
+       if (isEmittedLogLevel(lower)) {
+        filterLevel = lower;
        } else if (/^\d+$/.test(t)) {
         count = Math.min(
          200,

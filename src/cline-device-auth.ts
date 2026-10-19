@@ -9,7 +9,7 @@
 
 import { fetchWithSystemCA } from "./system-ca-fetch.ts";
 
-export interface OAuthCredentials {
+interface OAuthCredentials {
  access: string;
  refresh: string;
  /** Expiration timestamp in milliseconds since epoch. */
@@ -28,22 +28,32 @@ export interface DeviceAuth {
  interval: number;
 }
 
-export interface DevicePollTokens {
+interface DevicePollTokens {
  accessToken: string;
  refreshToken: string;
 }
 
-export interface PollOptions {
+interface PollOptions {
  timeoutMs?: number;
+ /**
+  * Total poll budget in ms. Defaults to the device code's own lifetime
+  * (`expiresIn`, below); an explicit value is used as given.
+  */
  maxWaitMs?: number;
+ /**
+  * The device code's lifetime in seconds, as `startDeviceAuth` returned its
+  * `expiresIn`. The code cannot be approved after it, so it — not the poll
+  * cadence — sets the default budget.
+  */
+ expiresIn?: number;
  fetchImpl?: FetchImpl;
  /** Cooperative cancel from the login UI (esc / timeout). */
  signal?: AbortSignal;
 }
 
-export const DEFAULT_WORKOS_BASE = "https://api.workos.com";
-export const DEFAULT_API_BASE = "https://api.cline.bot";
-export const WORKOS_TOKEN_PREFIX = "workos:";
+const DEFAULT_WORKOS_BASE = "https://api.workos.com";
+const DEFAULT_API_BASE = "https://api.cline.bot";
+const WORKOS_TOKEN_PREFIX = "workos:";
 
 /**
  * Cline's own sign-out route, for switching accounts in the browser. Verified
@@ -92,6 +102,36 @@ const REGISTER_PATH = "/api/v1/auth/register";
 const REFRESH_PATH = "/api/v1/auth/refresh";
 
 const HTTP_TIMEOUT_MS = 30 * 1000;
+
+/**
+ * WorkOS's documented device-code lifetime, used when a device authorization
+ * response omits `expires_in`. The default poll budget follows the same value.
+ */
+export const DEFAULT_DEVICE_CODE_EXPIRES_IN_S = 300;
+
+/** Bounds for a poll budget derived from a device code's lifetime. */
+export const MIN_DEVICE_POLL_BUDGET_MS = 60_000;
+export const MAX_DEVICE_POLL_BUDGET_MS = 15 * 60_000;
+
+/**
+ * Total poll budget. An explicit `maxWaitMs` wins; otherwise the device code's
+ * own lifetime, clamped so a missing or silly value can neither end a live
+ * login early nor keep polling a dead code for minutes.
+ *
+ * Deliberately not derived from the poll interval: how often we ask says
+ * nothing about how long the code can still be approved, and tying the two
+ * made a 5 s cadence poll for the same 50 minutes a short cadence did.
+ */
+export function resolvePollBudgetMs(options?: PollOptions): number {
+ const explicit = options?.maxWaitMs;
+ if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) return explicit;
+ const lifetime = options?.expiresIn;
+ const lifetimeSeconds =
+  typeof lifetime === "number" && Number.isFinite(lifetime) && lifetime > 0
+   ? lifetime
+   : DEFAULT_DEVICE_CODE_EXPIRES_IN_S;
+ return Math.min(MAX_DEVICE_POLL_BUDGET_MS, Math.max(MIN_DEVICE_POLL_BUDGET_MS, lifetimeSeconds * 1000));
+}
 
 export type FetchImpl = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -175,7 +215,7 @@ export async function startDeviceAuth(
   verificationUri: json.verification_uri,
   verificationUriComplete:
    typeof json.verification_uri_complete === "string" ? json.verification_uri_complete : undefined,
-  expiresIn: toSeconds(json.expires_in, 300),
+  expiresIn: toSeconds(json.expires_in, DEFAULT_DEVICE_CODE_EXPIRES_IN_S),
   interval: toSeconds(json.interval, 5),
  };
 }
@@ -195,7 +235,7 @@ export async function pollDeviceToken(
  if (!deviceCode) throw new Error("deviceCode is required");
  const fetchFn = options?.fetchImpl ?? fetchWithSystemCA;
  const outerSignal = options?.signal;
- const deadline = Date.now() + (options?.maxWaitMs ?? intervalSeconds * 1000 * 60 * 10);
+ const deadline = Date.now() + resolvePollBudgetMs(options);
  let interval = Math.max(1, intervalSeconds);
  for (; ;) {
   if (outerSignal?.aborted) {

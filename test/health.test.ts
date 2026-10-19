@@ -1,5 +1,6 @@
 /**
- * Health endpoint tests — loopback GET /_health
+ * Health endpoint tests — loopback GET /_health (rich, token-gated) and
+ * GET /health (unauthenticated identity probe)
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -7,6 +8,7 @@ import http from "node:http";
 import { startProxy } from "../src/proxy.ts";
 import { getHealthData, handleHealthRequest } from "../src/health.ts";
 import { getActiveRelayState, setActiveRelayState, resetAllRelayHealth } from "../src/relay-state.ts";
+import { authHeaders } from "./_auth.ts";
 
 function makeMockRes() {
  let status = 0;
@@ -35,7 +37,7 @@ test("health returns 200 with active, mode, relays and catalog 35", async () => 
  setActiveRelayState({ mode: "auto", enabled: true, url: "https://relay.example.com", relays: [{ url: "https://relay.example.com", label: "example" }] }, false);
  const { server } = await startProxy(port);
  try {
-  const res = await fetch(`http://127.0.0.1:${port}/_health`);
+  const res = await fetch(`http://127.0.0.1:${port}/_health`, { headers: { ...authHeaders() } });
   assert.equal(res.status, 200);
   const json = await res.json() as { port: number; active: string; mode: string; enabled: boolean; relays: Array<{ url: string; label?: string; healthy: boolean; cooldownUntil: number; consecutiveFailures: number }>; catalog: number; version: string };
   assert.equal(json.port, port);
@@ -70,7 +72,7 @@ test("hidden widget still returns health", async () => {
  setActiveRelayState({ mode: "auto", enabled: true, url: "https://relay.example.com", relays: [{ url: "https://relay.example.com" }], hideWidget: true }, false);
  const { server } = await startProxy(port);
  try {
-  const res = await fetch(`http://127.0.0.1:${port}/_health`);
+  const res = await fetch(`http://127.0.0.1:${port}/_health`, { headers: { ...authHeaders() } });
   assert.equal(res.status, 200);
   const json = await res.json() as { catalog: number; relays: unknown[] };
 		assert.equal(json.catalog, 35);
@@ -125,19 +127,23 @@ test("health with empty pool returns 200 and catalog 35", async () => {
  resetAllRelayHealth();
  const { server } = await startProxy(port);
  try {
-  const res = await fetch(`http://127.0.0.1:${port}/_health`);
+  const res = await fetch(`http://127.0.0.1:${port}/_health`, { headers: { ...authHeaders() } });
   assert.equal(res.status, 200);
-  const json = await res.json() as { catalog: number; relays: unknown[]; enabled: boolean; port: number };
+  const json = await res.json() as { catalog: number; relays: unknown[]; enabled: boolean; port: number; version: string };
 		assert.equal(json.catalog, 35);
   assert.equal(json.relays.length, 0);
   assert.equal(json.enabled, false);
   assert.equal(json.port, port);
 
-  // Also via /health alias
+  // The rich snapshot is token-gated: no header → 401, no relay/lease detail.
+  const anonymous = await fetch(`http://127.0.0.1:${port}/_health`);
+  assert.equal(anonymous.status, 401);
+
+  // /health is the unauthenticated identity probe and carries nothing else.
   const res2 = await fetch(`http://127.0.0.1:${port}/health`);
   assert.equal(res2.status, 200);
-  const json2 = await res2.json() as { catalog: number };
-		assert.equal(json2.catalog, 35);
+  const json2 = await res2.json() as Record<string, unknown>;
+		assert.deepEqual(json2, { ok: true, service: "pi-freeflow", port, version: json.version });
  } finally {
   await new Promise<void>((r) => server!.close(() => r()));
   setActiveRelayState(orig, false);

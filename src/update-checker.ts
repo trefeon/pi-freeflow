@@ -6,24 +6,32 @@ import { logInfo } from "./logger.ts";
 import { logWarn } from "./logger.ts";
 import { getActiveRelayState, getStatusUi } from "./relay-state.ts";
 import type { ExtensionUIContext } from "./types.ts";
+import { SEMVER_PATTERN, compareVersions, fetchLatestVersion, getLocalVersion } from "./update-core.ts";
 import { performAutoUpdate } from "./updater.ts";
-const REGISTRY_URL = "https://registry.npmjs.org/pi-freeflow/latest";
-/** Strict semver shape: major.minor.patch with optional -prerelease or +build suffix. */
-const SEMVER_PATTERN = /^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$/;
-export interface UpdateCacheData {
+
+interface UpdateCacheData {
 	latest: string;
 	checkedAt: number;
 }
 
 /**
- * Detect a LINK install by checking whether the published extension entry is a
- * symlink. `omp plugin link <path>` creates a symlink at extensions/index.ts
- * pointing at the dev checkout — when that link exists we skip the update check.
+ * Detect a LINK install. A linked dev checkout must never be replaced by the
+ * registry build, so both shapes `omp plugin link` produces are checked:
+ *
+ *  - the package ROOT is a symlink (verified on this machine:
+ *    ~/.omp/plugins/node_modules/pi-freeflow -> the checkout), in which case
+ *    every file below it — including extensions/index.ts — is a regular file;
+ *  - the published extension entry itself is a symlink.
+ *
+ * `packageRoot` is for tests; production derives it from this module's path.
  */
-export function isLinkedInstall(): boolean {
+export function isLinkedInstall(packageRoot?: string): boolean {
 	try {
-		const thisDir = path.dirname(fileURLToPath(import.meta.url));
-		const entry = path.join(thisDir, "..", "extensions", "index.ts");
+		const root =
+			packageRoot ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+		// lstat (never stat): a link is what we are looking for, not its target.
+		if (lstatSync(root).isSymbolicLink()) return true;
+		const entry = path.join(root, "extensions", "index.ts");
 		return lstatSync(entry).isSymbolicLink();
 	} catch {
 		return false;
@@ -56,66 +64,6 @@ export function setCachedUpdate(latest: string): void {
 		writeFileSync(UPDATE_CACHE_FILE, JSON.stringify(data, null, 2), "utf8");
 	} catch {
 		// swallow — cache is best-effort
-	}
-}
-
-export async function fetchLatestVersion(): Promise<string | null> {
-	try {
-		const res = await fetch(REGISTRY_URL, {
-			signal: AbortSignal.timeout(3000),
-			headers: { Accept: "application/json" },
-		});
-		if (!res.ok) return null;
-		const json = (await res.json()) as { version?: string };
-		const v = json?.version;
-		if (typeof v === "string" && v.trim().length > 0) {
-			const version = v.trim();
-			if (SEMVER_PATTERN.test(version)) return version;
-			logWarn(`registry returned invalid latest version: ${version}`);
-			return null;
-		}
-		return null;
-	} catch {
-		return null;
-	}
-}
-
-/**
- * Simple semver compare: split on '.' and compare numeric segments.
- * Returns >0 if a > b, <0 if a < b, 0 if equal.
- */
-export function compareVersions(a: string, b: string): number {
-	try {
-		const pa = a.split(".").map((s) => Number(s) || 0);
-		const pb = b.split(".").map((s) => Number(s) || 0);
-		const len = Math.max(pa.length, pb.length);
-		for (let i = 0; i < len; i++) {
-			const da = pa[i] ?? 0;
-			const db = pb[i] ?? 0;
-			if (da !== db) return da - db;
-		}
-		return 0;
-	} catch {
-		return 0;
-	}
-}
-
-/**
- * Read the local package version from package.json.
- * Shared by the background update check and the /freeflow update|status commands.
- */
-export function getLocalVersion(): string {
-	try {
-		const thisDir = path.dirname(fileURLToPath(import.meta.url));
-		const pkgPath = path.join(thisDir, "..", "package.json");
-		const raw = readFileSync(pkgPath, "utf8");
-		const pkg = JSON.parse(raw) as { version?: string };
-		if (typeof pkg.version === "string" && pkg.version.trim().length > 0) {
-			return pkg.version.trim();
-		}
-		return "0.0.0";
-	} catch {
-		return "0.0.0";
 	}
 }
 

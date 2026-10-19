@@ -36,6 +36,7 @@ import {
 } from "../src/relay-state.ts";
 import { KILO_MODEL_IDS, resolveCanonicalModelId } from "../src/models.ts";
 import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
+import { authHeaders } from "./_auth.ts";
 
 const TEST_PORT = 19291;
 const ZEN_MODEL = "mimo-v2.6-flash-free";
@@ -352,14 +353,14 @@ test("degrade e2e: gate x2 then new chat served as Kilo, proven stays on zen", a
    const post = (body: string): Promise<Response> =>
     fetch(`${localPrefix}/v1/chat/completions`, {
      method: "POST",
-     headers: { "content-type": "application/json" },
+     headers: { "content-type": "application/json", ...authHeaders() },
      body,
     });
 
    const postResponses = (body: string): Promise<Response> =>
     fetch(`${localPrefix}/v1/responses`, {
      method: "POST",
-     headers: { "content-type": "application/json" },
+     headers: { "content-type": "application/json", ...authHeaders() },
      body,
     });
 
@@ -477,7 +478,7 @@ test("degrade e2e: kilo 400 bad request recovers by clamping tokens and falling 
    const postResponses = (body: string): Promise<Response> =>
     fetch(`${localPrefix}/v1/responses`, {
      method: "POST",
-     headers: { "content-type": "application/json" },
+     headers: { "content-type": "application/json", ...authHeaders() },
      body,
     });
 
@@ -532,7 +533,7 @@ test("degrade e2e: relay-served 403 gates never prime the zen gate", async (t) =
    const post = (body: string): Promise<Response> =>
     fetch(`${localPrefix}/v1/chat/completions`, {
      method: "POST",
-     headers: { "content-type": "application/json" },
+     headers: { "content-type": "application/json", ...authHeaders() },
      body,
     });
 
@@ -589,7 +590,7 @@ test("degrade e2e: direct 403 gates still prime the zen gate when relays are off
    const post = (body: string): Promise<Response> =>
     fetch(`${localPrefix}/v1/chat/completions`, {
      method: "POST",
-     headers: { "content-type": "application/json" },
+     headers: { "content-type": "application/json", ...authHeaders() },
      body,
     });
 

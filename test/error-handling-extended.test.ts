@@ -36,6 +36,7 @@ import type {
 	RelayState,
 } from "../src/types.ts";
 import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
+import { authHeaders } from "./_auth.ts";
 
 /** Response stub with a proper ReadableStream body (the proxy pipes body). */
 function stubResponse(status: number, body = "{}"): Response {
@@ -258,7 +259,7 @@ test("proxy passes an invalid-JSON upstream body through unchanged (no JSON pars
 			async (port) => {
 				const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: chatBody(OPENCODE_MODEL),
 				});
 				assert.equal(res.status, 200);
@@ -288,7 +289,7 @@ test("proxy direct-path upstream socket error surfaces as HTTP 502", async () =>
 			async (port) => {
 				const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: chatBody(OPENCODE_MODEL),
 				});
 				assert.equal(res.status, 502);
@@ -305,8 +306,8 @@ test("startProxy falls back to port+1 when the base port is already bound (EADDR
 	await withIsolatedRelayFiles(async () => {
 		const basePort = 29761;
 		// A foreign holder on the base port. It must NOT satisfy isProxyAlive
-		// (which requires a 200 + application/json /v1/models response), so the
-		// proxy treats it as an unrelated occupant and tries basePort+1.
+		// (which requires our /health identity body: service + bound port), so
+		// the proxy treats it as an unrelated occupant and tries basePort+1.
 		const dummy = http.createServer((_req, res) => {
 			res.writeHead(404, { "content-type": "text/plain" });
 			res.end("not a proxy");
@@ -323,7 +324,9 @@ test("startProxy falls back to port+1 when the base port is already bound (EADDR
 				"proxy must fall back to basePort+1 inside the 20-attempt loop",
 			);
 			try {
-				const health = await fetch(`http://127.0.0.1:${port}/_health`);
+				const health = await fetch(`http://127.0.0.1:${port}/_health`, {
+					headers: { ...authHeaders() },
+				});
 				assert.equal(health.status, 200);
 				const json = (await health.json()) as { port?: number };
 				assert.equal(json.port, port, "health must report the real fallback port");

@@ -52,8 +52,10 @@ import {
  reprobeBasePortAlive,
  startProxy,
 } from "./proxy.ts";
-import { compareVersions } from "./update-checker.ts";
+import { compareVersions } from "./update-core.ts";
+import { isDaemonIdentityBody } from "./health.ts";
 import type { DaemonHealthSnapshot } from "./health.ts";
+import { readToken } from "./token.ts";
 
 const CLIENT_ID = randomUUID();
 
@@ -81,7 +83,7 @@ let lastUaRefreshAt = 0;
 /** Test-injected fetch for the background UA refresh; null = global fetch. */
 let uaRefreshFetch: typeof fetch | null = null;
 
-export interface DaemonRuntime {
+interface DaemonRuntime {
  execPath: string;
  args: string[];
  runtimeType: "bun" | "node";
@@ -247,10 +249,14 @@ async function controlCall(
  endpoint: string,
  payload: Record<string, string>,
 ): Promise<ControlResult> {
+ const token = readToken();
  try {
   const res = await fetch(`http://${HOST}:${port}${endpoint}`, {
    method: "POST",
-   headers: { "content-type": "application/json" },
+   headers: {
+    "content-type": "application/json",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+   },
    body: JSON.stringify(payload),
    signal: AbortSignal.timeout(getControlTimeoutMs()),
   });
@@ -524,7 +530,7 @@ async function triggerRecovery(port: number, why: string): Promise<void> {
  * stopHeartbeat → busy-ruled kill → ensureDaemon when the daemon is stale or
  * degraded. Healthy ticks reset backoff/breaker and track the busy edge.
  */
-export async function watchdogCheck(port: number): Promise<void> {
+async function watchdogCheck(port: number): Promise<void> {
  if (ensuring) return;
  if (isBreakerHalted()) return;
  let health: Awaited<ReturnType<typeof getDaemonHealth>>;
@@ -618,7 +624,7 @@ async function killStaleDaemon(
  * stdio "ignore". Returns the fd, or null when the file is unavailable
  * (the spawn then falls back to ignore).
  */
-export function openDaemonLogFd(): number | null {
+function openDaemonLogFd(): number | null {
  try {
   fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
   return fs.openSync(LOG_FILE, "a");
@@ -627,58 +633,56 @@ export function openDaemonLogFd(): number | null {
  }
 }
 
-export type DarkHolderProbe = {
- /** True when GET /v1/models answers with a JSON catalog on the port. */
+type DarkHolderProbe = {
+ /** True when GET /health identifies a pi-freeflow daemon on the port. */
  alive: boolean;
  /** True when a TCP connection to the port succeeds (something holds it). */
  bound: boolean;
  /**
-  * True when GET /_health answers in OUR daemon's shape. A stranger squatting
-  * the loopback port can answer `{}` or arbitrary JSON: that is not a daemon
-  * of ours, whatever it claims.
+  * True when GET /health answers in OUR daemon's identity shape (service +
+  * the bound port). A stranger squatting the loopback port can answer `{}` or
+  * arbitrary JSON: that is not a daemon of ours, whatever it claims.
   */
  healthOurs: boolean;
 };
 
 /**
- * True when a /_health response body carries OUR daemon's shape: a JSON object
- * whose numeric `port` names the port it is bound to (src/health.ts builds it
- * from the listening socket). Anything else is a stranger on the loopback port
- * — attaching to it would route the user's prompts into a process we do not
- * own, so it must never be read as a daemon.
+ * True when a /health response body carries OUR daemon's identity: the
+ * pi-freeflow service marker plus the port it is bound to (src/health.ts
+ * builds both from the listening socket). Anything else is a stranger on the
+ * loopback port — attaching to it would route the user's prompts into a
+ * process we do not own, so it must never be read as a daemon.
  */
 export function isOurDaemonHealthBody(port: number, body: unknown): boolean {
- if (!body || typeof body !== "object") return false;
- const reported = (body as { port?: unknown }).port;
- return typeof reported === "number" && reported === port;
+ return isDaemonIdentityBody(port, body);
 }
 
 /**
  * Probe whatever holds `port` for the three facts the reclaim decision needs.
  * Ordered cheap-to-expensive and short-circuiting exactly like the inline
- * sequence it replaces: a models-answering daemon is live, a refused port is
- * free, and only a bound-but-model-silent holder is asked for /_health.
+ * sequence it replaces: an identity-answering daemon is live, a refused port
+ * is free, and only a bound-but-silent holder is asked again with a longer
+ * budget (a slow daemon still counts as ours).
  */
 export async function probeDarkHolder(port: number): Promise<DarkHolderProbe> {
- if (await isProxyAlive(port)) return { alive: true, bound: true, healthOurs: false };
+ if (await isProxyAlive(port)) return { alive: true, bound: true, healthOurs: true };
  if (!(await isPortBound(port))) return { alive: false, bound: false, healthOurs: false };
  return { alive: false, bound: true, healthOurs: await probeOurHealth(port) };
 }
 
 /**
- * Fetch /_health and keep the verdict only when the body is OUR daemon's
- * shape. Same request and budget as proxy.getDaemonHealth, minus its snapshot
- * mapping — which drops `port`, the one field that tells our daemon apart
- * from a stranger answering arbitrary JSON.
+ * Fetch GET /health and keep the verdict only when the body is OUR daemon's
+ * identity shape. Same request as proxy.isProxyAlive but with the longer
+ * daemon budget, so a slow-but-ours daemon is not mistaken for a stranger.
  */
 async function probeOurHealth(port: number): Promise<boolean> {
  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
  try {
-  const res = await fetch(`http://${HOST}:${port}/_health`, {
+  const res = await fetch(`http://${HOST}:${port}/health`, {
    signal: AbortSignal.timeout(2500),
   });
   if (!res.ok) return false;
-  return isOurDaemonHealthBody(port, await res.json());
+  return isDaemonIdentityBody(port, await res.json());
  } catch {
   return false;
  }
@@ -686,13 +690,13 @@ async function probeOurHealth(port: number): Promise<boolean> {
 
 /**
  * Pure decision: reclaim a base port that is actually held (TCP connect
- * succeeds) yet answers neither /v1/models nor /_health in OUR shape. A live
- * daemon — stale, busy, even mid-stream — always answers both from its event
+ * succeeds) yet does not answer GET /health in OUR identity shape. A live
+ * daemon — stale, busy, even mid-stream — always answers it from its event
  * loop, so a dark holder cannot be serving traffic and replacing it cannot
  * interrupt a real stream. A FREE port is not a dark holder: treating it as
  * one cost a blind ~2s kill-and-poll on every cold start (issue #52). A holder
- * answering /_health with anything but our shape (a stranger's `{}`) is dark:
- * it is not a daemon of ours, so it is reclaimed rather than attached to.
+ * answering /health with anything but our identity (a stranger's `{}`) is
+ * dark: it is not a daemon of ours, so it is reclaimed rather than attached to.
  */
 export function shouldReclaimDarkHolder(probe: DarkHolderProbe): boolean {
  if (probe.alive) return false;
@@ -724,6 +728,9 @@ async function reclaimDarkHolder(port: number): Promise<boolean> {
  for (let i = 0; i < 10; i++) {
   await new Promise<void>((r) => setTimeout(r, 200));
   if (await isProxyAlive(port)) return true;
+ }
+ if (await isPortBound(port)) {
+  logWarn(`port :${port} is still held by a process we could not (and must not) kill — starting the in-process proxy instead`);
  }
  return false;
 }
@@ -773,7 +780,7 @@ export function proxyDownMessage(port: number): string {
  );
 }
 
-export type ProxyReadiness = { ok: true; port: number } | { ok: false; port: number; reason: string };
+type ProxyReadiness = { ok: true; port: number } | { ok: false; port: number; reason: string };
 
 /**
  * Health probe before requests: when the loopback answers, no respawn runs.
@@ -800,7 +807,7 @@ export async function ensureProxyReady(
 /** True when any path segment of `filePath` is `node_modules`. Node refuses to
  * strip types for files under such a path (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING),
  * so a Node-spawned daemon must run from a staged copy elsewhere. */
-export function isUnderNodeModules(filePath: string): boolean {
+function isUnderNodeModules(filePath: string): boolean {
  return filePath.split(/[\\/]/).includes("node_modules");
 }
 
@@ -923,7 +930,7 @@ export function materializeDaemonSources(scriptPath: string, cacheDir?: string):
  return finalEntry;
 }
 
-export interface DaemonChild {
+interface DaemonChild {
  pid?: number;
  exitCode: number | null;
  signalCode: string | null;
@@ -931,7 +938,7 @@ export interface DaemonChild {
  on(event: "error", listener: (err: Error) => void): unknown;
 }
 
-export type DaemonSpawner = (
+type DaemonSpawner = (
  command: string,
  args: string[],
  options: Parameters<typeof spawn>[2],
@@ -1145,7 +1152,7 @@ export function getClientPort(): number {
  return attachedPort || PORT;
 }
 
-export function getClientId(): string {
+function getClientId(): string {
  return CLIENT_ID;
 }
 
@@ -1154,7 +1161,7 @@ export function hasFallbackServer(): boolean {
 }
 
 /** Test seam: true when client heartbeat timer is active. */
-export function isHeartbeatActive(): boolean {
+function isHeartbeatActive(): boolean {
  return heartbeatTimer !== null;
 }
 

@@ -10,7 +10,6 @@ import {
 	isPlaceholderToolName,
 	normalizePlaceholderCase,
 	parseSseEvents,
-	retargetToolChoice,
 	sseToChatCompletionJson,
 	sseToMessagesJson,
 	sseToResponsesJson,
@@ -185,17 +184,14 @@ test("enforceOpencodeFingerprint: a find declaration still rides upstream as glo
 	assert.equal(autoChoice.store, false, "responses cloak still applies");
 });
 
-test("normalizePlaceholderCase + retargetToolChoice: bounded per-request restore", () => {
+test("normalizePlaceholderCase: bounded per-request restore", () => {
 	const body: Record<string, unknown> = {
 		tools: [{ name: "Grep" }, { name: "ls" }],
-		tool_choice: { type: "function", name: "Grep" },
 	};
 	const restore = normalizePlaceholderCase(body);
 	assert.deepEqual(restore, { grep: "Grep" });
 	assert.equal((body.tools as Array<{ name: string }>)[0].name, "grep");
 	assert.equal((body.tools as Array<{ name: string }>)[1].name, "ls");
-	retargetToolChoice(body);
-	assert.deepEqual(body.tool_choice, { type: "function", name: "grep" });
 	assert.ok(isPlaceholderToolName("WRITE"));
 	assert.ok(!isPlaceholderToolName("ls"));
 	assert.ok(!isPlaceholderToolName("find"));
@@ -760,7 +756,55 @@ test("normalizeResponsesBody: flat reasoning effort max|ultra clamp to xhigh", (
 	};
 	normalizeResponsesBody(other);
 	assert.equal(other.reasoning_effort, "max", "non-spark flat effort never clamped");
-	assert.equal(other.reasoningEffort, "ultra", "non-spark flat effort never clamped");
+	assert.equal(
+		other.reasoningEffort,
+		"max",
+		"big-pickle's map declares max, so the ultra alias resolves to that value — not the spark clamp",
+	);
+});
+
+test("normalizeResponsesBody: ultra rewrites to the model's mapped max value", () => {
+	// `ultra` is an alias, never a value the gateway enumerates: a model whose
+	// ladder supports `max` (cat-jam-free's live set is max/xhigh/high/medium/
+	// low) used to forward the alias upstream and eat a 400.
+	const nested: Record<string, unknown> = {
+		model: "cat-jam-free",
+		input: "hi",
+		reasoning: { effort: "ultra" },
+	};
+	normalizeResponsesBody(nested);
+	assert.deepEqual(nested.reasoning, { effort: "max" }, "nested ultra rewrites to the mapped max");
+	const flat: Record<string, unknown> = {
+		model: "cat-jam-free",
+		input: "hi",
+		reasoning_effort: "ULTRA",
+	};
+	normalizeResponsesBody(flat);
+	assert.equal(flat.reasoning_effort, "max", "flat field rewrites too, case-insensitively");
+	const camel: Record<string, unknown> = {
+		model: "cat-jam-free",
+		input: "hi",
+		reasoningEffort: "ultra",
+	};
+	normalizeResponsesBody(camel);
+	assert.equal(camel.reasoningEffort, "max", "camelCase field rewrites too");
+	// max hidden (map says null): the alias still falls back to the highest
+	// supported level, as before.
+	const hiddenMax: Record<string, unknown> = {
+		model: "nemotron-3.5-super-vl-free",
+		input: "hi",
+		reasoning: { effort: "ultra" },
+	};
+	normalizeResponsesBody(hiddenMax);
+	assert.deepEqual(hiddenMax.reasoning, { effort: "xhigh" }, "ultra clamps when max is unsupported");
+	// No declared map at all: nothing to rewrite to, the field rides.
+	const unmapped: Record<string, unknown> = {
+		model: "ovh-free/Meta-Llama-3_3-70B-Instruct",
+		input: "hi",
+		reasoning: { effort: "ultra" },
+	};
+	normalizeResponsesBody(unmapped);
+	assert.deepEqual(unmapped.reasoning, { effort: "ultra" }, "an unmapped model keeps its effort");
 });
 
 test("enforceOpencodeFingerprint: responses path clamps flat effort end to end", () => {
@@ -783,7 +827,7 @@ test("enforceOpencodeFingerprint: responses path clamps flat effort end to end",
 	};
 	enforceOpencodeFingerprint(other, "/v1/responses");
 	assert.equal(other.reasoning_effort, "max", "non-spark untouched end to end");
-	assert.equal(other.reasoningEffort, "ultra", "non-spark untouched end to end");
+	assert.equal(other.reasoningEffort, "max", "the ultra alias resolves to big-pickle's mapped max end to end");
 });
 
 test("enforceOpencodeFingerprint: chat path drops tool_choice none, keeps auto-or-absent", () => {

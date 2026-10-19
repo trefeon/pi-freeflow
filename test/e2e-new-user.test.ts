@@ -18,6 +18,7 @@
 // keeps activation attached (and the registry offline) during the two tests
 // below that boot the real extension.
 import { harnessFetchHandler } from "./user-flow-env.ts";
+import { authHeaders } from "./_auth.ts";
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -128,7 +129,7 @@ test("E2E [2/10] startProxy socket is unref'd so CLI commands exit immediately w
 
  try {
   // Server accepts requests while unref'd
-  const res = await fetch(`http://127.0.0.1:${port}/v1/models`);
+  const res = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: { ...authHeaders() } });
   assert.equal(res.status, 200);
   const json = (await res.json()) as { object: string; data: Array<{ id: string }> };
   assert.equal(json.object, "list");

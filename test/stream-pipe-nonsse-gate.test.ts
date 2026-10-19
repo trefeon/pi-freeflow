@@ -19,6 +19,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { startProxy } from "../src/proxy.ts";
+import { authHeaders } from "./_auth.ts";
 import { ALLOW_UNSAFE_RELAY_ENV, RELAY_STATE_FILE } from "../src/config.ts";
 import {
 	getActiveRelayState,
@@ -157,7 +158,7 @@ async function withRelayProxy(
 function streamChatRequest(proxyPort: number): Promise<Response> {
 	return fetch(`http://127.0.0.1:${proxyPort}${STREAM_PATH}`, {
 		method: "POST",
-		headers: { "content-type": "application/json" },
+		headers: { "content-type": "application/json", ...authHeaders() },
 		body: JSON.stringify({
 			model: STREAM_MODEL,
 			stream: true,
@@ -301,7 +302,7 @@ test(
 				_resetUpstreamHealthForTest();
 				const res = await fetch(`${localPrefix}${STREAM_PATH}`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...authHeaders() },
 					body: JSON.stringify({
 						model: STREAM_MODEL,
 						stream: true,

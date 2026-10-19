@@ -4,9 +4,9 @@
  * Provides 24-hour atomic disk caching with safe offline fallback to verified static definitions.
  */
 
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "./atomic-write.ts";
 import {
  CATALOG_CACHE_FILE,
  CATALOG_CACHE_TTL_MS,
@@ -339,39 +339,18 @@ export function readCatalogCache(): CatalogCacheData | null {
 }
 
 /**
- * Atomically write catalog cache data to disk using temporary file + rename.
+ * Atomically write catalog cache data to disk (temp file + rename, see
+ * src/atomic-write.ts).
  * Persists etag alongside models for subsequent If-None-Match conditional requests.
  * Note: fsync not needed — rename is atomic on same filesystem; crash leaves either old or new file intact.
  */
-function sleepSync(ms: number): void {
- Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-function renameWithRetry(from: string, to: string): void {
- const retryable: Record<string, true> = { EPERM: true, EACCES: true, EBUSY: true };
- for (let attempt = 1; ; attempt++) {
-  try {
-   fs.renameSync(from, to);
-   return;
-  } catch (e) {
-   const code = (e as NodeJS.ErrnoException | null)?.code;
-   if (!code || !retryable[code] || attempt >= 3) {
-    throw e;
-   }
-   sleepSync(50);
-  }
- }
-}
-
 export function writeCatalogCache(data: CatalogCacheData): void {
  try {
   const dir = path.dirname(CATALOG_CACHE_FILE);
   if (!fs.existsSync(dir)) {
    fs.mkdirSync(dir, { recursive: true });
   }
-  const tmpPath = `${CATALOG_CACHE_FILE}.${randomUUID()}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
-  renameWithRetry(tmpPath, CATALOG_CACHE_FILE);
+  writeFileAtomic(CATALOG_CACHE_FILE, JSON.stringify(data, null, 2));
  } catch (err) {
   logWarn("Could not persist catalog cache to disk", { error: String(err) });
  }
@@ -436,7 +415,14 @@ export async function refreshCatalog(force = false): Promise<RegisteredModel[]> 
     signal: AbortSignal.timeout(CATALOG_REFRESH_TIMEOUT_MS),
    });
    if (res.status === 304) {
-    // Not modified — skip merge, extend timestamp to avoid tight loop
+    // Not modified upstream, but the cached list is still the only record of
+    // dynamically discovered ids this process never merged (a 304 revalidates
+    // before any 200 merge), so overlay it exactly like the stale-cache paths
+    // below instead of returning the untouched in-memory catalog.
+    if (staleForEtag && Array.isArray(staleForEtag.models) && staleForEtag.models.length > 0) {
+     aliveCatalog = mergeCatalog(aliveCatalog, sanitizeCatalogModels(staleForEtag.models));
+    }
+    // Extend the timestamp to avoid a tight loop on the same 304
     if (staleForEtag && Array.isArray(staleForEtag.models)) {
      try {
       writeCatalogCache({ ...staleForEtag, timestamp: Date.now() });

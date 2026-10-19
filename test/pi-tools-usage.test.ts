@@ -4,7 +4,6 @@ import {
 	PI_TOOL_NAMES,
 	buildFindGlobRestore,
 	restoreToolNameForCaller,
-	retargetToolChoiceForUpstream,
 	translateToolsForPath,
 	sanitizeUpstreamToolName,
 	upstreamToolNameFor,
@@ -255,13 +254,6 @@ test("pi usage: only the fingerprint lane renames find to glob", () => {
 	assert.equal(renamed.renamedFindToGlob, true);
 	assert.equal(restoreToolNameForCaller("glob", renamed), "find", "restore map brings find back");
 	assert.equal(restoreToolNameForCaller("read", renamed), "read", "non-glob names untouched by restore");
-	// tool_choice is carried across the rename, never imposed.
-	assert.deepEqual(
-		retargetToolChoiceForUpstream({ type: "function", name: "find" }, renamed),
-		{ type: "function", name: "glob" },
-	);
-	assert.equal(retargetToolChoiceForUpstream("auto", renamed), "auto", "auto choice never retargeted");
-	assert.equal(retargetToolChoiceForUpstream(undefined, renamed), undefined, "absent choice never imposed");
 });
 
 test("pi usage: OMP-style glob fixture is untouched and never restores to find", () => {

@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { EventEmitter } from "node:events";
+import { execSync } from "node:child_process";
 import type * as http from "node:http";
 
 import {
@@ -45,7 +46,7 @@ import {
 import { getHealthData } from "../src/health.ts";
 import { getActiveRelayState, setActiveRelayState } from "../src/relay-state.ts";
 import { isProxyAlive, reprobeBasePortAlive, startProxy } from "../src/proxy.ts";
-import { getStartupPlan, installStartupHook, uninstallStartupHook } from "../src/commands.ts";
+import { getStartupPlan, installStartupHook, uninstallStartupHook, _setStartupHookRunnerForTest } from "../src/commands.ts";
 
 // ── backoff ──────────────────────────────────────────────────────────────
 
@@ -306,6 +307,51 @@ test("startup plan: windows logon task is single-shot with undo", () => {
 	assert.equal(getStartupPlan({ platform: "win32" }).command, getStartupPlan({ platform: "win32" }).command);
 });
 
+test("startup plan: the windows task action is a double-quoted command, never single-quoted", () => {
+	const p = getStartupPlan({
+		platform: "win32",
+		execPath: "C:\\Program Files\\nodejs\\node.exe",
+		scriptPath: "C:\\Program Files\\pi freeflow\\src\\daemon.ts",
+	});
+	// CreateProcess has no single-quote syntax: substituting `'` for `"` made
+	// the task's first token unresolvable ("The filename, directory name, or
+	// volume label syntax is incorrect"), so the logon task could never start.
+	assert.ok(!p.command.includes("'"), `the /tr payload must not carry a single quote: ${p.command}`);
+	const payload = p.command.match(/\/tr "(.*)" \/sc onlogon/)?.[1] ?? "";
+	assert.equal(
+		payload,
+		'\\"C:\\Program Files\\nodejs\\node.exe\\" --experimental-strip-types \\"C:\\Program Files\\pi freeflow\\src\\daemon.ts\\"',
+		"each quoted token must keep its double quotes, escaped for cmd.exe",
+	);
+	// What schtasks stores is the payload with the escaping resolved: exactly
+	// the quoted runtime command the task must run.
+	assert.equal(
+		payload.replaceAll('\\"', '"'),
+		'"C:\\Program Files\\nodejs\\node.exe" --experimental-strip-types "C:\\Program Files\\pi freeflow\\src\\daemon.ts"',
+	);
+});
+
+test("startup plan: the windows action launches the runtime it names", { skip: process.platform !== "win32" }, () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ff probe "));
+	try {
+		const script = path.join(dir, "argv.ts");
+		fs.writeFileSync(script, "process.stdout.write(JSON.stringify(process.argv.slice(1)));\n", "utf8");
+		const p = getStartupPlan({ platform: "win32", execPath: process.execPath, scriptPath: script });
+		const payload = p.command.match(/\/tr "(.*)" \/sc onlogon/)?.[1] ?? "";
+		// A scheduled task action is launched as a command line; run exactly
+		// that (escaping resolved) so a first token CreateProcess cannot
+		// resolve fails here instead of silently at the next logon.
+		const out = execSync(payload.replaceAll('\\"', '"'), { encoding: "utf8", windowsHide: true });
+		assert.deepEqual(
+			JSON.parse(out),
+			[script],
+			"the action must reach the runtime and keep the space-bearing script path intact",
+		);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("startup plan: linux unit is single-shot oneshot with undo", () => {
 	const home = fs.mkdtempSync(path.join(os.tmpdir(), "ff-home-"));
 	try {
@@ -325,10 +371,23 @@ test("startup install/uninstall is idempotent with undo output (linux, tmp home)
 	const prev = process.env[spawnKey];
 	try {
 		delete process.env[spawnKey];
+		// No user bus on this box or on CI: the hook now reports a failed
+		// `systemctl --user enable` instead of pretending it was armed, so the
+		// enabled path is driven through the runner seam and the exact commands
+		// it would run are asserted.
+		const ran: string[] = [];
+		_setStartupHookRunnerForTest((cmd) => {
+			ran.push(cmd);
+		});
 		const first = installStartupHook({ platform: "linux", homeDir: home });
 		assert.equal(first.ok, true);
 		assert.equal(first.changed, true);
 		assert.ok(first.undo.length > 0);
+		assert.deepEqual(
+			ran,
+			["systemctl --user daemon-reload", "systemctl --user enable pi-freeflow.service"],
+			"install must reload the unit files and enable the unit",
+		);
 		const again = installStartupHook({ platform: "linux", homeDir: home });
 		assert.equal(again.ok, true);
 		assert.equal(again.changed, false);
@@ -340,10 +399,40 @@ test("startup install/uninstall is idempotent with undo output (linux, tmp home)
 		assert.equal(rmAgain.changed, false);
 		assert.ok(rmAgain.detail.includes("already removed"));
 	} finally {
+		_setStartupHookRunnerForTest(null);
 		if (prev === undefined) delete process.env[spawnKey];
 		else process.env[spawnKey] = prev;
 		fs.rmSync(home, { recursive: true, force: true });
 		_resetClientForTest();
+	}
+});
+
+test("startup install reports a systemd-less host instead of claiming the hook is armed", () => {
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), "ff-home-"));
+	const spawnKey = DAEMON_SPAWN_ENV;
+	const prev = process.env[spawnKey];
+	try {
+		delete process.env[spawnKey];
+		_setStartupHookRunnerForTest(() => {
+			throw new Error("Failed to connect to bus: No medium found");
+		});
+		const res = installStartupHook({ platform: "linux", homeDir: home });
+		assert.equal(res.ok, false, "a hook that never got enabled must not report ok");
+		assert.equal(res.changed, true, "the unit file was still written");
+		assert.ok(
+			res.detail.includes("could not enable it at login"),
+			`the failure reason must be reported, got: ${res.detail}`,
+		);
+		assert.ok(res.detail.includes("No medium found"), "the systemd error must be surfaced");
+		assert.ok(
+			fs.existsSync(path.join(home, ".config", "systemd", "user", "pi-freeflow.service")),
+			"the written unit must stay on disk for a manual enable",
+		);
+	} finally {
+		_setStartupHookRunnerForTest(null);
+		if (prev === undefined) delete process.env[spawnKey];
+		else process.env[spawnKey] = prev;
+		fs.rmSync(home, { recursive: true, force: true });
 	}
 });
 

@@ -14,15 +14,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
-	compareVersions,
 	getCachedUpdate,
 	setCachedUpdate,
-	fetchLatestVersion,
 	isLinkedInstall,
 	checkForUpdateInBackground,
 } from "../src/update-checker.ts";
+import { compareVersions, fetchLatestVersion } from "../src/update-core.ts";
 import { createCommandSpec } from "../src/commands.ts";
 import { UPDATE_CACHE_FILE, UPDATE_CHECK_TTL_MS } from "../src/config.ts";
 import type { ExtensionAPI, ExtensionContext } from "../src/types.ts";
@@ -188,6 +190,59 @@ test("fetchLatestVersion handles valid response, non-200 status, and network rej
 test("isLinkedInstall returns a boolean without throwing", () => {
 	const isLinked = isLinkedInstall();
 	assert.equal(typeof isLinked, "boolean");
+});
+
+test("isLinkedInstall detects a linked package root, not only a linked entry", () => {
+	const base = fs.mkdtempSync(path.join(os.tmpdir(), "ff-link-"));
+	const checkout = path.join(base, "checkout");
+	fs.mkdirSync(path.join(checkout, "extensions"), { recursive: true });
+	fs.writeFileSync(path.join(checkout, "extensions", "index.ts"), "export {};\n", "utf8");
+	const linkedRoot = path.join(base, "node_modules", "pi-freeflow");
+	try {
+		assert.equal(
+			isLinkedInstall(checkout),
+			false,
+			"a real checkout with a regular entry is not a linked install",
+		);
+		assert.equal(isLinkedInstall(path.join(base, "absent")), false, "a missing root is not a link");
+		fs.mkdirSync(path.dirname(linkedRoot), { recursive: true });
+		// The shape `omp plugin link` creates: the package ROOT is the symlink,
+		// so the extension entry below it is an ordinary file — the entry-only
+		// check missed this and let auto-update overwrite the dev checkout.
+		fs.symlinkSync(checkout, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+		assert.equal(isLinkedInstall(linkedRoot), true, "a linked package root must read as a linked install");
+	} finally {
+		fs.rmSync(base, { recursive: true, force: true });
+	}
+});
+
+// ── 4b. Module graph ─────────────────────────────────────────────────────────
+
+/**
+ * update-checker ⇄ updater used to be a value-level cycle (each imported the
+ * other). The version facts now live in the leaf src/update-core.ts, which
+ * nothing else in this trio imports, and updater reaches the port killer
+ * through a lazy import only. A new top-level edge here re-creates the cycle.
+ */
+test("the update modules keep a one-way dependency graph", () => {
+	const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
+	const read = (file: string): string => fs.readFileSync(path.join(srcDir, file), "utf8");
+	const edges: Array<{ from: string; to: string; expected: boolean }> = [
+		{ from: "update-checker.ts", to: "./updater.ts", expected: true },
+		{ from: "updater.ts", to: "./update-checker.ts", expected: false },
+		{ from: "updater.ts", to: "./proxy.ts", expected: false },
+		{ from: "update-core.ts", to: "./update-checker.ts", expected: false },
+		{ from: "update-core.ts", to: "./updater.ts", expected: false },
+		{ from: "update-core.ts", to: "./client.ts", expected: false },
+		{ from: "update-core.ts", to: "./proxy.ts", expected: false },
+	];
+	for (const { from, to, expected } of edges) {
+		assert.equal(
+			read(from).includes(`from "${to}"`),
+			expected,
+			`${from} must ${expected ? "" : "not "}import ${to} as a static edge`,
+		);
+	}
 });
 
 // ── 5. Background Check Isolation & 24h TTL Throttling ────────────────────────

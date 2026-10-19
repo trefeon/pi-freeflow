@@ -61,7 +61,7 @@ test("relay 413: first candidate 413 then second 200 returns 200, both attempted
 		assert.equal(out.status, 200);
 		assert.equal(fetchMock.mock.callCount(), 2, "413 must continue to the next candidate");
 		assert.deepEqual(seenUrls, [RELAY_A, RELAY_B], "both candidates must be attempted in order");
-		assert.deepEqual(cancelled, [], "stored 413 kept unread for direct-fallback salvage, same as retriable/edge-404 pattern; freed only if direct runs");
+		assert.deepEqual(cancelled, [413], "the abandoned 413 body is freed once the turn settles on the next candidate (it can no longer be surfaced)");
 	});
 });
 

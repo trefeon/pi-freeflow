@@ -25,7 +25,6 @@ import {
 	chatResponsesJsonFromChatCompletion,
 	chatResponsesSseFromChatCompletion,
 	restoreToolNameForCaller,
-	retargetToolChoiceForUpstream,
 	sanitizeUpstreamToolName,
 	toAnthropicTool,
 	toChatTool,
@@ -482,9 +481,6 @@ test("translateToolsForPath: Pi find renames to glob on all shapes, OMP glob unt
 	assert.equal(restoreToolNameForCaller("glob", both), "glob");
 	const none = buildFindGlobRestore([{ type: "function", name: "read", description: "r", parameters: { type: "object" } }]);
 	assert.equal(none.renamedFindToGlob, false);
-	assert.deepEqual(retargetToolChoiceForUpstream({ type: "function", name: "find" }, renamed), { type: "function", name: "glob" });
-	assert.deepEqual(retargetToolChoiceForUpstream({ type: "function", function: { name: "find" } }, renamed), { type: "function", function: { name: "glob" } });
-	assert.equal(retargetToolChoiceForUpstream("auto", renamed), "auto", "tool_choice auto never retargeted");
 });
 test("translateToolsForPath: dup collapse case-insensitive, second translate adds zero", () => {
 	const dupes = [

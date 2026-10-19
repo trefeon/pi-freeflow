@@ -1,6 +1,7 @@
 /**
- * Health endpoint for pi-freeflow proxy
- * Loopback-only GET /_health (and alias /health) returning relay health snapshot.
+ * Health endpoints for pi-freeflow proxy
+ * - GET /health  — unauthenticated identity probe (ok/service/port/version)
+ * - GET /_health — rich relay/lease snapshot; token-gated by src/proxy.ts
  */
 
 import type * as http from "node:http";
@@ -10,7 +11,7 @@ import { getLastActivityAt, getLeaseCount, getLeaseSnapshot } from "./lease.ts";
 import { PKG_VERSION, PORT } from "./config.ts";
 import { getLastForwardedByteAt, getMidStreamFaultStats, getSseStats } from "./stream-pipe.ts";
 
-export interface HealthRelayInfo {
+interface HealthRelayInfo {
 	url: string;
 	label?: string;
 	healthy: boolean;
@@ -18,7 +19,7 @@ export interface HealthRelayInfo {
 	consecutiveFailures: number;
 }
 
-export interface HealthData {
+interface HealthData {
 	port: number;
 	active: string;
 	mode: string;
@@ -108,6 +109,25 @@ export function getHealthData(portOverride?: number, activeRequests = 0): Health
 }
 
 /**
+ * Identity of a pi-freeflow daemon bound to `port`, as answered by the
+ * unauthenticated GET /health probe. `port` is the value read from the
+ * listening socket, so a stranger squatting the loopback port cannot pass by
+ * answering arbitrary JSON.
+ *
+ * Legacy daemons (pre-token releases) answered /health with the rich health
+ * snapshot: a numeric self-reported port plus a version string. Accepting that
+ * shape keeps upgrade paths working — the client recognises the old daemon,
+ * sees the version mismatch and replaces it — while `{}` or a foreign service
+ * still fails.
+ */
+export function isDaemonIdentityBody(port: number, body: unknown): boolean {
+	if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+	if (!("port" in body) || typeof body.port !== "number" || body.port !== port) return false;
+	if ("service" in body) return body.service === "pi-freeflow" && "ok" in body && body.ok === true;
+	return "version" in body && typeof body.version === "string" && body.version !== "";
+}
+
+/**
  * Check whether an IP address is a loopback address (127.0.0.1, ::1, localhost).
  */
 export function isLoopbackIP(ip: string): boolean {
@@ -121,6 +141,14 @@ export function isLoopbackIP(ip: string): boolean {
  * Handle loopback health requests.
  * Returns true if request was a health endpoint (handled, response already sent).
  * Returns false if not a health path (caller should continue).
+ *
+ * Two shapes:
+ * - `GET /health` is the unauthenticated identity probe: exactly
+ *   `{ok, service, port, version}`, used by attach/dark-holder checks to
+ *   recognise our daemon before a token is available.
+ * - `GET /_health` is the rich relay/lease/session snapshot. The proxy
+ *   enforces the installation token on every `/_*` route before dispatching
+ *   here, so this handler does not repeat the auth check.
  */
 export function handleHealthRequest(
 	req: http.IncomingMessage,
@@ -146,8 +174,15 @@ export function handleHealthRequest(
 		return true;
 	}
 
-	const data = getHealthData(portOverride, activeRequests);
-	const body = JSON.stringify(data, null, 2);
+	const body =
+		reqPathname === "/health"
+			? JSON.stringify({
+				ok: true,
+				service: "pi-freeflow",
+				port: portOverride ?? PORT,
+				version: PKG_VERSION,
+			})
+			: JSON.stringify(getHealthData(portOverride, activeRequests), null, 2);
 	res.writeHead(200, {
 		"content-type": "application/json",
 		"content-length": Buffer.byteLength(body),

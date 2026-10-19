@@ -21,6 +21,7 @@ import { getActiveRelayState, resetAllRelayHealth, setActiveRelayState } from ".
 import { readRecentLogs } from "../src/logger.ts";
 import { _resetFreeTierHintForTest, _resetUpstreamHealthForTest } from "../src/upstream-health.ts";
 import { CLINE_POOL_FILE, _resetClinePoolCacheForTest } from "../src/cline-accounts.ts";
+import { authHeaders } from "./_auth.ts";
 
 // The only static catalog entry that declares api: "openai-responses" is the
 // Cline Muse Spark model (the Zen muse-spark contributor ids were retired
@@ -93,7 +94,7 @@ async function withProxy(fn: (port: number) => Promise<void>): Promise<void> {
 async function post(port: number, path: string, body: unknown): Promise<{ status: number; text: string }> {
  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
   method: "POST",
-  headers: { "content-type": "application/json" },
+  headers: { "content-type": "application/json", ...authHeaders() },
   body: JSON.stringify(body),
  });
  return { status: res.status, text: await res.text() };

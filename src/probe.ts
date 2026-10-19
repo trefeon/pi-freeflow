@@ -6,14 +6,14 @@ import { ensureChatFingerprintTools } from "./opencode-fingerprint.ts";
  * by issuing a minimal round trip through it and timing the response.
  */
 
-export interface RelayProbeResult {
+interface RelayProbeResult {
  ok: boolean;
  status: number;
  latencyMs: number;
  error?: string;
 }
 
-export interface RelayProbeOptions {
+interface RelayProbeOptions {
  /**
   * Probe mode:
   * - "models" (default): GET /v1/models (reachability probe)

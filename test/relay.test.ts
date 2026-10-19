@@ -3,16 +3,22 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
 import { relayFetch, _resetRollNotifyForTest } from "../src/relay.ts";
 import {
 	getRelayHealth,
 	isRelayHealthy,
+	markRelayFailure,
+	saveRelayState,
 	setActiveRelayState,
 	setStatusUi,
 	resetAllRelayHealth,
 } from "../src/relay-state.ts";
+import { LOG_FILE, RELAY_STATE_FILE } from "../src/config.ts";
 import { startProxy } from "../src/proxy.ts";
+import { authHeaders } from "./_auth.ts";
+import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
 test("relayFetch uses global fetch (keep-alive via Node default)", () => {
 	// 0 deps now — global fetch pools keep-alive without custom undici Agent
@@ -54,7 +60,7 @@ test("proxy direct path responds with keep-alive header", async () => {
 	const { server, port } = await startProxy(testPort);
 	assert.ok(server);
 	try {
-		const res = await fetch(`http://127.0.0.1:${port}/v1/models`);
+		const res = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: authHeaders() });
 		assert.equal(res.status, 200);
 		// Node http server should keep connection alive; our proxy explicitly sets connection keep-alive for upstream,
 		// and for /v1/models the server default is keep-alive. Accept either explicit header or implicit keep-alive via not-closed.
@@ -511,4 +517,67 @@ test("relayFetch salvages last relay 429 when direct fallback answers 403", asyn
 			false,
 		);
 	}
+});
+
+/** Count the "burst >5/min" relay warnings appended to the sandbox log. */
+function count429BurstWarnings(): number {
+	try {
+		return fs.readFileSync(LOG_FILE, "utf8").split("429 burst").length - 1;
+	} catch {
+		return 0;
+	}
+}
+
+test("relay health: 429 burst warns once per window episode, never per event", () => {
+	resetAllRelayHealth();
+	const before = count429BurstWarnings();
+
+	// Five 429s inside the 60-second window sit at the >5/min threshold.
+	for (let i = 0; i < 5; i++) markRelayFailure(`https://burst-a${i}.example.com`, 429);
+	assert.equal(count429BurstWarnings() - before, 0, "5 events in the window must not warn");
+
+	// The sixth crosses it: exactly one warning for the episode.
+	markRelayFailure("https://burst-a5.example.com", 429);
+	assert.equal(count429BurstWarnings() - before, 1, "crossing the threshold must warn once");
+
+	// Further 429s belong to the same episode, so nothing re-warns.
+	for (let i = 6; i < 12; i++) markRelayFailure(`https://burst-a${i}.example.com`, 429);
+	assert.equal(count429BurstWarnings() - before, 1, "the same burst episode must not re-warn");
+
+	// Clearing the window (the health reset seam) opens a fresh episode.
+	resetAllRelayHealth();
+	for (let i = 0; i < 6; i++) markRelayFailure(`https://burst-b${i}.example.com`, 429);
+	assert.equal(count429BurstWarnings() - before, 2, "a fresh window must warn on its own transition");
+
+	resetAllRelayHealth();
+});
+
+test("relay state file carries per-relay secrets and is written 0600", () => {
+	withIsolatedRelayFiles(() => {
+		const pool = {
+			mode: "auto",
+			enabled: true,
+			url: "https://secret-relay.example.com",
+			relays: [{ url: "https://secret-relay.example.com", auth: "shared-secret" }],
+		} as unknown as Parameters<typeof saveRelayState>[0];
+		saveRelayState(pool);
+		assert.ok(
+			fs.readFileSync(RELAY_STATE_FILE, "utf8").includes("shared-secret"),
+			"the state file genuinely holds the relay secret",
+		);
+		// A second save backs the first one up: the backup holds the same secret.
+		saveRelayState(pool);
+
+		if (process.platform === "win32") return; // Windows: POSIX mode bits are best-effort only
+		assert.equal(
+			fs.statSync(RELAY_STATE_FILE).mode & 0o777,
+			0o600,
+			"relay-state.json must not be group/world readable",
+		);
+		assert.equal(
+			fs.statSync(`${RELAY_STATE_FILE}.bak`).mode & 0o777,
+			0o600,
+			"the relay-state backup must not be group/world readable",
+		);
+	});
 });

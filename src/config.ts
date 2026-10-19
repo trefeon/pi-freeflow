@@ -51,7 +51,9 @@ export function resolvePort(): number {
  const envPort = process.env.PI_FREEFLOW_PORT;
  if (envPort) {
   const parsed = Number(envPort);
-  if (Number.isFinite(parsed) && parsed > 0 && parsed <= 65535) {
+  // Integers only: 28180.5 is finite and in range but net.Server.listen
+  // rejects it with an uncatchable ERR_SOCKET_BAD_PORT.
+  if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) {
    return parsed;
   }
  }
@@ -271,7 +273,7 @@ export const VERCEL_API = "https://api.vercel.com";
 // ── Catalog & Logging constants ─────────────────────────────────────
 export const CATALOG_CACHE_TTL_MS = 86_400_000; // 24 hours — delegate to host fetchDynamicModels
 export const LOG_MAX_BYTES = 10 * 1024 * 1024; // 10MB per file
-export const LOG_MAX_FILES = 10; // 10 archived + current ≈ 110MB max (≈100MB per your request, rotated, not single 100MB blob)
+export const LOG_MAX_FILES = 10; // 10 archived + current ≈ 110MB cap (rotated, never a single 100MB blob)
 
 // ── Whitelists & Security ───────────────────────────────────────────
 export const ALLOWED_PATH_PATTERN = /^\/v1\/[a-zA-Z0-9/_.,\-?&= %]*$/;
@@ -328,6 +330,22 @@ function dataFilePath(name: string): string {
  const override = dataDirOverride();
  if (override) return path.join(override, name);
  return path.join(defaultAgentDir(), name);
+}
+
+/**
+ * Per-installation proxy token file (src/token.ts reads/creates it at 0600).
+ * Sits with the other data files so a sandboxed data dir relocates it too.
+ */
+export function resolveTokenPath(): string {
+ try {
+  return dataFilePath("token");
+ } catch {
+  return path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "..",
+   ".pi-freeflow-token",
+  );
+ }
 }
 
 export function resolveRelayStatePath(): string {

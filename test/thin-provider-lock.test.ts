@@ -10,6 +10,7 @@ import { isRetriableStatus, relayFetch } from "../src/relay.ts";
 import { resetAllRelayHealth, setActiveRelayState } from "../src/relay-state.ts";
 import type { RelayState } from "../src/types.ts";
 import { ALL_MODELS } from "../src/models.ts";
+import { authHeaders } from "./_auth.ts";
 
 test("thin-provider lock: 35 models catalog intact", () => {
 	const alive = getAliveCatalog();
@@ -31,11 +32,11 @@ test("thin-provider lock: proxy /v1/models pathname guard (no ?query leak)", asy
  const { server, port } = await startProxy(testPort);
  const effectivePort = port ?? testPort;
  try {
-  const res = await fetch(`http://127.0.0.1:${effectivePort}/v1/models`);
+  const res = await fetch(`http://127.0.0.1:${effectivePort}/v1/models`, { headers: { ...authHeaders() } });
   assert.equal(res.status, 200);
   const json = (await res.json()) as { data: Array<{ id: string }> };
 		assert.equal(json.data.length, 35);
-	const qRes = await fetch(`http://127.0.0.1:${effectivePort}/v1/models?foo=bar`);
+	const qRes = await fetch(`http://127.0.0.1:${effectivePort}/v1/models?foo=bar`, { headers: { ...authHeaders() } });
 		assert.equal(qRes.status, 200, "query variant must be guarded to 200 with 35");
 		const qJson = (await qRes.json()) as { data: Array<{ id: string }> };
 		assert.equal(qJson.data.length, 35, "query variant must not leak paid models");

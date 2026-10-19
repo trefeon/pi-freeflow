@@ -35,6 +35,7 @@ import {
 } from "../src/deploy.ts";
 import { isSubstantial } from "../src/stream-pipe.ts";
 import { readCatalogCache, mergeCatalog, DEAD_MODEL_IDS } from "../src/catalog.ts";
+import { loadRelayCore } from "./_relay-core.ts";
 import type { RegisteredModel, RelayState } from "../src/types.ts";
 
 // ── 1. HTTP Status Error Decision Matrix ─────────────────────────────────────
@@ -186,56 +187,152 @@ test("Error Matrix [4/10] catalog gracefully strips dead model IDs on cache read
 
 // ── 5. SSRF Private & Loopback IP Guardrails in Relay Workers ────────────────
 
-test("Error Matrix [5/10] relay worker code blocks all private IPv4/IPv6 ranges and loopback variants", () => {
-	const workers = [CLOUDFLARE_RELAY_WORKER, VERCEL_RELAY_WORKER, DENO_RELAY_SCRIPT];
+test("Error Matrix [5/10] relay worker cores block private, loopback and metadata hosts", () => {
+	const cores = [CLOUDFLARE_RELAY_WORKER, VERCEL_RELAY_WORKER, DENO_RELAY_SCRIPT].map((src) => loadRelayCore(src));
+	const blocked: Array<[string, string]> = [
+		["[::1]", "bracketed IPv6 loopback"],
+		["[fd00::1]", "bracketed IPv6 unique-local"],
+		["::1", "IPv6 loopback"],
+		["::ffff:127.0.0.1", "IPv4-mapped loopback"],
+		["fe80::1", "IPv6 link-local"],
+		["fd12:3456::1", "IPv6 unique-local"],
+		["127.0.0.1", "IPv4 loopback"],
+		["127.1", "short-form loopback (inet_aton)"],
+		["2130706433", "decimal loopback (inet_aton)"],
+		["0x7f.0.0.1", "hex loopback (inet_aton)"],
+		["0.0.0.0", "unspecified"],
+		["10.1.2.3", "RFC1918 10/8"],
+		["172.16.0.1", "RFC1918 172.16/12 lower bound"],
+		["172.31.255.255", "RFC1918 172.16/12 upper bound"],
+		["192.168.0.5", "RFC1918 192.168/16"],
+		["100.64.0.1", "CGNAT 100.64/10 lower bound"],
+		["169.254.169.254", "link-local cloud metadata address"],
+		["localhost", "localhost"],
+		["opencode.ai.localhost", "*.localhost zone"],
+		["metadata.google.internal", "*.internal zone"],
+		["", "empty host"],
+	];
+	const allowed: Array<[string, string]> = [
+		["8.8.8.8", "public IPv4"],
+		["172.32.0.1", "just above 172.16/12"],
+		["100.128.0.1", "just above CGNAT 100.64/10"],
+		["opencode.ai.", "trailing-dot FQDN sanitized to the public host"],
+		["api.kilo.ai", "whitelisted upstream"],
+	];
 
-	for (const src of workers) {
-		// RFC1918 IPv4 ranges
-		assert.ok(src.includes("a === 10"), "Must block 10.0.0.0/8");
-		assert.ok(src.includes("a === 172") && src.includes("b >= 16"), "Must block 172.16.0.0/12");
-		assert.ok(src.includes("a === 192") && src.includes("b === 168"), "Must block 192.168.0.0/16");
-
-		// Loopback & Unspecified
-		assert.ok(src.includes("a === 127"), "Must block 127.0.0.0/8 loopback");
-		assert.ok(src.includes("a === 0"), "Must block 0.0.0.0/8 unspecified");
-
-		// Carrier-Grade NAT (CGNAT)
-		assert.ok(src.includes("a === 100") && src.includes("b >= 64"), "Must block CGNAT 100.64.0.0/10");
-
-		// Link-Local
-		assert.ok(src.includes("a === 169") && src.includes("b === 254"), "Must block Link-Local 169.254.0.0/16");
-
-		// IPv6 Private & Link-Local
-		assert.ok(src.includes("fc") && src.includes("fd"), "Must block IPv6 ULA fc00::/7 & fd00::/8");
-		assert.ok(src.includes("fe80") || src.includes("fe[89ab]"), "Must block IPv6 Link-Local fe80::/10");
-		assert.ok(src.includes('startsWith("::")'), "Must block IPv6 loopback ::1");
-
-		// Localhost and trailing dot sanitization
-		assert.ok(src.includes('"localhost"'), "Must block localhost");
-		assert.ok(src.includes('endsWith(".")'), "Must sanitize trailing dot bypasses");
-		assert.ok(src.includes(".localhost") && src.includes(".internal"), "Must block local DNS zones");
+	for (const [index, core] of cores.entries()) {
+		for (const [host, why] of blocked) {
+			assert.equal(core.isPrivateHostname(host), true, `worker ${index}: ${host} must be blocked (${why})`);
+		}
+		for (const [host, why] of allowed) {
+			assert.equal(core.isPrivateHostname(host), false, `worker ${index}: ${host} must pass (${why})`);
+		}
 	}
 });
 
 // ── 6. Path Traversal & Credential Spoofing Guards ───────────────────────────
 
-test("Error Matrix [6/10] relay path resolution blocks credentials, backslashes, and target mismatches", () => {
-	const workers = [CLOUDFLARE_RELAY_WORKER, VERCEL_RELAY_WORKER, DENO_RELAY_SCRIPT];
+test("Error Matrix [6/10] relay worker cores refuse credential, traversal and host-mismatch paths", async () => {
+	const cores = [CLOUDFLARE_RELAY_WORKER, VERCEL_RELAY_WORKER, DENO_RELAY_SCRIPT].map((src) => loadRelayCore(src));
+	const refusedPaths: unknown[] = [
+		"zen/v1/models", // no leading slash
+		"/a@b", // embedded credentials
+		"/zen\\x", // backslash traversal
+		"/zen/../\\x", // mixed traversal
+		undefined,
+		null,
+		42,
+	];
 
-	for (const src of workers) {
-		// Embedded credentials guard (@)
-		assert.ok(src.includes('@') && src.includes('indexOf("@")'), "Must reject URLs with embedded credentials");
+	for (const [index, core] of cores.entries()) {
+		const label = `worker ${index}`;
+		assert.deepEqual(
+			core.resolveRelayTarget("https://opencode.ai", "/zen/v1/models"),
+			{ ok: true, url: "https://opencode.ai/zen/v1/models" },
+			`${label}: the canonical upstream path must resolve`,
+		);
+		assert.equal(
+			core.resolveRelayTarget("https://opencode.ai/", "/zen/v1/models").ok,
+			true,
+			`${label}: a trailing slash on the target is not a host mismatch`,
+		);
+		for (const relayPath of refusedPaths) {
+			const verdict = core.resolveRelayTarget("https://opencode.ai", relayPath);
+			assert.equal(verdict.ok, false, `${label}: ${String(relayPath)} must be refused`);
+			assert.equal(verdict.status, 403, `${label}: ${String(relayPath)} must be a 403`);
+			assert.equal(verdict.reason, "forbidden x-relay-path", `${label}: ${String(relayPath)} reason`);
+		}
 
-		// Windows backslash traversal guard (\)
-		assert.ok(src.includes('indexOf("\\\\")') || src.includes('indexOf("\\")'), "Must reject backslash path separators");
+		// A protocol-relative or absolute path must not escape the whitelisted host.
+		const escaped = core.resolveRelayTarget("https://opencode.ai", "//evil.example.com/zen");
+		assert.equal(escaped.ok, false, `${label}: a protocol-relative path must not dodge the host check`);
+		assert.equal(escaped.reason, "forbidden x-relay-path (host mismatch)");
+		assert.equal(core.resolveRelayTarget("https://opencode.ai", "https://evil.example.com/zen").status, 403);
+		assert.equal(core.resolveRelayTarget("https://opencode.ai", "/zen#@evil.example.com").status, 403);
 
-		// Leading slash requirement
-		assert.ok(src.includes('charAt(0) !== "/"'), "Must enforce leading forward slash on path");
+		// Credentials embedded in the target never survive resolution.
+		assert.equal(core.resolveRelayTarget("https://user:pw@opencode.ai", "/zen").ok, false);
 
-		// Protocol, host, and port mismatch detection
-		assert.ok(src.includes("hostname !== targetUrl.hostname"), "Must reject hostname spoofing");
-		assert.ok(src.includes("protocol !== targetUrl.protocol"), "Must reject protocol tampering");
-		assert.ok(src.includes("port !== targetUrl.port"), "Must reject port tampering");
+		// Dot-segment traversal normalizes inside the whitelisted host, never out of it.
+		const traversal = core.resolveRelayTarget("https://opencode.ai", "/zen/../../zen/v1/models");
+		assert.equal(traversal.ok, true, `${label}: same-host dot-segment traversal stays resolvable`);
+		assert.equal(traversal.url, "https://opencode.ai/zen/v1/models");
+
+		// A target that is not a URL is rejected before any host check.
+		const invalid = core.resolveRelayTarget("not a url", "/zen");
+		assert.equal(invalid.status, 400);
+		assert.equal(invalid.reason, "invalid x-relay-target");
+	}
+
+	// The handler decides the target before any upstream fetch, so bracket,
+	// loopback and metadata hosts never reach the wire, and the relay's own
+	// routing headers are never forwarded to the upstream.
+	const fetched: Array<{ url: string; headers: Headers }> = [];
+	const realFetch = globalThis.fetch;
+	(globalThis as Record<string, unknown>).fetch = async (url: unknown, init?: RequestInit) => {
+		fetched.push({ url: String(url), headers: new Headers(init?.headers) });
+		return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+	};
+	try {
+		for (const [index, core] of cores.entries()) {
+			const refusedTargets = [
+				"https://evil.example.com",
+				"https://169.254.169.254",
+				"http://127.0.0.1:8080",
+				"https://[::1]",
+				"file:///etc/passwd",
+			];
+			for (const target of refusedTargets) {
+				const res = await core.relayHandler({
+					method: "GET",
+					headers: new Headers({ "x-relay-target": target, "x-relay-path": "/zen/v1/models" }),
+					body: null,
+				});
+				assert.equal(res.status, 403, `worker ${index}: ${target} must be refused`);
+			}
+			assert.equal(fetched.length, index, `worker ${index}: a refused target must never reach fetch`);
+
+			const relayed = await core.relayHandler({
+				method: "GET",
+				headers: new Headers({
+					"x-relay-target": "https://opencode.ai",
+					"x-relay-path": "/zen/v1/models",
+					"x-relay-auth": "not-the-deployment-secret",
+				}),
+				body: null,
+			});
+			assert.equal(relayed.status, 200, `worker ${index}: the whitelisted target must relay`);
+			assert.equal(fetched[index].url, "https://opencode.ai/zen/v1/models");
+			for (const hop of ["host", "x-relay-target", "x-relay-path", "x-relay-auth"]) {
+				assert.equal(
+					fetched[index].headers.get(hop),
+					null,
+					`worker ${index}: ${hop} must never be forwarded upstream`,
+				);
+			}
+		}
+	} finally {
+		globalThis.fetch = realFetch;
 	}
 });
 

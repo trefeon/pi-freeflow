@@ -18,8 +18,8 @@
  *
  * freeflow serves ONLY OMP and Pi hosts. Either host may send any of its tools
  * (see src/tool-translation.ts for the canonical inventories) in any wire shape,
- * so enforcement renames caller placeholders to lowercase (Bash -> bash,
- * retargeting tool_choice), translates caller tools to the target path's shape
+ * so enforcement renames caller placeholders to lowercase (Bash -> bash),
+ * translates caller tools to the target path's shape
  * (Pi find -> upstream glob via the translator), and only then injects the
  * missing placeholders. Caller tools (ls, powershell, find, web_search, ...)
  * are never dropped. Injected placeholder calls are cloaked from downstream
@@ -34,7 +34,6 @@ import {
  buildFindGlobRestore,
  isOmpLikeCaller,
  restoreToolNameForCaller,
- retargetToolChoiceForUpstream,
  sanitizeUpstreamToolName,
  translateToolsForPath,
  upstreamToolNameFor,
@@ -51,7 +50,9 @@ const EFFORT_DESCENDING: ThinkingLevel[] = ["max", "xhigh", "high", "medium", "l
 /**
  * Find the highest supported effort for a model whose thinkingLevelMap
  * declares the requested effort as null. Returns null when no clamp is
- * needed (effort is supported or model has no map).
+ * needed (effort is supported or model has no map). The one supported effort
+ * that is still rewritten is `ultra` (see below): it is an alias, never a
+ * value the gateway enumerates.
  */
 function clampedEffortFor(model: string, effort: string): string | null {
  const def = getModelDef(model);
@@ -59,12 +60,19 @@ function clampedEffortFor(model: string, effort: string): string | null {
  const map = def.thinkingLevelMap;
  // "off" means disable reasoning entirely — never clamp it even when map says null
  if (effort.toLowerCase() === "off") return null;
- // "ultra" is an unofficial alias for beyond-max; treat as "max"
- const key = (effort.toLowerCase() === "ultra" ? "max" : effort.toLowerCase()) as ThinkingLevel;
+ // "ultra" is an unofficial alias for beyond-max: treated as "max" for the
+ // support test, and rewritten to the model's own mapped value below. Using
+ // the alias only for the clamp test left `ultra` on the wire, and the
+ // gateway answers 400 for every effort level its model does not enumerate.
+ const isUltra = effort.toLowerCase() === "ultra";
+ const key = (isUltra ? "max" : effort.toLowerCase()) as ThinkingLevel;
+ // Alias of a supported level: rewrite, because upstream knows the level, not
+ // the alias.
+ if (isUltra && key in map && map[key] !== null && map[key] !== undefined) return map[key];
  // Effort is supported (non-null) → no clamp
  if (key in map && map[key] !== null && map[key] !== undefined) return null;
  // Effort key is unknown and not "ultra" → let upstream decide
- if (!(key in map) && effort.toLowerCase() !== "ultra") return null;
+ if (!(key in map) && !isUltra) return null;
  // Find highest supported effort
  for (const level of EFFORT_DESCENDING) {
   if (map[level] !== null && map[level] !== undefined) return level;
@@ -144,27 +152,6 @@ export function normalizePlaceholderCase(body: Record<string, unknown>): CaseRes
   holder.name = lower;
  }
  return restore;
-}
-
-/**
- * Retarget a caller tool_choice that names a placeholder in original casing
- * ({function:{name}}, {name}) to the lowercased name. String choices
- * ("auto", ...) and non-placeholder names pass untouched. Request-side only.
- */
-export function retargetToolChoice(body: Record<string, unknown>): void {
- const choice = body.tool_choice;
- if (!choice || typeof choice !== "object" || Array.isArray(choice)) return;
- const c = choice as Record<string, unknown>;
- const fn =
-  c.function && typeof c.function === "object" && !Array.isArray(c.function)
-   ? (c.function as Record<string, unknown>)
-   : null;
- if (fn && typeof fn.name === "string" && isPlaceholderToolName(fn.name)) {
-  fn.name = (fn.name as string).toLowerCase();
- }
- if (typeof c.name === "string" && isPlaceholderToolName(c.name)) {
-  c.name = (c.name as string).toLowerCase();
- }
 }
 
 /** Restore caller casing on one downstream tool name (bounded map, else verbatim). */
@@ -482,7 +469,7 @@ export function normalizeResponsesBody(body: Record<string, unknown>): void {
 
 /**
  * Enforce the full OpenCode free-tier client fingerprint on a parsed request body.
- * Caller placeholders are lowercased (Bash -> bash, tool_choice retargeted),
+ * Caller placeholders are lowercased (Bash -> bash),
  * tools translated to the target path's wire shape (Pi find -> upstream glob via
  * src/tool-translation.ts), then the missing slots injected in that shape: real
  * executable definitions for OMP-like callers (ask/task/todo/hub/lsp present,
@@ -526,14 +513,11 @@ export function enforceOpencodeFingerprint(
  body.stream = true;
 
  const caseRestore = normalizePlaceholderCase(body);
- retargetToolChoice(body);
 
+ // No tool_choice retargeting here: enforceAutoToolChoice above already
+ // deleted every non-"auto" choice (Zen accepts only "auto"), so the only
+ // survivor is the string "auto" — nothing to rename, no choice to carry.
  const findGlob = buildFindGlobRestore(Array.isArray(body.tools) ? body.tools : []);
- // Caller tool_choice naming `find` must ride upstream as `glob` — the rename
- // above collapses the declaration, so an unretargeted choice dangles.
- if (body.tool_choice !== undefined) {
-  body.tool_choice = retargetToolChoiceForUpstream(body.tool_choice, findGlob) as Record<string, unknown> | string;
- }
  // Captured before translation and injection: the map is keyed by CALLER tool
  // name (what arrives downstream), and injected placeholders must not be
  // repairable.
@@ -584,6 +568,28 @@ export function enforceOpencodeFingerprint(
  // output-aggregator; real OMP definitions execute normally.
 
  return { clientRequestedStream, callerHadTools, addedTools: after > before, caseRestore, findGlob, injected, injectedReal, argSchemas };
+}
+
+/**
+ * SSE field line at a line start (`data:`/`event:`), CRLF-tolerant. One source
+ * of truth for every "is this actually an event stream?" decision: the body
+ * gate in src/stream-pipe.ts, the proxy's aggregate gates, and
+ * convertSseToJson's own guard.
+ *
+ * A substring test is not enough. A plain-JSON 200 whose text merely CONTAINS
+ * `data:` — a bash command mentioning `metadata:`, a base64 `data:image/png`
+ * blob, `multipart/form-data:` — used to be fed to the SSE aggregator and
+ * replaced by an empty synthesized completion (content null, tool calls gone,
+ * HTTP 200). Line anchoring keeps such bodies byte-identical. Lives here
+ * rather than next to stream-pipe's former SSE_START_RE because that module
+ * already imports this one: exporting it from there would close an import
+ * cycle.
+ */
+const SSE_FIELD_LINE_RE = /^(data|event):/m;
+
+/** True when `text` carries a real SSE field line at a line start. */
+export function looksLikeSse(text: string): boolean {
+ return text.length > 0 && SSE_FIELD_LINE_RE.test(text);
 }
 
 /**
@@ -1090,7 +1096,7 @@ export function convertSseToJson(
 ): string {
  if (!sseText || typeof sseText !== "string") return sseText;
  const trimmed = sseText.trim();
- if (!trimmed.includes("data:")) {
+ if (!looksLikeSse(trimmed)) {
   return sseText;
  }
  try {

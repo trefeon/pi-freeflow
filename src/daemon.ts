@@ -81,7 +81,7 @@ export async function seedCatalog(): Promise<void> {
  * starts the lease GC, and installs signal handlers so the daemon exits
  * cleanly on SIGTERM/SIGINT (e.g. /freeflow kill, taskkill, Ctrl+C).
  */
-export async function runDaemon(): Promise<void> {
+async function runDaemon(): Promise<void> {
  let server: { close(): void } | null = null;
  const retire = (why: string): void => {
   logInfo(`daemon retiring: ${why}`);

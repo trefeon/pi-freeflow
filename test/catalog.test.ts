@@ -212,6 +212,31 @@ test("refreshCatalog overlays a partial cache without losing static ids or the c
 		assert.equal(kept.maxTokens, entry.maxTokens);
 	}
 });
+test("refreshCatalog overlays the cache on a 304 so dynamic ids survive (issue: 304 drops them)", async () => {
+	// A 304 revalidates upstream before any 200 merge, so the cached list is the
+	// only record of a dynamically discovered id this process never merged: the
+	// 304 branch must overlay it exactly like the stale-cache branches, or the
+	// id vanishes from this process's catalog.
+	const dynamic = model("zen-304-dynamic-free", 4242, "opencode");
+	writeCacheFile(
+		[...ALL_MODELS.map((m) => ({ ...m, source: getModelUpstream(m.id) })), dynamic],
+		CATALOG_CACHE_TTL_MS + 60_000,
+	);
+	const requested: string[] = [];
+	const result = await withFetch(
+		async (url) => {
+			requested.push(String(url));
+			return new Response(null, { status: 304, headers: { etag: '"legacy-cache"' } });
+		},
+		() => refreshCatalog(false),
+	);
+	assert.equal(requested.length, 1, "the conditional refresh must revalidate upstream exactly once");
+	const kept = result.find((m) => m.id === dynamic.id);
+	assert.ok(kept, "a 304 must keep the cached dynamic free id");
+	assert.equal(kept.maxTokens, 4242, "the cached row, not a rebuilt one, must survive");
+	assertIdsPresent(result, STATIC_IDS_ABSENT_FROM_LEGACY_CACHE, "a 304 must keep the static base");
+});
+
 test("step-5-preview entries stay dead across both lanes (2026-10-16)", () => {
 	assert.equal(DEAD_MODEL_IDS.has("step-5-preview-free"), true);
 	assert.equal(DEAD_MODEL_IDS.has("stepfun/step-5-preview-free"), true);

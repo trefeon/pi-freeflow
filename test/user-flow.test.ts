@@ -42,9 +42,8 @@ import { createCommandSpec } from "../src/commands.ts";
 import {
  checkForUpdateInBackground,
  getCachedUpdate,
- fetchLatestVersion,
- getLocalVersion,
 } from "../src/update-checker.ts";
+import { fetchLatestVersion, getLocalVersion } from "../src/update-core.ts";
 import { ALL_MODELS } from "../src/models.ts";
 import type {
  ExtensionAPI,
@@ -58,6 +57,7 @@ import type {
 // ── Sandbox isolation (shared with user-lifecycle.test.ts) ──────────────────
 
 import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
+import { authHeaders } from "./_auth.ts";
 
 // ── Response / body stubs ───────────────────────────────────────────────────
 
@@ -269,7 +269,7 @@ test("user flow [2/6] direct-mode chat streams SSE chunks and a terminal event t
    async (port) => {
     const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
      method: "POST",
-     headers: { "content-type": "application/json" },
+     headers: { "content-type": "application/json", ...authHeaders() },
      body: chatBody(OPENCODE_MODEL, true),
     });
     assert.equal(res.status, 200);
@@ -317,7 +317,7 @@ test("user flow [3a/6] relay 429 rolls to the next healthy relay and marks the f
    async (port) => {
     const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
      method: "POST",
-     headers: { "content-type": "application/json" },
+     headers: { "content-type": "application/json", ...authHeaders() },
      body: chatBody(OPENCODE_MODEL),
     });
     assert.equal(res.status, 200, "429 must never leak to the client");
@@ -369,7 +369,7 @@ test("user flow [3b/6] all relays exhausted falls back to direct upstream withou
    async (port) => {
     const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
      method: "POST",
-     headers: { "content-type": "application/json" },
+     headers: { "content-type": "application/json", ...authHeaders() },
      body: chatBody(OPENCODE_MODEL),
     });
     assert.equal(res.status, 200, "client must not see relay failures");
