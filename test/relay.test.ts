@@ -20,10 +20,6 @@ import { startProxy } from "../src/proxy.ts";
 import { authHeaders } from "./_auth.ts";
 import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
 
-test("relayFetch uses global fetch (keep-alive via Node default)", () => {
-	// 0 deps now — global fetch pools keep-alive without custom undici Agent
-	assert.equal(typeof relayFetch, "function");
-});
 test("relayFetch direct uses keepAlive dispatcher (connection: keep-alive)", async () => {
 	const seen: string[] = [];
 	const server = http.createServer((req, res) => {

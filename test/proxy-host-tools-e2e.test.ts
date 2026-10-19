@@ -10,11 +10,7 @@ import {
 import http from "node:http";
 import { startProxy } from "../src/proxy.ts";
 import { authHeaders } from "./_auth.ts";
-import {
-	OPENCODE_FINGERPRINT_TOOLS,
-	convertSseToJson,
-	enforceOpencodeFingerprint,
-} from "../src/opencode-fingerprint.ts";
+import { OPENCODE_FINGERPRINT_TOOLS } from "../src/opencode-fingerprint.ts";
 import {
 	_resetFreeTierHintForTest,
 	_resetUpstreamHealthForTest,
@@ -150,6 +146,42 @@ function chatToolDelta(index: number, id: string, name: string, args: string): u
 	return { tool_calls: [{ index, id, type: "function", function: { name, arguments: args } }] };
 }
 
+/**
+ * Frozen accepted answer for the chat `rawSse` below: the exact aggregated body
+ * a non-streaming caller must receive — upstream ids/arguments verbatim, the
+ * upstream `glob` restored to the caller's `find`, the caller's `Bash` casing
+ * back, one choice with finish_reason "tool_calls".
+ *
+ * This is a literal on purpose. Deriving the expectation by re-running the
+ * aggregator (`convertSseToJson`) over the same bytes lets both sides of the
+ * assertion move together, so the test could not fail for the real contract
+ * (that is what it did before). Change this literal only when the wire contract
+ * itself changes, and say why in the commit.
+ */
+const FROZEN_CHAT_AGGREGATE: Record<string, unknown> = {
+	id: "chatcmpl-e2e",
+	object: "chat.completion",
+	// Wall clock at capture; normalized away before the comparison below.
+	created: 1_792_406_084,
+	model: CHAT_MODEL,
+	choices: [
+		{
+			index: 0,
+			message: {
+				role: "assistant",
+				content: null,
+				tool_calls: [
+					{ id: "call_find_1", type: "function", function: { name: "find", arguments: '{"pattern":"*.ts"}' } },
+					{ id: "call_bash_1", type: "function", function: { name: "Bash", arguments: '{"command":"ls"}' } },
+					{ id: "call_ask_1", type: "function", function: { name: "ask", arguments: '{"question":"q?"}' } },
+					{ id: "call_read_1", type: "function", function: { name: "read", arguments: '{"path":"x"}' } },
+				],
+			},
+			finish_reason: "tool_calls",
+		},
+	],
+};
+
 test("proxy e2e: chat non-stream carries mixed host tools upstream and restores names on aggregate", async () => {
 	const callerTools = mixedCallerTools();
 	const callerChoice = { type: "function", function: { name: "ask" } };
@@ -221,25 +253,39 @@ test("proxy e2e: chat non-stream carries mixed host tools upstream and restores 
 	assert.equal(custom.strict, false);
 	assert.equal(custom["x-custom"], true);
 	for (const extra of ["todo", "ast_grep", "ls", "powershell"]) byUpstreamName(tools, extra);
-	// Client non-stream gets aggregated JSON via the convertSseToJson path.
-	const probe: Record<string, unknown> = { tools: JSON.parse(JSON.stringify(callerTools)), stream: false };
-	const fp = enforceOpencodeFingerprint(probe, "/v1/chat/completions");
+	// Client non-stream gets aggregated JSON: compare against the frozen body,
+	// never against a second aggregation of the same bytes.
 	const actual = JSON.parse(clientBody) as Record<string, unknown>;
-	const expected = JSON.parse(convertSseToJson(rawSse, "/v1/chat/completions", true, fp.caseRestore, fp.findGlob, fp.injected)) as Record<string, unknown>;
 	// `created` is stamped from the wall clock when each body is built, so a
-	// second boundary between the proxy's answer and this expectation moves it
+	// second boundary between the proxy's answer and this expectation moved it
 	// by one — comparing it made this test fail about once every few hundred
-	// runs (seen on CI). Compare every other field strictly, and check the
-	// stamp is a real epoch-seconds value rather than pinning its digit.
+	// runs (seen on CI). Pin the stamp on both sides, and check it is a real
+	// epoch-seconds value rather than pinning its digit.
 	assert.ok(Number.isInteger(actual.created) && (actual.created as number) > 1_600_000_000, "created must be an epoch-seconds stamp");
-	assert.equal(typeof expected.created, "number");
-	delete actual.created;
-	delete expected.created;
-	assert.deepEqual(actual, expected);
+	assert.deepEqual({ ...actual, created: 0 }, { ...FROZEN_CHAT_AGGREGATE, created: 0 });
 	const msg = (JSON.parse(clientBody) as { choices: Array<{ message: { tool_calls?: Array<{ function: { name: string } }> } }> }).choices[0].message;
 	const names = (msg.tool_calls ?? []).map((tc) => tc.function.name);
 	assert.deepEqual(names, ["find", "Bash", "ask", "read"], "upstream glob restores to caller find, bash restores to caller Bash, injected read executes (real def, not cloaked)");
 });
+
+/**
+ * Frozen accepted answer for the responses `rawSse` below: the
+ * `response.completed` payload, with upstream `glob`/`bash` restored to the
+ * caller's `find`/`Bash` and every id/argument/other output item verbatim.
+ * Literal on purpose; see FROZEN_CHAT_AGGREGATE.
+ */
+const FROZEN_RESPONSES_AGGREGATE: Record<string, unknown> = {
+	id: "resp_e2e",
+	object: "response",
+	status: "completed",
+	output: [
+		{ type: "function_call", id: "fc_find", name: "find", arguments: '{"pattern":"*.ts"}' },
+		{ type: "function_call", id: "fc_bash", name: "Bash", arguments: '{"command":"ls"}' },
+		{ type: "function_call", id: "fc_ask", name: "ask", arguments: '{"question":"q?"}' },
+		{ type: "function_call", id: "fc_read", name: "read", arguments: '{"path":"x"}' },
+		{ type: "message", id: "msg_done", role: "assistant", status: "completed", content: [{ type: "output_text", text: "done" }] },
+	],
+};
 
 test("proxy e2e: responses non-stream stores false, flat tools, function_call restore", async () => {
 	const callerTools = mixedCallerTools();
@@ -298,15 +344,38 @@ test("proxy e2e: responses non-stream stores false, flat tools, function_call re
 	const custom = byUpstreamName(tools, "my_custom_tool");
 	assert.equal(custom.strict, false);
 	assert.equal(custom["x-custom"], true);
-	const probe: Record<string, unknown> = { tools: JSON.parse(JSON.stringify(callerTools)), stream: false };
-	const fp = enforceOpencodeFingerprint(probe, "/v1/responses");
-	const expected = JSON.parse(convertSseToJson(rawSse, "/v1/responses", true, fp.caseRestore, fp.findGlob, fp.injected));
-	assert.deepEqual(JSON.parse(clientBody), expected);
+	// Frozen accepted answer: the response.completed object with the upstream
+	// `glob`/`bash` restored to the caller's `find`/`Bash`, ids and arguments
+	// verbatim, every non-call output item untouched. A literal, not a second
+	// aggregation of rawSse — see FROZEN_CHAT_AGGREGATE for why.
+	assert.deepEqual(JSON.parse(clientBody), FROZEN_RESPONSES_AGGREGATE);
 	const calls = ((JSON.parse(clientBody) as { output: Array<Record<string, unknown>> }).output ?? [])
 		.filter((item) => item.type === "function_call")
 		.map((item) => String(item.name));
 	assert.deepEqual(calls, ["find", "Bash", "ask", "read"], "upstream glob restores to caller find, injected read executes (real def, not cloaked)");
 });
+
+/**
+ * Frozen accepted answer for the messages `rawSse` below: the aggregated
+ * Anthropic message — one tool_use block per streamed call, upstream `glob`
+ * restored to the caller's `find` and `bash` to the caller's `Bash`, the
+ * injected `grep` call surfaced as itself, stop_reason from message_delta,
+ * no usage (the stream carried none). Literal on purpose; see
+ * FROZEN_CHAT_AGGREGATE.
+ */
+const FROZEN_MESSAGES_AGGREGATE: Record<string, unknown> = {
+	id: "msg_e2e",
+	type: "message",
+	role: "assistant",
+	model: RESPONSES_MODEL,
+	content: [
+		{ type: "tool_use", id: "tu_find", name: "find", input: { pattern: "*.ts" } },
+		{ type: "tool_use", id: "tu_bash", name: "Bash", input: { command: "ls" } },
+		{ type: "tool_use", id: "tu_ask", name: "ask", input: { question: "q?" } },
+		{ type: "tool_use", id: "tu_grep", name: "grep", input: { pat: "x" } },
+	],
+	stop_reason: "tool_use",
+};
 
 test("proxy e2e: messages non-stream uses anthropic shape and restores tool_use names", async () => {
 	const callerTools = mixedCallerTools();
@@ -358,10 +427,8 @@ test("proxy e2e: messages non-stream uses anthropic shape and restores tool_use 
 	assert.equal(glob.description, FIND_DESC);
 	assert.deepEqual(glob.input_schema, FIND_PARAMS);
 	assert.equal(String(byUpstreamName(tools, "bash").name), "bash");
-	const probe: Record<string, unknown> = { tools: JSON.parse(JSON.stringify(callerTools)), stream: false };
-	const fp = enforceOpencodeFingerprint(probe, "/v1/messages");
-	const expected = JSON.parse(convertSseToJson(rawSse, "/v1/messages", true, fp.caseRestore, fp.findGlob, fp.injected));
-	assert.deepEqual(JSON.parse(clientBody), expected);
+	// Frozen accepted answer; never a second aggregation of rawSse.
+	assert.deepEqual(JSON.parse(clientBody), FROZEN_MESSAGES_AGGREGATE);
 	const blocks = ((JSON.parse(clientBody) as { content: Array<Record<string, unknown>> }).content ?? [])
 		.filter((b) => b.type === "tool_use")
 		.map((b) => String(b.name));

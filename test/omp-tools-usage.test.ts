@@ -20,7 +20,6 @@ import {
 	buildFindGlobRestore,
 	restoreToolNameForCaller,
 	translateToolsForPath,
-	sanitizeUpstreamToolName,
 	upstreamToolNameFor,
 } from "../src/tool-translation.ts";
 
@@ -30,6 +29,16 @@ type Style = "chat" | "responses" | "anthropic";
 
 interface Fixture {
 	name: string;
+	/**
+	 * Frozen expected wire name for this fixture: what the upstream request
+	 * must carry. Literal, never computed by calling the production sanitizer,
+	 * or a sanitiser bug would move both sides of the assertion. Equal to
+	 * `name` when the caller name already matches the upstream shape
+	 * `^[a-zA-Z0-9_.-]+$`; otherwise the folded form (`xd://report_issue` ->
+	 * `xd___report_issue`), because upstream answers
+	 * `400 \`name\` must match` on anything else.
+	 */
+	wire: string;
 	description: string;
 	parameters: Record<string, unknown>;
 	strict?: boolean;
@@ -43,156 +52,182 @@ const S = (desc: string): Record<string, unknown> => ({ type: "string", descript
 const OMP_FIXTURES: Fixture[] = [
 	{
 		name: "read",
+		wire: "read",
 		description: "Read a file, directory listing, image, document, or internal URL into context",
 		parameters: O({ path: S("file, directory, or internal URL to read"), "offset?": S("starting line"), "limit?": S("max lines") }, ["path"]),
 		strict: true,
 	},
 	{
 		name: "bash",
+		wire: "bash",
 		description: "Execute a shell command in the workspace",
 		parameters: O({ command: S("command to execute"), "cwd?": S("working directory"), "timeout?": S("timeout ms") }, ["command"]),
 		strict: true,
 	},
 	{
 		name: "edit",
+		wire: "edit",
 		description: "Apply a patch edit to a file on disk",
 		parameters: O({ path: S("file path"), edits: S("patch edit entries") }, ["path", "edits"]),
 		strict: true,
 	},
 	{
 		name: "ast_grep",
+		wire: "ast_grep",
 		description: "Search code with AST patterns (structural grep)",
 		parameters: O({ pat: S("ast pattern"), "path?": S("file, directory, or glob to search"), "skip?": S("matches to skip") }, ["pat"]),
 		strict: true,
 	},
 	{
 		name: "ast_edit",
+		wire: "ast_edit",
 		description: "Structural AST-aware rewrites across files",
 		parameters: O({ ops: S("rewrite ops"), paths: S("files, directories, or globs to rewrite") }, ["ops", "paths"]),
 		strict: true,
 	},
 	{
 		name: "ask",
+		wire: "ask",
 		description: "Ask the user a clarifying question",
 		parameters: O({ questions: S("questions to ask") }, ["questions"]),
 		strict: true,
 	},
 	{
 		name: "debug",
+		wire: "debug",
 		description: "Debugger access: breakpoints, stepping, and thread inspection",
 		parameters: O({ action: S("debug action"), "program?": S("debug target path") }, ["action"]),
 		strict: true,
 	},
 	{
 		name: "eval",
+		wire: "eval",
 		description: "Run one step of code in a persistent kernel",
 		parameters: O({ language: S("runtime: py or js"), code: S("code to run") }, ["language", "code"]),
 		strict: true,
 	},
 	{
 		name: "github",
+		wire: "github",
 		description: "GitHub operations: repos, PRs, search, checkout, Actions watch",
 		parameters: O({ op: S("github operation"), "repo?": S("owner/repo") }, ["op"]),
 		strict: true,
 	},
 	{
 		name: "glob",
+		wire: "glob",
 		description: "Fast file search by glob pattern",
 		parameters: O({ "path?": S("glob or directory to search"), "limit?": S("max results") }),
 		strict: true,
 	},
 	{
 		name: "grep",
+		wire: "grep",
 		description: "Search file contents with a regex pattern",
 		parameters: O({ pattern: S("regex pattern"), "path?": S("file, directory, or glob to search") }, ["pattern"]),
 		strict: true,
 	},
 	{
 		name: "lsp",
+		wire: "lsp",
 		description: "Symbol-aware code intelligence from language servers",
 		parameters: O({ action: S("lsp action"), "file?": S("source file") }, ["action"]),
 		strict: true,
 	},
 	{
 		name: "checkpoint",
+		wire: "checkpoint",
 		description: "Create a git-based checkpoint to save session state",
 		parameters: O({ goal: S("investigation goal") }, ["goal"]),
 		strict: true,
 	},
 	{
 		name: "rewind",
+		wire: "rewind",
 		description: "Rewind to a previously created checkpoint",
 		parameters: O({ report: S("investigation findings") }, ["report"]),
 		strict: true,
 	},
 	{
 		name: "security_scan",
+		wire: "security_scan",
 		description: "Repository security scans: plan, start, inspect, validate",
 		parameters: O({ action: S("scan action"), "plan_id?": S("plan id") }, ["action"]),
 		strict: true,
 	},
 	{
 		name: "task",
+		wire: "task",
 		description: "Spawn subagents to complete delegated tasks",
 		parameters: O({ task: S("delegated task instructions"), "agent?": S("agent type") }, ["task"]),
 		strict: false,
 	},
 	{
 		name: "hub",
+		wire: "hub",
 		description: "Message peer agents, control background jobs, supervise processes",
 		parameters: O({ op: S("hub operation") }, ["op"]),
 		strict: true,
 	},
 	{
 		name: "todo",
+		wire: "todo",
 		description: "Write a structured todo list to track progress within a session",
 		parameters: O({ op: S("todo operation"), "task?": S("task content") }, ["op"]),
 		strict: true,
 	},
 	{
 		name: "web_search",
+		wire: "web_search",
 		description: "Search the web for up-to-date information",
 		parameters: O({ query: S("search query"), "limit?": S("max results") }, ["query"]),
 		strict: true,
 	},
 	{
 		name: "write",
+		wire: "write",
 		description: "Create or overwrite a file on disk",
 		parameters: O({ path: S("file path"), content: S("file content") }, ["path", "content"]),
 		strict: true,
 	},
 	{
 		name: "memory_edit",
+		wire: "memory_edit",
 		description: "Update, forget, or invalidate stored memories",
 		parameters: O({ op: S("memory edit operation"), id: S("memory id from recall output") }, ["op", "id"]),
 		strict: true,
 	},
 	{
 		name: "retain",
+		wire: "retain",
 		description: "Store important facts in long-term memory",
 		parameters: O({ items: S("items to remember") }, ["items"]),
 		strict: true,
 	},
 	{
 		name: "recall",
+		wire: "recall",
 		description: "Search memory for relevant prior context",
 		parameters: O({ query: S("natural language search query") }, ["query"]),
 		strict: true,
 	},
 	{
 		name: "reflect",
+		wire: "reflect",
 		description: "Synthesize an answer from long-term memory",
 		parameters: O({ query: S("question to answer") }, ["query"]),
 		strict: true,
 	},
 	{
 		name: "learn",
+		wire: "learn",
 		description: "Capture a reusable lesson to memory (and optionally a managed skill)",
 		parameters: O({ memory: S("the durable lesson to remember"), "context?": S("source context") }, ["memory"]),
 		strict: true,
 	},
 	{
 		name: "manage_skill",
+		wire: "manage_skill",
 		description: "Create, update, or delete an isolated managed skill",
 		parameters: O({ action: S("skill action"), name: S("kebab-case skill name") }, ["action", "name"]),
 		strict: true,
@@ -200,11 +235,13 @@ const OMP_FIXTURES: Fixture[] = [
 	// browser/computer declare no `strict` on the host: fixtures omit it too.
 	{
 		name: "browser",
+		wire: "browser",
 		description: "Drive real Chromium tabs: open, observe, act, run JavaScript",
 		parameters: O({ action: S("browser operation"), "url?": S("url to open") }, ["action"]),
 	},
 	{
 		name: "computer",
+		wire: "computer",
 		description: "Control the host desktop: windows, screenshots, input, AX trees",
 		parameters: O({ action: S("computer operation"), "code?": S("js body to run") }, ["action"]),
 	},
@@ -214,16 +251,19 @@ const OMP_FIXTURES: Fixture[] = [
 const HIDDEN_FIXTURES: Fixture[] = [
 	{
 		name: "yield",
+		wire: "yield",
 		description: "Submit the subagent result",
 		parameters: O({ "result?": S("result payload") }),
 	},
 	{
 		name: "goal",
+		wire: "goal",
 		description: "Record the session goal",
 		parameters: O({ goal: S("goal text") }, ["goal"]),
 	},
 	{
 		name: "think",
+		wire: "think",
 		description: "Record private scratchpad thoughts",
 		parameters: O({ thought: S("thought text") }, ["thought"]),
 		strict: true,
@@ -235,18 +275,21 @@ const HIDDEN_FIXTURES: Fixture[] = [
 const EXTRA_FIXTURES: Fixture[] = [
 	{
 		name: "mcp__github__search_code",
+		wire: "mcp__github__search_code",
 		description: "MCP github tool: search code",
 		parameters: O({ query: S("search query") }, ["query"]),
 		strict: true,
 	},
 	{
 		name: "my_custom_tool",
+		wire: "my_custom_tool",
 		description: "Custom user tool wrapped by CustomToolAdapter",
 		parameters: O({ input: S("tool input") }, ["input"]),
 		strict: true,
 	},
 	{
 		name: "xd://report_issue",
+		wire: "xd___report_issue",
 		description: "Mounted xd device tool",
 		parameters: O({ issue: S("issue text") }, ["issue"]),
 	},
@@ -329,9 +372,10 @@ for (const fx of ALL_FIXTURES) {
 				);
 				assert.equal(
 					upstreamNameOf(out),
-					sanitizeUpstreamToolName(fx.name, new Set()),
-					`${where}: wire name is the caller's, folded only if upstream would reject it`,
+					fx.wire,
+					`${where}: wire name is the frozen literal (caller name, folded only when upstream would reject it)`,
 				);
+				assert.match(fx.wire, /^[a-zA-Z0-9_.-]+$/, `${where}: frozen wire name satisfies the upstream shape`);
 				assert.equal(upstreamDescOf(out), fx.description, `${where}: description verbatim`);
 				assert.deepEqual(upstreamParamsOf(out), fx.parameters, `${where}: params verbatim`);
 				if (typeof fx.strict === "boolean") {
@@ -405,6 +449,7 @@ test("omp usage: OMP glob untouched, never triggers find restore", () => {
 const CUSTOM_FIXTURES: Fixture[] = [
 	{
 		name: "generate_image",
+		wire: "generate_image",
 		description: "Generate or edit an image from a text description",
 		parameters: O({
 			subject: S("main subject of the image"),
@@ -416,6 +461,7 @@ const CUSTOM_FIXTURES: Fixture[] = [
 	},
 	{
 		name: "tts",
+		wire: "tts",
 		description: "Synthesize speech audio from text",
 		parameters: O({
 			text: S("text to speak"),
