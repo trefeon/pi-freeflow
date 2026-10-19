@@ -71,6 +71,7 @@ test("1M context window models are properly configured", () => {
 		"nemotron-3-ultra-free",
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
+		"poolside/laguna-s-2.1:free",
 		"thinkingmachines/inkling-small:free",
 	];
 
@@ -124,9 +125,9 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
 		const glm = getModelDef("glm-5.3-flash-free");
 		assert.ok(glm);
 		assert.equal(glm.reasoning, true);
-		assert.equal(glm.contextWindow, 1_000_000);
-		assert.equal(glm.maxTokens, 32_000);
-		assert.deepEqual(glm.input, ["text", "image"]);
+		assert.equal(glm.contextWindow, 1_048_576);
+		assert.equal(glm.maxTokens, 131_072);
+		assert.deepEqual(glm.input, ["text", "image", "video"]);
 		assert.equal(glm.thinkingLevelMap?.minimal, "minimal");
 		assert.equal(glm.thinkingLevelMap?.max, "max");
 		assert.equal(getModelUpstream("glm-5.3-flash-free"), "opencode");
@@ -233,38 +234,54 @@ test("every non-reasoning model stays plain (no thinkingLevelMap)", () => {
  }
 });
 test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
- // Values locked after 2026-08-30 live probing (via relay pool + upstream
- // error messages). Change only with a fresh live verification.
+ // Values reconciled 2026-10-20 against models.dev, the live Kilo gateway
+ // listing, the live OpenRouter listing and the OMP committed catalog: a free
+ // and a non-free variant of the same underlying model are treated as ONE
+ // model, and each field takes the highest spec across those twins
+ // (context = highest, maxTokens = highest published output, reasoning = OR,
+ // input = union of host-representable modalities). Two source artifacts are
+ // discarded rather than merged: OpenRouter's shared 943717/943718 output
+ // ceiling, and the lazy `max == ctx` echo a provider returns when a model has
+ // no real output spec. Lane exceptions stay pinned to what the lane really
+ // serves, not what its twin publishes: cat-jam (262K, measured recall ceiling),
+ // the OVH contexts (OVH's own advertised windows) and dots-note (the 384K its
+ // only provider serves, not the 512K the gateway advertises). Change only with
+ // a fresh live verification.
  const locked: Record<string, { ctx: number; max: number; reasoning: boolean }> = {
   // OpenCode Zen
   // Added 2026-10-13 (live: Zen listing + keyless chat 200; chat-only,
   // /v1/responses answers 400). Efforts re-probed 2026-10-16: low..max all
   // answer 200; minimal/none/bogus answer 400 with the supported set
   // (max/xhigh/high/medium/low) enumerated in the error.
-  // Context is 262_144 — the published value, matching where recall actually
-  // fails: the needle is recalled at 248,232 prompt tokens and lost at 250,272,
-  // while the gateway keeps answering 200 all the way to ~1M and truncates
-  // silently. Acceptance is not capability; do not raise this from a 200.
+  // Context is 262_144 — the MEASURED ceiling, not the published one: the
+  // needle is recalled at 248,232 prompt tokens and lost at 250,272, while the
+  // gateway keeps answering 200 all the way to ~1M and truncates silently.
+  // Acceptance is not capability; do not raise this from a 200, and do not
+  // raise it to the twin's published 1,048,576 either.
   "cat-jam-free": { ctx: 262_144, max: 131_072, reasoning: true },
   // Added 2026-09-22 (live: Zen /v1/models + keyless chat 200 on mimo-v2.6-flash-free)
   "mimo-v2.6-flash-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // Added 2026-09-23 (live: Zen listing + keyless chat 200; models.dev 1M ctx / 512K out)
   "space-bunny-free": { ctx: 1_048_576, max: 524_288, reasoning: true },
-  // Added 2026-09-27 (live: Zen listing + keyless chat 200; models.dev 1M ctx / 131K out)
-  "longcat-2.5-preview-free": { ctx: 1_000_000, max: 131_072, reasoning: true },
-  "nemotron-3-ultra-free": { ctx: 1_000_000, max: 128_000, reasoning: true },
+  // Added 2026-09-27 (live: Zen listing + keyless chat 200; models.dev 1,048,576 ctx / 131,072 out)
+  "longcat-2.5-preview-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
+  // Reconciled 2026-10-20: 1,048,576 ctx / 182,520 output per the NVIDIA family
+  // origin and the paid OpenRouter twin (Zen's free entry advertises 1M / 128K).
+  "nemotron-3-ultra-free": { ctx: 1_048_576, max: 182_520, reasoning: true },
   "nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 262_144, reasoning: true },
   // Added 2026-10-16 (issue #62): live Zen /v1/models listing + chat 200 through
-  // the fingerprint path; context per the models.dev opencode twin and the
-  // NVIDIA family origin (declared 1,000,000, round and conservative), output
-  // 131,072 per models.dev.
-  "nemotron-3.5-super-vl-free": { ctx: 1_000_000, max: 131_072, reasoning: true },
+  // the fingerprint path. Reconciled 2026-10-20: 1,048,576 ctx (the models.dev
+  // opencode twin and the NVIDIA family origin both publish it) and 235,929
+  // output, the highest published ceiling across the twins.
+  "nemotron-3.5-super-vl-free": { ctx: 1_048_576, max: 235_929, reasoning: true },
   "big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
 	// Added 2026-10-16 (issue #71): Zen v1.19.2 free id, chat 200 through the
-	// fingerprint path; models.dev's 200,000 ctx contradicted by probe (recall
-	// at ~250K words, hard 400 only above ~1M words) — 1,000,000 declared like
-	// the Kilo twin (z-ai/glm-5.3-flash).
-	"glm-5.3-flash-free": { ctx: 1_000_000, max: 32_000, reasoning: true },
+	// fingerprint path. Reconciled 2026-10-20: 1,048,576 ctx / 131,072 output,
+	// matching the non-free twin (z-ai/glm-5.3-flash, Cline lane) and the highest
+	// twin output ceiling; models.dev's 200,000 ctx / 32,000 out under-reports
+	// both (probe recalled a marker at ~250K words; the gateway accepted up to
+	// 131,072).
+	"glm-5.3-flash-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
 	// Added 2026-10-17: Reflection AI's Beam 501B open-weight MoE model, limited-time
 	// free model on Zen (/zen/v1/models: beam-free); boundary probe up to 900k words (~1.1M tokens).
 	"beam-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
@@ -275,23 +292,32 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 	"exo-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // Added 2026-10-15 (live: Zen /v1/models listing + gated-lane 200 carrying the
   // full fingerprint; chat-only, /v1/responses answers 400 ModelProtocolUnsupported).
-  // Context measured, NOT published: the catalog entry for this exact free id
-  // claims 200,000 and the gateway carries a marker planted mid-prompt far past
-  // it — recall holds through prompt_tokens=1,030,800, and an oversized request
-  // is refused with an empty-bodied 400 somewhere above ~1.05M. The published
-  // 200k belongs to the paid deepseek-v4-flash-free, a different model.
-  // Output 384,000 per https://models.dev/models/deepseek/deepseek-v4.1-flash/ and gateway probe
-  "deepseek-v4.1-flash-free": { ctx: 1_000_000, max: 384_000, reasoning: true },
+  // Reconciled 2026-10-20: 1,048,576 ctx now matches the published twin AND the
+  // probe — recall holds through prompt_tokens=1,030,800, and an oversized
+  // request is refused with an empty-bodied 400 somewhere above ~1.05M. The
+  // 200,000 figure this entry used to reject described a different, similarly
+  // named paid id. Output 393,216, the live gateway boundary (384 * 1024) and
+  // the highest twin figure; models.dev rounds it to 384,000.
+  "deepseek-v4.1-flash-free": { ctx: 1_048_576, max: 393_216, reasoning: true },
   // KiloCode Gateway
-  "dots-studio/dots-3-note-preview:free": { ctx: 512_000, max: 512_000, reasoning: true },
-  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": { ctx: 256_000, max: 131_072, reasoning: true },
-  "nvidia/nemotron-3-ultra-550b-a55b:free": { ctx: 1_000_000, max: 128_000, reasoning: true },
+  // Kilo advertises 512,000 ctx / 460,800 out, but the only provider behind
+  // this free id (atlas-cloud) serves a 393,216-token total window; the
+  // max_tokens boundary shifts with prompt_tokens (probed 2026-10-20), so the
+  // declared window is the served one and the output budget keeps 131,072
+  // tokens of prompt headroom.
+  "dots-studio/dots-3-note-preview:free": { ctx: 393_216, max: 262_144, reasoning: true },
+  // Reconciled 2026-10-20: 262,144 ctx (256K was a rounded-down copy) / 65,536 out.
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": { ctx: 262_144, max: 65_536, reasoning: true },
+  // Reconciled 2026-10-20: 1,048,576 ctx / 182,520 output per the NVIDIA family origin.
+  "nvidia/nemotron-3-ultra-550b-a55b:free": { ctx: 1_048_576, max: 182_520, reasoning: true },
   "nvidia/nemotron-3.5-lightning:free": { ctx: 1_000_000, max: 262_144, reasoning: true },
   "nvidia/nemotron-3-super-120b-a12b:free": { ctx: 262_144, max: 262_144, reasoning: true },
   "cohere/north-mini-code:free": { ctx: 256_000, max: 64_000, reasoning: true },
-  "poolside/laguna-s-2.1:free": { ctx: 262_144, max: 32_768, reasoning: true },
+  // Reconciled 2026-10-20: 1,048,576 ctx / 131,072 output per the published twins.
+  "poolside/laguna-s-2.1:free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "poolside/laguna-xs-2.1:free": { ctx: 262_144, max: 32_768, reasoning: true },
-  "liquid/lfm-2.5-2.6b:free": { ctx: 65_536, max: 32_768, reasoning: true },
+  // Reconciled 2026-10-20: 128,000 ctx per the published twin; output stays 32,768.
+  "liquid/lfm-2.5-2.6b:free": { ctx: 128_000, max: 32_768, reasoning: true },
   "kilo-auto/free": { ctx: 256_000, max: 10_000, reasoning: true },
   "openrouter/free": { ctx: 200_000, max: 65_536, reasoning: true },
 	"thinkingmachines/inkling-small:free": { ctx: 1_048_576, max: 262_144, reasoning: true },
@@ -302,18 +328,22 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   "cline-free/muse-spark-1.3-contributor": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "z-ai/glm-5.3-flash": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // OVHcloud AI Endpoints, keyless direct-only. Added 2026-10-13: live
-  // /v1/models listing + keyless chat 200 + SSE with real tool_calls. max is
-  // the conservative FLOOR across twin providers (per-provider caps for the
-  // same model range 4K..256K); reasoning read off a populated `reasoning`
-  // field on a non-tool answer.
-  "ovh-free/gpt-oss-120b": { ctx: 131_072, max: 32_768, reasoning: true },
-  "ovh-free/gpt-oss-20b": { ctx: 131_072, max: 32_768, reasoning: true },
-  "ovh-free/Qwen3.5-397B-A17B": { ctx: 262_144, max: 65_536, reasoning: true },
-  "ovh-free/Qwen3.5-9B": { ctx: 262_144, max: 65_536, reasoning: true },
-  "ovh-free/Qwen3.6-27B": { ctx: 262_144, max: 65_536, reasoning: true },
-  "ovh-free/Qwen3.8-27B": { ctx: 262_144, max: 32_768, reasoning: true },
-  "ovh-free/Mistral-Small-3.2-24B-Instruct-2506": { ctx: 131_072, max: 16_384, reasoning: false },
-  "ovh-free/Meta-Llama-3_3-70B-Instruct": { ctx: 131_072, max: 16_384, reasoning: false },
+  // /v1/models listing + keyless chat 200 + SSE with real tool_calls. Contexts
+  // are OVH's own advertised windows (the lane hard-caps there — a twin with a
+  // larger window on another provider is not served here); max is the highest
+  // published ceiling OVH accepts with a small prompt. OVH's
+  // max_completion_tokens echoes the context window, and prompt + max reaching
+  // that window is refused (probed 2026-10-20): 131,072 is accepted for every
+  // Qwen, while the 32K-output models use their published 32,768.
+  // reasoning is read off a populated `reasoning` field on a non-tool answer.
+  "ovh-free/gpt-oss-120b": { ctx: 131_072, max: 131_072, reasoning: true },
+  "ovh-free/gpt-oss-20b": { ctx: 131_072, max: 131_072, reasoning: true },
+  "ovh-free/Qwen3.5-397B-A17B": { ctx: 262_144, max: 131_072, reasoning: true },
+  "ovh-free/Qwen3.5-9B": { ctx: 262_144, max: 131_072, reasoning: true },
+  "ovh-free/Qwen3.6-27B": { ctx: 262_144, max: 131_072, reasoning: true },
+  "ovh-free/Qwen3.8-27B": { ctx: 262_144, max: 131_072, reasoning: true },
+  "ovh-free/Mistral-Small-3.2-24B-Instruct-2506": { ctx: 131_072, max: 32_768, reasoning: false },
+  "ovh-free/Meta-Llama-3_3-70B-Instruct": { ctx: 131_072, max: 32_768, reasoning: false },
  };
  for (const [id, { ctx, max, reasoning }] of Object.entries(locked)) {
   const m = getModelDef(id);
@@ -326,15 +356,17 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
 });
 
 test("2026-10-15 Zen DeepSeek V4.1 Flash carries probe-measured specs", () => {
- // The published entry for this exact free id claims 200,000 context and
+ // The stale published entry for this free id claimed 200,000 context and
  // text-only input; live probes contradicted both. A static entry must
  // override the enrichment heuristic, which would guess 262K / text-only off
- // the substring rules ("deepseek" and "flash" both match).
+ // the substring rules ("deepseek" and "flash" both match). Reconciled
+ // 2026-10-20 to the twin spec: 1,048,576 ctx (which the probe confirms) and
+ // 393,216 output — the gateway's own boundary, 384 * 1024.
  const ds = getModelDef("deepseek-v4.1-flash-free");
  assert.ok(ds);
  assert.equal(ds.reasoning, true);
- assert.equal(ds.contextWindow, 1_000_000);
- assert.equal(ds.maxTokens, 384_000);
+ assert.equal(ds.contextWindow, 1_048_576);
+ assert.equal(ds.maxTokens, 393_216);
  assert.deepEqual(ds.input, ["text", "image"]);
  // Chat-only upstream: a Responses request is refused, so no api override.
  assert.equal(ds.api, undefined);
@@ -363,7 +395,7 @@ test("2026-10-16 issue #62: cat-jam exposes the live max effort; Nemotron 3.5 Su
  const superVl = getModelDef("nemotron-3.5-super-vl-free");
  assert.ok(superVl, "nemotron-3.5-super-vl-free must be a static catalog entry");
  assert.equal(superVl.reasoning, true);
- assert.deepEqual(superVl.input, ["text", "image"]);
+ assert.deepEqual(superVl.input, ["text", "image", "video"]);
  assert.deepEqual(superVl.thinkingLevelMap, {
   off: null,
   minimal: "minimal",
@@ -373,8 +405,8 @@ test("2026-10-16 issue #62: cat-jam exposes the live max effort; Nemotron 3.5 Su
   xhigh: "xhigh",
   max: null,
  });
- assert.equal(superVl.contextWindow, 1_000_000);
- assert.equal(superVl.maxTokens, 131_072);
+ assert.equal(superVl.contextWindow, 1_048_576);
+ assert.equal(superVl.maxTokens, 235_929);
  assert.equal(getModelUpstream("nemotron-3.5-super-vl-free"), "opencode");
  assert.equal(resolveCanonicalModelId("nemotron-3.5-super-vl"), "nemotron-3.5-super-vl-free");
  // Chat is the only native shape (/v1/responses answers 400 protocol error).

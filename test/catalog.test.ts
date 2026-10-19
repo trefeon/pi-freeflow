@@ -298,5 +298,5 @@ test("nemotron-3.5-super-vl-free repairs a reasoning-less dynamic entry (issue #
 	assert.ok(repaired, "the stale row must survive as the repaired static entry");
 	assert.equal(repaired.reasoning, true);
 	assert.equal(repaired.thinkingLevelMap?.xhigh, "xhigh");
-	assert.equal(repaired.maxTokens, 131_072);
+	assert.equal(repaired.maxTokens, 235_929);
 });
