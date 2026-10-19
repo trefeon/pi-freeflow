@@ -24,7 +24,7 @@ import { OPENCODE_MODELS } from "../src/models.ts";
 import type { ModelDef } from "../src/types.ts";
 
 const BASE_TEST_PORT = 29680;
-const TIMEOUT_MS = 25000;
+export const TIMEOUT_MS = 25000;
 /**
  * Total attempts per model: the first probe plus two retries for transient
  * faults. A single non-2xx sample is not evidence of an outage — this runs
@@ -33,9 +33,9 @@ const TIMEOUT_MS = 25000;
  * cleared on a later sample. Model-level answers (410 deprecated, 401 not
  * supported, 404 does not exist) stay single-shot.
  */
-const MAX_PROBE_ATTEMPTS = 3;
+export const MAX_PROBE_ATTEMPTS = 3;
 /** Delay before each retry, indexed by the attempt that just failed (ms). */
-const RETRY_BACKOFF_MS = [2000, 5000];
+export const RETRY_BACKOFF_MS = [2000, 5000];
 
 export interface ModelHealthResult {
   id: string;

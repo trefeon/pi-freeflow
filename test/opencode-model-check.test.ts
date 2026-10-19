@@ -1,7 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { probeModel } from "../scripts/check-opencode-models.ts";
+import fs from "node:fs";
+import { probeModel, MAX_PROBE_ATTEMPTS, RETRY_BACKOFF_MS, TIMEOUT_MS } from "../scripts/check-opencode-models.ts";
+import { OPENCODE_MODELS } from "../src/models.ts";
 import type { ModelDef } from "../src/types.ts";
+
+test("the probe workflow timeout covers a fully hanging catalog", () => {
+	// The health check is the only alarm for a mass upstream outage, so its
+	// worst case (every model hanging through every attempt plus backoff) must
+	// fit inside the job ceiling with room for install — a ceiling below the
+	// worst case kills the job and swallows exactly the alert it exists to file.
+	const workflow = fs.readFileSync(new URL("../.github/workflows/opencode-model-check.yml", import.meta.url), "utf8");
+	const match = /^\s*timeout-minutes:\s*(\d+)\s*$/m.exec(workflow);
+	assert.ok(match, "the health-check job must declare timeout-minutes");
+	const ceilingMinutes = Number(match[1]);
+	const backoffMs = RETRY_BACKOFF_MS.reduce((total, delay) => total + delay, 0);
+	const worstCaseMinutes = (OPENCODE_MODELS.length * (MAX_PROBE_ATTEMPTS * TIMEOUT_MS + backoffMs)) / 60_000;
+	assert.ok(
+		worstCaseMinutes <= ceilingMinutes - 2,
+		`worst case ${worstCaseMinutes.toFixed(1)} min (${OPENCODE_MODELS.length} models x ${MAX_PROBE_ATTEMPTS} attempts x ${TIMEOUT_MS} ms + ${backoffMs} ms) must fit inside the ${ceilingMinutes}-min job timeout with 2 min margin`,
+	);
+});
 
 const CHAT_MODEL: ModelDef = {
 	id: "deepseek-v4.1-flash-free",
