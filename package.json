@@ -52,7 +52,7 @@
     "docs:build": "vitepress build docs"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.27.0",
+    "@changesets/cli": "^3.0.3",
     "@types/node": "^22.13.9",
     "js-yaml": "^5.5.0",
     "typescript": "^7.0.2",
