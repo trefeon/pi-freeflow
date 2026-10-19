@@ -20,5 +20,12 @@ updates:
       dependencies:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    ignore:
+      # Types must not outrun the runtime floor: @types/node 26 advertises Node
+      # 26 APIs that a Node >=22.19.0 runtime does not have, so the major bump
+      # can never land while engines stays on 22. Patch/minor updates in the
+      # 22.x line still arrive.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "chore(deps)"

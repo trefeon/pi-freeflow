@@ -8,8 +8,10 @@
  * - Upstream failures / regressions
  *
  * Probes stream (chat and responses alike) so a model is healthy on a 2xx status
- * line instead of a whole generation fitting the timeout budget; status-0
- * timeout/network failures get one retry before a model is reported affected.
+ * line instead of a whole generation fitting the timeout budget; transient
+ * failures (network/timeout, 429, 5xx, endpoint-unavailable 404) are retried
+ * twice with backoff before a model is reported affected, so one bad sample
+ * from the shared runner IP cannot file a false alert.
  *
  * CLI options:
  *   --output <file>  Write markdown report to file
@@ -23,8 +25,17 @@ import type { ModelDef } from "../src/types.ts";
 
 const BASE_TEST_PORT = 29680;
 const TIMEOUT_MS = 25000;
-/** One attempt plus a single retry, only for status-0 timeout/network failures. */
-const MAX_PROBE_ATTEMPTS = 2;
+/**
+ * Total attempts per model: the first probe plus two retries for transient
+ * faults. A single non-2xx sample is not evidence of an outage — this runs
+ * from a shared GitHub runner IP, where 429s ("shared free-tier IP quota
+ * reached"), 5xx blips, and 404 "Endpoint is unavailable" answers have all
+ * cleared on a later sample. Model-level answers (410 deprecated, 401 not
+ * supported, 404 does not exist) stay single-shot.
+ */
+const MAX_PROBE_ATTEMPTS = 3;
+/** Delay before each retry, indexed by the attempt that just failed (ms). */
+const RETRY_BACKOFF_MS = [2000, 5000];
 
 export interface ModelHealthResult {
   id: string;
@@ -96,10 +107,24 @@ async function attemptProbe(
   }
 }
 
+/**
+ * True when a failed sample is worth retrying before the model is reported
+ * affected: network/timeout (status 0), rate limits, server faults, and the
+ * 404 that carries an "Endpoint is unavailable" body rather than a
+ * model-not-found verdict.
+ */
+function isTransientProbeResult(result: ModelHealthResult): boolean {
+  if (result.status === 0 || result.status === 408 || result.status === 429) return true;
+  if (result.status >= 500) return true;
+  if (result.status === 404 && /endpoint is unavailable/i.test(result.error ?? "")) return true;
+  return false;
+}
+
 export async function probeModel(
   port: number,
   model: ModelDef,
   fetchImpl: typeof fetch = fetch,
+  options: { maxAttempts?: number; backoffMs?: number[] } = {},
 ): Promise<ModelHealthResult> {
   const isResponses = model.api === "openai-responses";
   const endpoint = isResponses
@@ -119,12 +144,20 @@ export async function probeModel(
       };
 
   const start = Date.now();
+  const maxAttempts = options.maxAttempts ?? MAX_PROBE_ATTEMPTS;
+  const backoff = options.backoffMs ?? RETRY_BACKOFF_MS;
   let attempts = 1;
   let last = await attemptProbe(endpoint, payload, model, fetchImpl);
-  // Only status-0 (timeout/network) failures get a retry; a real HTTP status is the
-  // upstream's own answer and is reported as-is.
-  while (!last.healthy && last.status === 0 && attempts < MAX_PROBE_ATTEMPTS) {
-    console.log(`  ↻ retry after status-0 (${last.error || "network failure"})`);
+  // Transient faults (network, 429, 5xx, endpoint-unavailable 404) get two more
+  // samples; a model-level answer (410/401/404 not-found) is reported as-is.
+  while (!last.healthy && attempts < maxAttempts && isTransientProbeResult(last)) {
+    const delayMs = backoff[Math.min(attempts - 1, backoff.length - 1)] ?? 0;
+    console.log(`  ↻ retry ${attempts} after ${last.status || "network"} (${last.error || "unknown"})`);
+    if (delayMs > 0) {
+      const sleep = Promise.withResolvers<void>();
+      setTimeout(sleep.resolve, delayMs);
+      await sleep.promise;
+    }
     last = await attemptProbe(endpoint, payload, model, fetchImpl);
     attempts += 1;
   }

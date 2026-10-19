@@ -81,7 +81,7 @@ test("responses probes keep streaming the responses payload", async () => {
 	assert.equal(cancelled, true);
 });
 
-test("a status-0 timeout is retried once and can recover", async () => {
+test("a status-0 timeout is retried and can recover", async () => {
 	const { calls, fetchImpl } = recordingFetch((callIndex) => {
 		if (callIndex === 0) {
 			throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
@@ -89,7 +89,7 @@ test("a status-0 timeout is retried once and can recover", async () => {
 		return unreadableStreamingResponse(() => {});
 	});
 
-	const result = await probeModel(41810, CHAT_MODEL, fetchImpl);
+	const result = await probeModel(41810, CHAT_MODEL, fetchImpl, { backoffMs: [0, 0] });
 
 	assert.equal(calls.length, 2);
 	assert.equal(result.healthy, true);
@@ -102,13 +102,76 @@ test("an exhausted retry reports status 0 with the last error", async () => {
 		throw new Error("fetch failed");
 	});
 
-	const result = await probeModel(41810, CHAT_MODEL, fetchImpl);
+	const result = await probeModel(41810, CHAT_MODEL, fetchImpl, { backoffMs: [0, 0] });
 
-	assert.equal(calls.length, 2, "status-0 failures get exactly one retry");
+	assert.equal(calls.length, 3, "status-0 failures get two retries");
 	assert.equal(result.healthy, false);
 	assert.equal(result.status, 0);
-	assert.equal(result.attempts, 2);
+	assert.equal(result.attempts, 3);
 	assert.equal(result.error, "fetch failed");
+});
+
+test("a 503 endpoint-unavailable blip is retried and can recover", async () => {
+	// The 2026-10-18 exo-free sample: one 503 from the shared runner cleared on
+	// the next probe minutes later, so a single sample must not alert.
+	const { calls, fetchImpl } = recordingFetch((callIndex) => {
+		if (callIndex === 0) {
+			return new Response(JSON.stringify({ error: { message: "Endpoint is unavailable" } }), {
+				status: 503,
+				headers: { "content-type": "application/json" },
+			});
+		}
+		return unreadableStreamingResponse(() => {});
+	});
+
+	const result = await probeModel(41810, CHAT_MODEL, fetchImpl, { backoffMs: [0, 0] });
+
+	assert.equal(calls.length, 2);
+	assert.equal(result.healthy, true);
+	assert.equal(result.attempts, 2);
+});
+
+test("a 429 rate limit is retried before the model is called affected", async () => {
+	const { calls, fetchImpl } = recordingFetch((callIndex) => {
+		if (callIndex === 0) {
+			return new Response(JSON.stringify({ error: { message: "Shared free-tier IP quota reached" } }), {
+				status: 429,
+				headers: { "content-type": "application/json" },
+			});
+		}
+		return unreadableStreamingResponse(() => {});
+	});
+
+	const result = await probeModel(41810, CHAT_MODEL, fetchImpl, { backoffMs: [0, 0] });
+
+	assert.equal(calls.length, 2);
+	assert.equal(result.healthy, true);
+});
+
+test("a 404 endpoint-unavailable answer is retried, a model-level 404 is not", async () => {
+	const blip = recordingFetch((callIndex) =>
+		callIndex === 0
+			? new Response(JSON.stringify({ error: { message: "Upstream request failed: Endpoint is unavailable." } }), {
+					status: 404,
+					headers: { "content-type": "application/json" },
+				})
+			: unreadableStreamingResponse(() => {}),
+	);
+	const recovered = await probeModel(41810, CHAT_MODEL, blip.fetchImpl, { backoffMs: [0, 0] });
+	assert.equal(blip.calls.length, 2);
+	assert.equal(recovered.healthy, true);
+
+	const missing = recordingFetch(
+		() =>
+			new Response(JSON.stringify({ error: { message: "The requested model does not exist" } }), {
+				status: 404,
+				headers: { "content-type": "application/json" },
+			}),
+	);
+	const gone = await probeModel(41810, CHAT_MODEL, missing.fetchImpl, { backoffMs: [0, 0] });
+	assert.equal(missing.calls.length, 1, "a model-not-found 404 is the upstream's final answer");
+	assert.equal(gone.healthy, false);
+	assert.equal(gone.status, 404);
 });
 
 test("an HTTP failure status is never retried and keeps its upstream detail", async () => {
@@ -120,11 +183,28 @@ test("an HTTP failure status is never retried and keeps its upstream detail", as
 			}),
 	);
 
-	const result = await probeModel(41810, CHAT_MODEL, fetchImpl);
+	const result = await probeModel(41810, CHAT_MODEL, fetchImpl, { backoffMs: [0, 0] });
 
 	assert.equal(calls.length, 1);
 	assert.equal(result.healthy, false);
 	assert.equal(result.status, 403);
 	assert.equal(result.attempts, 1);
 	assert.equal(result.error, "FreeTierError");
+});
+
+test("a 410 deprecated answer is terminal and single-shot", async () => {
+	const { calls, fetchImpl } = recordingFetch(
+		() =>
+			new Response(JSON.stringify({ error: { message: "Model muse-spark-1.2-contributor-free has been deprecated." } }), {
+				status: 410,
+				headers: { "content-type": "application/json" },
+			}),
+	);
+
+	const result = await probeModel(41810, CHAT_MODEL, fetchImpl, { backoffMs: [0, 0] });
+
+	assert.equal(calls.length, 1);
+	assert.equal(result.healthy, false);
+	assert.equal(result.status, 410);
+	assert.equal(result.attempts, 1);
 });

@@ -308,8 +308,25 @@ test("release.yml validates the pushed tag against package.json", { skip: SKIP_N
 	const doc = loadWorkflow("release.yml");
 	assert.equal(stepOf(doc, RELEASE_JOB, TAG_VALIDATION_STEP).if, TAG_GATE);
 	assert.equal(stepOf(doc, RELEASE_JOB, RELEASE_STEP).if, TAG_GATE);
-	// The maintained action is the contract; its major moves independently of this repo.
-	assert.match(stepOf(doc, RELEASE_JOB, RELEASE_STEP).uses ?? "", /^softprops\/action-gh-release@v\d+$/);
+	// The maintained action is the contract; it may be referenced by major tag
+	// or pinned to a commit SHA (the pin gate below requires the SHA form).
+	assert.match(stepOf(doc, RELEASE_JOB, RELEASE_STEP).uses ?? "", /^softprops\/action-gh-release@(v\d+|[0-9a-f]{40})$/);
+});
+
+test("every workflow action is pinned to a commit SHA", { skip: SKIP_NO_YAML }, () => {
+	for (const file of ["ci.yml", "opencode-model-check.yml", "opencode-watch.yml", "release.yml"]) {
+		const doc = loadWorkflow(file);
+		for (const [jobName, job] of Object.entries(doc.jobs ?? {})) {
+			for (const step of job.steps ?? []) {
+				if (!step.uses) continue;
+				assert.match(
+					step.uses,
+					/^[^@\s]+@[0-9a-f]{40}$/,
+					`${file} (${jobName}, step "${step.name ?? "unnamed"}"): ${step.uses} must pin a commit SHA — a mutable tag can be repointed at any commit, including one written by someone else`,
+				);
+			}
+		}
+	}
 });
 
 test("release.yml never publishes to npm and proves the tarball before releasing", { skip: SKIP_NO_YAML }, () => {
