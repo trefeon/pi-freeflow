@@ -338,6 +338,34 @@ test("F: buildProviderConfig emits the host-compatible provider contract", () =>
 	assert.ok(kilo, "kilo model must be present");
 	assert.equal(kilo!.compat?.thinkingFormat, "openrouter");
 	assert.equal(kilo!.compat?.supportsDeveloperRole, false);
+
+	const deepseek = cfg.models.find((m) => m.id === "deepseek-v4.1-flash-free");
+	assert.ok(deepseek);
+	assert.equal(deepseek.compat?.requiresReasoningContentOnAssistantMessages, true,
+		"DeepSeek requires reasoning content even when earlier assistant turns have none");
+	for (const model of cfg.models.filter((m) => m.id !== deepseek.id)) {
+		assert.equal(model.compat?.requiresReasoningContentOnAssistantMessages, undefined,
+			`${model.id} must retain its existing reasoning replay policy`);
+	}
+});
+
+test("model reasoning replay flags pass through independently of model name and source", () => {
+	for (const source of ["opencode", "kilo", "cline", "ovh"] as const) {
+		for (const required of [true, false, undefined]) {
+			const model: RegisteredModel = {
+				id: "reasoning-fixture",
+				name: "Reasoning Fixture",
+				reasoning: true,
+				contextWindow: 262_144,
+				maxTokens: 65_536,
+				source,
+				thinkingFormat: source === "kilo" ? "openrouter" : undefined,
+				requiresReasoningContentOnAssistantMessages: required,
+			};
+			const config = buildProviderConfig([model]);
+			assert.equal(config.models[0].compat?.requiresReasoningContentOnAssistantMessages, required);
+		}
+	}
 });
 
 test("F2: buildProviderConfig passes the anthropic-messages api through", () => {

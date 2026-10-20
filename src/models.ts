@@ -298,6 +298,7 @@ export const OPENCODE_MODELS: ModelDef[] = [
   id: "deepseek-v4.1-flash-free",
   name: "DeepSeek V4.1 Flash [OpenCode]",
   reasoning: true,
+  requiresReasoningContentOnAssistantMessages: true,
   // 1,048,576, matching both the published twin and the probe: a marker
   // planted mid-prompt is still recalled through prompt_tokens=1,030,800, and
   // the gateway turns an oversized request away with an empty-bodied 400
