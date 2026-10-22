@@ -102,6 +102,15 @@ printf '%s\\n' "$*" >> "$NODE_STUB_DIR/node.log"
 exit "\${NODE_STUB_EXIT:-0}"
 `;
 
+/** Git for Windows forces /mingw64/bin ahead of PATH, so `git` is exercised for real. */
+const GIT_AVAILABLE = (() => {
+	try {
+		return spawnSync("git", ["--version"]).status === 0;
+	} catch {
+		return false;
+	}
+})();
+
 type Stub = { bin: string; env: Record<string, string> };
 
 /** Installs an executable stub named `name` on PATH and returns its environment. */
@@ -163,22 +172,33 @@ const WATCH = "opencode-watch.yml";
 const WATCH_JOB = "watch";
 const WATCH_CHECK_STEP = "Run OpenCode Watch Check";
 const WATCH_CLOSE_STEP = "Close Recovered Drift Issue";
+const WATCH_REBASELINE_STEP = "Rebaseline Watcher State";
+const WATCH_REBASELINE_CLOSE_STEP = "Close Drift Issue After Rebaseline";
+const WATCH_ISSUE_STEP = "File or Update Critical Drift Issue";
+const WATCH_COMMIT_STEP = "Commit Watcher State";
 
 const MODEL_CHECK = "opencode-model-check.yml";
 const MODEL_CHECK_JOB = "check-models";
 const MODEL_CHECK_PROBE_STEP = "Probe All OpenCode Free Tier Models";
+const MODEL_CHECK_ANNOTATE_STEP = "Annotate Unavailable Models (No Alert)";
+const MODEL_CHECK_ISSUE_STEP = "Open or Update GitHub Issue on Dead Models";
 const MODEL_CHECK_CLOSE_STEP = "Close Recovered Alert Issue";
 
 // ── drift watcher: exit-code classification ─────────────────────────────────
 
-test("opencode-watch.yml maps the watcher exit code onto the drift/infra flags", { skip: SKIP }, () => {
-	const expectations: Array<[number, string, string, string]> = [
-		// [node exit code, DRIFT_DETECTED, INFRA_FAILURE, drift output]
-		[0, "false", "false", "false"],
-		[1, "true", "false", "true"],
-		[2, "false", "true", "false"],
+test("opencode-watch.yml maps the watcher exit code onto the exit-code/infra flags", { skip: SKIP }, () => {
+	const expectations: Array<[number, string]> = [
+		// [node exit code, INFRA_FAILURE]
+		[0, "false"],
+		[1, "false"],
+		[2, "true"],
 	];
-	for (const [code, drift, infra, driftOutput] of expectations) {
+	assert.equal(
+		stepOf(WATCH, WATCH_JOB, WATCH_CHECK_STEP).if,
+		"github.event.inputs.rebaseline != 'true'",
+		"the scheduled check must not run on the rebaseline dispatch path",
+	);
+	for (const [code, infra] of expectations) {
 		withTempDir(`pff-watch-${code}-`, (dir) => {
 			const node = makeStub(dir, "node", NODE_STUB, "NODE_STUB_DIR");
 			const run = runStep(scriptOf(WATCH, WATCH_JOB, WATCH_CHECK_STEP), dir, {
@@ -186,13 +206,11 @@ test("opencode-watch.yml maps the watcher exit code onto the drift/infra flags",
 				NODE_STUB_EXIT: String(code),
 			});
 			assert.equal(run.status, 0, `exit ${code}: the classifying step itself must succeed: ${run.output}`);
-			assert.match(run.envFile, new RegExp(`^DRIFT_DETECTED=${drift}$`, "m"), `exit ${code} env`);
 			assert.match(run.envFile, new RegExp(`^INFRA_FAILURE=${infra}$`, "m"), `exit ${code} env`);
 			assert.match(run.outFile, new RegExp(`^exit_code=${code}$`, "m"), `exit ${code} output`);
-			assert.match(run.outFile, new RegExp(`^drift=${driftOutput}$`, "m"), `exit ${code} output`);
 
 			const args = fs.readFileSync(path.join(node.bin, "node.log"), "utf8").trim();
-			assert.equal(args, "scripts/opencode-watch.mjs --check --output drift-report.md");
+			assert.equal(args, "scripts/opencode-watch.mjs --check --advance --output drift-report.md");
 		});
 	}
 });
@@ -227,6 +245,119 @@ test("opencode-watch.yml closes the drift issue only on a clean watcher run", { 
 	});
 });
 
+test("opencode-watch.yml files one critical issue and edits it in place", { skip: SKIP }, () => {
+	assert.equal(
+		stepOf(WATCH, WATCH_JOB, WATCH_ISSUE_STEP).if,
+		"steps.check.outputs.exit_code == '1'",
+		"only a critical exit files an issue",
+	);
+
+	withTempDir("pff-watch-issue-edit-", (dir) => {
+		const gh = makeStub(dir, "gh", GH_STUB, "GH_STUB_DIR");
+		const run = runStep(scriptOf(WATCH, WATCH_JOB, WATCH_ISSUE_STEP), dir, { ...gh.env, GH_STUB_LIST: "99" });
+		assert.equal(run.status, 0, run.output);
+		const calls = ghCalls(gh.bin);
+		assert.equal(
+			calls.filter((call) => call[0] === "issue" && call[1] === "comment").length,
+			0,
+			"an existing issue is edited, never commented on every run",
+		);
+		const edit = calls.find((call) => call[0] === "issue" && call[1] === "edit");
+		assert.ok(edit, `expected an issue edit call: ${JSON.stringify(calls)}`);
+		assert.equal(edit[2], "99");
+		assert.deepEqual(edit.slice(3), ["--body-file", "drift-report.md"]);
+		assert.equal(calls.filter((call) => call[0] === "issue" && call[1] === "create").length, 0);
+	});
+
+	withTempDir("pff-watch-issue-create-", (dir) => {
+		const gh = makeStub(dir, "gh", GH_STUB, "GH_STUB_DIR");
+		const run = runStep(scriptOf(WATCH, WATCH_JOB, WATCH_ISSUE_STEP), dir, { ...gh.env, GH_STUB_LIST: "" });
+		assert.equal(run.status, 0, run.output);
+		const calls = ghCalls(gh.bin);
+		const create = calls.find((call) => call[0] === "issue" && call[1] === "create");
+		assert.ok(create, `expected an issue create call: ${JSON.stringify(calls)}`);
+		assert.ok(create.includes("--body-file"), "the report file is the issue body");
+		assert.ok(create.includes("opencode-drift"), "the issue carries the drift label");
+	});
+});
+
+test("opencode-watch.yml rebaseline dispatch writes the full baseline and closes the issue", { skip: SKIP }, () => {
+	assert.equal(stepOf(WATCH, WATCH_JOB, WATCH_REBASELINE_STEP).if, "github.event.inputs.rebaseline == 'true'");
+	assert.equal(
+		stepOf(WATCH, WATCH_JOB, WATCH_REBASELINE_CLOSE_STEP).if,
+		"github.event.inputs.rebaseline == 'true'",
+	);
+
+	withTempDir("pff-watch-rebaseline-", (dir) => {
+		const node = makeStub(dir, "node", NODE_STUB, "NODE_STUB_DIR");
+		const run = runStep(scriptOf(WATCH, WATCH_JOB, WATCH_REBASELINE_STEP), dir, node.env);
+		assert.equal(run.status, 0, run.output);
+		const args = fs.readFileSync(path.join(node.bin, "node.log"), "utf8").trim();
+		assert.equal(args, "scripts/opencode-watch.mjs --update --output drift-report.md");
+	});
+
+	withTempDir("pff-watch-rebaseline-close-", (dir) => {
+		const gh = makeStub(dir, "gh", GH_STUB, "GH_STUB_DIR");
+		const run = runStep(scriptOf(WATCH, WATCH_JOB, WATCH_REBASELINE_CLOSE_STEP), dir, {
+			...gh.env,
+			GH_STUB_LIST: "12",
+		});
+		assert.equal(run.status, 0, run.output);
+		const calls = ghCalls(gh.bin);
+		const comment = calls.find((call) => call[0] === "issue" && call[1] === "comment");
+		assert.ok(comment, `expected an issue comment call: ${JSON.stringify(calls)}`);
+		assert.match(comment[comment.indexOf("--body") + 1], /rebaseline/i);
+		const close = calls.find((call) => call[0] === "issue" && call[1] === "close");
+		assert.ok(close, `expected an issue close call: ${JSON.stringify(calls)}`);
+		assert.deepEqual(close.slice(2), ["12", "--reason", "completed"]);
+	});
+});
+
+test("opencode-watch.yml commits the advanced baseline after any successful read", { skip: SKIP ?? (GIT_AVAILABLE ? undefined : "git is unavailable") }, () => {
+	const gate = stepOf(WATCH, WATCH_JOB, WATCH_COMMIT_STEP).if ?? "";
+	assert.match(gate, /steps\.check\.outputs\.exit_code == '0'/, "exit 0 advances and commits the baseline");
+	assert.match(gate, /steps\.check\.outputs\.exit_code == '1'/, "a critical run still advances informational signals");
+	assert.match(gate, /inputs\.rebaseline == 'true'/, "the manual rebaseline commits its state");
+
+	const git = (dir: string, args: string[]): void => {
+		const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+		assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
+	};
+
+	withTempDir("pff-watch-commit-", (dir) => {
+		fs.mkdirSync(path.join(dir, ".github"), { recursive: true });
+		const stateFile = path.join(dir, ".github", "opencode-watch-state.json");
+		fs.writeFileSync(stateFile, '{ "lastRelease": "v1.0.0" }\n');
+		git(dir, ["init", "-q", "-b", "main"]);
+		git(dir, ["config", "user.name", "workflow-test"]);
+		git(dir, ["config", "user.email", "workflow-test@example.com"]);
+		git(dir, ["add", "-A"]);
+		git(dir, ["commit", "-qm", "init"]);
+		git(dir, ["init", "-q", "--bare", "remote.git"]);
+		git(dir, ["remote", "add", "origin", "remote.git"]);
+		git(dir, ["push", "-q", "-u", "origin", "main"]);
+
+		fs.writeFileSync(stateFile, '{ "lastRelease": "v1.1.0" }\n');
+		const run = runStep(scriptOf(WATCH, WATCH_JOB, WATCH_COMMIT_STEP), dir, {});
+		assert.equal(run.status, 0, run.output);
+		assert.doesNotMatch(run.output, /No state changes to commit/);
+		const subject = spawnSync("git", ["log", "-1", "--pretty=%s"], { cwd: dir, encoding: "utf8" }).stdout ?? "";
+		assert.match(subject, /chore\(watch\): update opencode watch state/);
+		assert.equal(
+			spawnSync("git", ["status", "--porcelain", "--", ".github/opencode-watch-state.json"], {
+				cwd: dir,
+				encoding: "utf8",
+			}).stdout,
+			"",
+			"the advanced state must be committed",
+		);
+
+		const clean = runStep(scriptOf(WATCH, WATCH_JOB, WATCH_COMMIT_STEP), dir, {});
+		assert.equal(clean.status, 0, clean.output);
+		assert.match(clean.output, /No state changes to commit/, "an unchanged baseline commits nothing");
+	});
+});
+
 // ── model health check: exit-code classification and close ──────────────────
 
 test("opencode-model-check.yml maps the probe exit code onto the alert/infra flags", { skip: SKIP }, () => {
@@ -235,6 +366,8 @@ test("opencode-model-check.yml maps the probe exit code onto the alert/infra fla
 		[0, "false", "false"],
 		[1, "true", "false"],
 		[2, "false", "true"],
+		// Any other code (signal death, unhandled crash) is infra, never a clean run.
+		[137, "false", "true"],
 	];
 	for (const [code, affected, infra] of expectations) {
 		withTempDir(`pff-model-${code}-`, (dir) => {
@@ -249,9 +382,92 @@ test("opencode-model-check.yml maps the probe exit code onto the alert/infra fla
 			assert.match(run.outFile, new RegExp(`^exit_code=${code}$`, "m"), `exit ${code} output`);
 
 			const args = fs.readFileSync(path.join(node.bin, "node.log"), "utf8").trim();
-			assert.equal(args, "--experimental-strip-types scripts/check-opencode-models.ts --output model-health-report.md");
+			assert.equal(
+				args,
+				"--experimental-strip-types scripts/check-opencode-models.ts --output model-health-report.md --json",
+			);
 		});
 	}
+});
+
+test("opencode-model-check.yml warns about unavailable models without filing an issue", { skip: SKIP }, () => {
+	// The gate is GitHub's, so assert it on the parsed document: a run with a
+	// dead model must not annotate this path (it files the alert instead).
+	assert.equal(
+		stepOf(MODEL_CHECK, MODEL_CHECK_JOB, MODEL_CHECK_ANNOTATE_STEP).if,
+		"always() && env.INFRA_FAILURE != 'true' && env.AFFECTED_MODELS != 'true'",
+	);
+
+	withTempDir("pff-model-degraded-", (dir) => {
+		fs.writeFileSync(
+			path.join(dir, "model-health.json"),
+			JSON.stringify({ affectedCount: 2, deadCount: 0, degradedCount: 2, results: [] }),
+		);
+		const run = runStep(scriptOf(MODEL_CHECK, MODEL_CHECK_JOB, MODEL_CHECK_ANNOTATE_STEP), dir, {
+			AFFECTED_MODELS: "false",
+			INFRA_FAILURE: "false",
+		});
+		assert.equal(run.status, 0, run.output);
+		assert.match(run.output, /::warning::2 OpenCode free-tier model\(s\)/);
+	});
+
+	withTempDir("pff-model-clean-", (dir) => {
+		fs.writeFileSync(
+			path.join(dir, "model-health.json"),
+			JSON.stringify({ affectedCount: 0, deadCount: 0, degradedCount: 0, results: [] }),
+		);
+		const run = runStep(scriptOf(MODEL_CHECK, MODEL_CHECK_JOB, MODEL_CHECK_ANNOTATE_STEP), dir, {
+			AFFECTED_MODELS: "false",
+			INFRA_FAILURE: "false",
+		});
+		assert.equal(run.status, 0, run.output);
+		assert.ok(!/::warning::/.test(run.output), "a fully healthy run must not warn");
+	});
+
+	withTempDir("pff-model-nojson-", (dir) => {
+		const run = runStep(scriptOf(MODEL_CHECK, MODEL_CHECK_JOB, MODEL_CHECK_ANNOTATE_STEP), dir, {
+			AFFECTED_MODELS: "false",
+			INFRA_FAILURE: "false",
+		});
+		assert.equal(run.status, 0, run.output);
+		assert.match(run.output, /No probe JSON available/);
+	});
+});
+
+test("opencode-model-check.yml replaces the alert body instead of commenting every run", { skip: SKIP }, () => {
+	assert.equal(stepOf(MODEL_CHECK, MODEL_CHECK_JOB, MODEL_CHECK_ISSUE_STEP).if, "env.AFFECTED_MODELS == 'true'");
+
+	withTempDir("pff-model-issue-", (dir) => {
+		fs.writeFileSync(path.join(dir, "model-health-report.md"), "## report\n");
+		const gh = makeStub(dir, "gh", GH_STUB, "GH_STUB_DIR");
+		const run = runStep(scriptOf(MODEL_CHECK, MODEL_CHECK_JOB, MODEL_CHECK_ISSUE_STEP), dir, {
+			...gh.env,
+			GH_STUB_LIST: "7",
+		});
+		assert.equal(run.status, 0, run.output);
+		const calls = ghCalls(gh.bin);
+		const edit = calls.find((call) => call[0] === "issue" && call[1] === "edit");
+		assert.ok(edit, `expected an issue edit call: ${JSON.stringify(calls)}`);
+		assert.deepEqual(edit.slice(2), ["7", "--body-file", "model-health-report.md"]);
+		assert.equal(calls.filter((call) => call[1] === "comment").length, 0, "an update must not append a comment");
+		assert.match(run.envFile, /^ALERT_ISSUE_TOUCHED=true$/m);
+	});
+
+	withTempDir("pff-model-issue-new-", (dir) => {
+		fs.writeFileSync(path.join(dir, "model-health-report.md"), "## report\n");
+		const gh = makeStub(dir, "gh", GH_STUB, "GH_STUB_DIR");
+		const run = runStep(scriptOf(MODEL_CHECK, MODEL_CHECK_JOB, MODEL_CHECK_ISSUE_STEP), dir, {
+			...gh.env,
+			GH_STUB_LIST: "",
+		});
+		assert.equal(run.status, 0, run.output);
+		const calls = ghCalls(gh.bin);
+		const create = calls.find((call) => call[0] === "issue" && call[1] === "create");
+		assert.ok(create, `expected an issue create call: ${JSON.stringify(calls)}`);
+		assert.ok(create.includes("opencode-model-alert"), "the alert label must be applied");
+		assert.ok(create.includes("--body-file"));
+		assert.equal(calls.filter((call) => call[1] === "comment").length, 0);
+	});
 });
 
 test("opencode-model-check.yml closes the alert issue only after a healthy probe", { skip: SKIP }, () => {
@@ -267,10 +483,22 @@ test("opencode-model-check.yml closes the alert issue only after a healthy probe
 		const calls = ghCalls(gh.bin);
 		const comment = calls.find((call) => call[0] === "issue" && call[1] === "comment");
 		assert.ok(comment, `expected an issue comment call: ${JSON.stringify(calls)}`);
-		assert.match(comment[comment.indexOf("--body") + 1], /healthy again/);
+		assert.match(comment[comment.indexOf("--body") + 1], /No OpenCode free-tier model is dead/);
 		const close = calls.find((call) => call[0] === "issue" && call[1] === "close");
 		assert.ok(close, `expected an issue close call: ${JSON.stringify(calls)}`);
 		assert.deepEqual(close.slice(2), ["7", "--reason", "completed"]);
+	});
+
+	withTempDir("pff-model-close-touched-", (dir) => {
+		const gh = makeStub(dir, "gh", GH_STUB, "GH_STUB_DIR");
+		const run = runStep(scriptOf(MODEL_CHECK, MODEL_CHECK_JOB, MODEL_CHECK_CLOSE_STEP), dir, {
+			...gh.env,
+			GH_STUB_LIST: "7",
+			ALERT_ISSUE_TOUCHED: "true",
+		});
+		assert.equal(run.status, 0, run.output);
+		assert.match(run.output, /a later healthy run owns the close/);
+		assert.deepEqual(ghCalls(gh.bin), [], "a run that edited the alert must not close it");
 	});
 
 	withTempDir("pff-model-close-none-", (dir) => {

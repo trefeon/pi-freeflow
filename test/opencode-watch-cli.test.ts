@@ -62,7 +62,14 @@ function normalizedSha(text: string): string {
 		.digest("hex");
 }
 
-type Fixture = { lastRelease?: string; liveRelease?: string; state?: Record<string, unknown> };
+type Fixture = {
+	lastRelease?: string;
+	liveRelease?: string;
+	state?: Record<string, unknown>;
+	/** Bodies served to the watcher; the state baseline always uses SCHEMA_BODIES. */
+	liveSchemaBodies?: Record<string, string>;
+	freeModels?: string[];
+};
 
 /** Writes the state file + fixture table + preload into `dir`; returns argv. */
 function stageRun(
@@ -71,20 +78,22 @@ function stageRun(
 ): { argv: string[]; env: Record<string, string>; stateFile: string } {
 	const lastRelease = options.fixture?.lastRelease ?? "v1.18.31";
 	const liveRelease = options.fixture?.liveRelease ?? lastRelease;
+	const freeModels = options.fixture?.freeModels ?? ["big-pickle", "nemotron-3-ultra-free"];
 	const state = {
 		lastRelease,
 		fileShas: Object.fromEntries(Object.entries(SCHEMA_BODIES).map(([name, body]) => [name, normalizedSha(body)])),
-		freeModels: ["big-pickle", "nemotron-3-ultra-free"],
+		freeModels,
 		lastChecked: "2026-09-19T00:00:00.000Z",
 		...options.fixture?.state,
 	};
 	const stateFile = path.join(dir, "state.json");
 	fs.writeFileSync(stateFile, JSON.stringify(state, null, 2) + "\n");
 
+	const liveSchemaBodies = { ...SCHEMA_BODIES, ...options.fixture?.liveSchemaBodies };
 	const fixtures: Record<string, string> = { [RELEASE_URL]: JSON.stringify({ tag_name: liveRelease }) };
-	for (const [name, url] of Object.entries(SCHEMA_URLS)) fixtures[url] = SCHEMA_BODIES[name];
+	for (const [name, url] of Object.entries(SCHEMA_URLS)) fixtures[url] = liveSchemaBodies[name];
 	fixtures[MODELS_URL] = JSON.stringify({
-		data: [{ id: "big-pickle" }, { id: "nemotron-3-ultra-free" }, { id: "claude-opus-4-1" }],
+		data: [...freeModels.map((id) => ({ id })), { id: "claude-opus-4-1" }],
 	});
 
 	const preload = path.join(dir, "preload.mjs");
@@ -143,26 +152,80 @@ test("CLI --check exits 0 and writes the in-sync report when upstream matches st
 	});
 });
 
-test("CLI --check --json exits 1 and reports drift when the release moves", () => {
-	withTempDir("pff-cli-drift-", (dir) => {
+test("CLI --check --json exits 0 and reports informational changes when the release moves", () => {
+	withTempDir("pff-cli-informational-", (dir) => {
 		const staged = stageRun(dir, { fixture: { liveRelease: "v1.18.32" } });
+		const before = fs.readFileSync(staged.stateFile, "utf8");
 		const run = runCli(dir, ["--check", "--json", "--state", "state.json"], staged);
-		assert.equal(run.status, 1, run.stderr);
-		const drift = JSON.parse(run.stdout) as { hasDrift: boolean; release: { previous: string; current: string } };
+		assert.equal(run.status, 0, run.stderr);
+		const drift = JSON.parse(run.stdout) as {
+			hasDrift: boolean;
+			criticalDrift: boolean;
+			release: { previous: string; current: string };
+		};
 		assert.equal(drift.hasDrift, true);
+		assert.equal(drift.criticalDrift, false);
 		assert.deepEqual([drift.release.previous, drift.release.current], ["v1.18.31", "v1.18.32"]);
+		assert.equal(fs.readFileSync(staged.stateFile, "utf8"), before, "plain --check never writes state");
 	});
 });
 
-test("CLI --update rewrites the state file and keeps the in-sync exit code", () => {
+test("CLI --check exits 1 and writes the critical report when identifier.ts changes", () => {
+	withTempDir("pff-cli-critical-", (dir) => {
+		const staged = stageRun(dir, {
+			fixture: {
+				liveSchemaBodies: { "identifier.ts": "export const Identifier = { create: () => 'ses_zzz' };\n" },
+			},
+		});
+		const run = runCli(dir, ["--check", "--state", "state.json", "--output", "drift-report.md"], staged);
+		assert.equal(run.status, 1, run.stderr);
+		const report = fs.readFileSync(path.join(dir, "drift-report.md"), "utf8");
+		assert.match(report, /OpenCode Upstream Drift Detected/);
+		assert.match(report, /CRITICAL WARNING/);
+		assert.match(report, /identifier\.ts/);
+	});
+});
+
+test("CLI --check --advance advances informational signals while holding a critical SHA", () => {
+	withTempDir("pff-cli-advance-", (dir) => {
+		const liveIdentifier = "export const Identifier = { create: () => 'ses_zzz' };\n";
+		const liveZen = "# Zen\n\n- free tier: changed\n";
+		const staged = stageRun(dir, {
+			fixture: { liveRelease: "v1.18.32", liveSchemaBodies: { "identifier.ts": liveIdentifier, "zen.mdx": liveZen } },
+		});
+		const baseline = JSON.parse(fs.readFileSync(staged.stateFile, "utf8")) as {
+			fileShas: Record<string, string>;
+			lastRelease: string;
+		};
+		const run = runCli(dir, ["--check", "--advance", "--state", "state.json"], staged);
+		assert.equal(run.status, 1, run.stderr);
+		const saved = JSON.parse(fs.readFileSync(staged.stateFile, "utf8")) as {
+			fileShas: Record<string, string>;
+			lastRelease: string;
+		};
+		assert.equal(saved.lastRelease, "v1.18.32", "release baseline advanced");
+		assert.equal(saved.fileShas["zen.mdx"], normalizedSha(liveZen), "docs baseline advanced");
+		assert.equal(saved.fileShas["identifier.ts"], baseline.fileShas["identifier.ts"], "critical SHA held");
+
+		const again = runCli(dir, ["--check", "--advance", "--state", "state.json"], staged);
+		assert.equal(again.status, 1, "the held critical SHA reports on the next run too");
+	});
+});
+
+test("CLI --update rewrites the full baseline, critical SHAs included", () => {
 	withTempDir("pff-cli-update-", (dir) => {
-		const staged = stageRun(dir);
+		const liveIdentifier = "export const Identifier = { create: () => 'ses_zzz' };\n";
+		const staged = stageRun(dir, { fixture: { liveSchemaBodies: { "identifier.ts": liveIdentifier } } });
 		const before = fs.readFileSync(staged.stateFile, "utf8");
-		const run = runCli(dir, ["--check", "--update", "--state", "state.json"], staged);
+		const run = runCli(dir, ["--update", "--state", "state.json"], staged);
 		assert.equal(run.status, 0, run.stderr);
-		const after = JSON.parse(fs.readFileSync(staged.stateFile, "utf8")) as { lastChecked: string };
+		const after = JSON.parse(fs.readFileSync(staged.stateFile, "utf8")) as {
+			lastChecked: string;
+			fileShas: Record<string, string>;
+		};
 		assert.notEqual(after.lastChecked, "2026-09-19T00:00:00.000Z", "the state file must be rewritten");
 		assert.notEqual(fs.readFileSync(staged.stateFile, "utf8"), before);
+		assert.equal(after.fileShas["identifier.ts"], normalizedSha(liveIdentifier), "--update trusts live data");
 	});
 });
 

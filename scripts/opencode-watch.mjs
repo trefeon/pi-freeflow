@@ -3,14 +3,22 @@
  * OpenCode Zen Free-Tier & Schema Watcher Bot
  *
  * Monitors upstream `anomalyco/opencode` for:
- * 1. New release tags
- * 2. Schema changes in identifier.ts and session-id.ts (affects session ID generator)
- * 3. Zen documentation / pricing updates (zen.mdx)
- * 4. Changes in live Zen free-tier models (added, removed, deprecated)
+ * 1. New release tags                                  (informational)
+ * 2. Schema changes in identifier.ts / session-id.ts   (CRITICAL: session-ID / auth format)
+ * 3. Zen documentation / pricing updates (zen.mdx)     (informational)
+ * 4. Changes in the live Zen free-tier model listing   (informational)
+ *
+ * Only a change to `identifier.ts` or `session-id.ts` is a compatibility risk
+ * and therefore alert-worthy. The free-model listing is NOT authoritative for
+ * model presence: a model can be missing from it and still serve 200. Release
+ * tags and docs churn are expected upstream (releases land near-daily).
  *
  * CLI flags:
- *   --check      Dry-run / check mode; exits 1 if drift detected.
- *   --update     Updates the state file with live data.
+ *   --check      Check mode; exits 1 only for critical drift.
+ *   --advance    Advances the informational baseline (release, zen.mdx, free models,
+ *                lastChecked) while holding the previous SHA of any critically changed
+ *                file, so a schema change keeps alerting until a human re-baselines.
+ *   --update     Re-baselines the state file with live data (manual rebaseline path).
  *   --json       Emits structured JSON drift report to stdout.
  *   --output <f> Writes markdown drift report to specified file.
  *   --state <f>  Overrides path to state file (default: .github/opencode-watch-state.json).
@@ -24,6 +32,14 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 export const DEFAULT_STATE_FILE = ".github/opencode-watch-state.json";
+
+/**
+ * Watched files whose change is a real compatibility risk: the Zen free tier
+ * validates session format, so a schema edit here can break authentication.
+ * Every other watched signal (release tag, zen.mdx, model listing) is
+ * informational and never gates the watcher's exit code.
+ */
+export const CRITICAL_FILES = ["identifier.ts", "session-id.ts"];
 
 export const DEFAULT_CONFIG = {
  releaseApiUrl: "https://api.github.com/repos/anomalyco/opencode/releases/latest",
@@ -323,8 +339,9 @@ export async function fetchLiveFreeModels(options = {}) {
 export function detectDrift(state, liveData) {
  const summary = [];
  let hasDrift = false;
+ let criticalDrift = false;
 
- // 1. Release check
+ // 1. Release check (informational: upstream ships near-daily)
  const previousRelease = state.lastRelease || "";
  const currentRelease = liveData.latestRelease || "";
  const releaseChanged = Boolean(previousRelease && currentRelease && previousRelease !== currentRelease);
@@ -350,11 +367,15 @@ export function detectDrift(state, liveData) {
   const stale = curr === null || curr === undefined || curr === "";
   const changed = Boolean(prev && !stale && prev !== curr);
 
+  const critical = changed && CRITICAL_FILES.includes(file);
+
   fileShas[file] = {
    previous: prev,
    current: stale ? null : curr,
    changed,
    stale,
+   critical,
+   severity: changed ? (critical ? "critical" : "informational") : "none",
   };
 
   if (stale) {
@@ -364,7 +385,8 @@ export function detectDrift(state, liveData) {
 
   if (changed) {
    hasDrift = true;
-   if (file === "identifier.ts" || file === "session-id.ts") {
+   if (critical) {
+    criticalDrift = true;
     sessionIdAffected = true;
     summary.push(`Schema drift in \`${file}\` (session ID generator affected)`);
    } else if (file === "zen.mdx") {
@@ -399,11 +421,15 @@ export function detectDrift(state, liveData) {
 
  return {
   hasDrift,
+  criticalDrift,
+  informationalDrift: hasDrift && !criticalDrift,
+  severity: criticalDrift ? "critical" : hasDrift ? "informational" : "none",
   timestamp: new Date().toISOString(),
   release: {
    previous: previousRelease,
    current: currentRelease,
    changed: releaseChanged,
+   severity: releaseChanged ? "informational" : "none",
   },
   fileShas,
   staleFiles: Array.from(new Set([...(liveData.staleFiles || []), ...staleFiles])).sort(),
@@ -415,6 +441,7 @@ export function detectDrift(state, liveData) {
    added: addedModels,
    removed: removedModels,
    changed: freeModelsChanged,
+   severity: freeModelsChanged ? "informational" : "none",
   },
   freeModelCandidates: Array.from(new Set(liveData.freeModelCandidates || [])).sort(),
   summary,
@@ -428,19 +455,27 @@ export function detectDrift(state, liveData) {
  */
 export function generateDriftReport(driftResult) {
  const lines = [];
+ const critical = driftResult.criticalDrift === true;
 
  if (driftResult.hasDrift) {
-  lines.push("## 🚨 OpenCode Upstream Drift Detected");
+  lines.push(
+   critical ? "## 🚨 OpenCode Upstream Drift Detected" : "## ℹ️ OpenCode Upstream Informational Changes",
+  );
   lines.push("");
   lines.push(`**Timestamp:** \`${driftResult.timestamp}\``);
   lines.push("");
 
-  if (driftResult.sessionIdAffected) {
+  if (critical) {
    lines.push("> ⚠️ **CRITICAL WARNING:** Upstream changes detected in `identifier.ts` or `session-id.ts`.");
    lines.push("> The OpenCode Zen free tier validates session format `ses_[0-9a-f]{12}[0-9A-Za-z]{14}`.");
    lines.push("> Session ID generator or authentication logic may require immediate updates in `pi-freeflow`.");
-   lines.push("");
+  } else {
+   lines.push("> **No issue was filed for this run.** These signals are informational:");
+   lines.push("> the Zen free-model listing is not authoritative for model presence (a model can be");
+   lines.push("> absent from it and still serve 200), and upstream release / docs churn is expected.");
+   lines.push("> Only a change to `identifier.ts` or `session-id.ts` is alert-worthy.");
   }
+  lines.push("");
 
   lines.push("### Summary of Changes");
   for (const item of driftResult.summary) {
@@ -459,12 +494,13 @@ export function generateDriftReport(driftResult) {
   const staleFiles = driftResult.staleFiles || Object.entries(driftResult.fileShas || {}).filter(([, v]) => v.stale).map(([f]) => f);
   if (changedFiles.length > 0) {
    lines.push("### File SHA Changes");
-   lines.push("| File | Previous SHA (first 10) | Current SHA (first 10) |");
-   lines.push("| :--- | :--- | :--- |");
+   lines.push("| File | Severity | Previous SHA (first 10) | Current SHA (first 10) |");
+   lines.push("| :--- | :--- | :--- | :--- |");
    for (const [file, info] of changedFiles) {
     const prev = info.previous ? info.previous.slice(0, 10) : "*(new)*";
     const curr = info.current ? info.current.slice(0, 10) : "*(deleted)*";
-    lines.push(`| \`${file}\` | \`${prev}\` | \`${curr}\` |`);
+    const severity = info.critical ? "**critical**" : "informational";
+    lines.push(`| \`${file}\` | ${severity} | \`${prev}\` | \`${curr}\` |`);
    }
    lines.push("");
   }
@@ -489,6 +525,8 @@ export function generateDriftReport(driftResult) {
     for (const m of driftResult.freeModels.removed) {
      lines.push(`  - \`${m}\``);
     }
+    lines.push("  - A missing listing row proves nothing: require a live request");
+    lines.push("    returning 404/410 with a model-level message before any catalog action.");
    }
    lines.push("");
   }
@@ -501,20 +539,22 @@ export function generateDriftReport(driftResult) {
    }
    lines.push("");
   }
-  lines.push("### Recommended Actions");
-  if (driftResult.sessionIdAffected) {
-   lines.push("- [ ] Inspect `packages/schema/src/identifier.ts` and `session-id.ts` for format changes.");
+  if (critical) {
+   lines.push("### Recommended Actions");
+   if (driftResult.sessionIdAffected) {
+    lines.push("- [ ] Inspect `packages/schema/src/identifier.ts` and `session-id.ts` for format changes.");
+   }
+   if (driftResult.freeModels.added.length > 0) {
+    lines.push("- [ ] Evaluate new free models for `src/models.ts` after a live request passes.");
+   }
+   if (driftResult.freeModels.removed.length > 0) {
+    lines.push("- [ ] Retire a model only on a live 404/410 with a model-level message.");
+   }
+   if (driftResult.zenDocAffected) {
+    lines.push("- [ ] Verify Zen pricing and endpoint rate limits in `zen.mdx`.");
+   }
+   lines.push("- [ ] Run `pnpm test` to confirm test suite integrity.");
   }
-  if (driftResult.freeModels.added.length > 0) {
-   lines.push("- [ ] Evaluate adding new free models to `src/models.ts` catalog.");
-  }
-  if (driftResult.freeModels.removed.length > 0) {
-   lines.push("- [ ] Deprecate or remove dropped free models from active catalog.");
-  }
-  if (driftResult.zenDocAffected) {
-   lines.push("- [ ] Verify Zen pricing and endpoint rate limits in `zen.mdx`.");
-  }
-  lines.push("- [ ] Run `pnpm test` to confirm test suite integrity.");
  } else {
   lines.push("## ✅ OpenCode Upstream Status: In Sync");
   lines.push("");
@@ -588,11 +628,14 @@ export async function saveState(statePath, state) {
  * Update state object with live data.
  * @param {object} currentState
  * @param {object} liveData
+ * @param {{ holdFiles?: string[] }} [options] files whose previous SHA must be kept
  * @returns {object}
  */
-export function updateStateWithLive(currentState, liveData) {
+export function updateStateWithLive(currentState, liveData, options = {}) {
+ const holdFiles = new Set(options.holdFiles || []);
  const fileShas = { ...(currentState.fileShas || {}) };
  for (const [file, sha] of Object.entries(liveData.fileShas || {})) {
+  if (holdFiles.has(file)) continue;
   if (typeof sha === "string" && sha.length > 0) fileShas[file] = sha;
  }
  return {
@@ -601,6 +644,29 @@ export function updateStateWithLive(currentState, liveData) {
   freeModels: Array.from(new Set(liveData.freeModels || currentState.freeModels || [])).sort(),
   lastChecked: new Date().toISOString(),
  };
+}
+
+/** Files whose change is critical and therefore held out of an `--advance` write. */
+function criticalChangedFiles(driftResult) {
+ return Object.entries(driftResult.fileShas || {})
+  .filter(([, info]) => info && info.critical === true && info.changed === true)
+  .map(([file]) => file);
+}
+
+/**
+ * Whether a candidate state changes the baseline itself. A fresh `lastChecked`
+ * alone is not a baseline change: committing a timestamp every run would put a
+ * no-op commit on main daily.
+ */
+function baselineChanged(currentState, nextState) {
+ if (nextState.lastRelease !== currentState.lastRelease) return true;
+ if (JSON.stringify(nextState.freeModels) !== JSON.stringify(currentState.freeModels)) return true;
+ const previous = currentState.fileShas || {};
+ const files = new Set([...Object.keys(previous), ...Object.keys(nextState.fileShas || {})]);
+ for (const file of files) {
+  if (previous[file] !== nextState.fileShas[file]) return true;
+ }
+ return false;
 }
 
 /**
@@ -672,7 +738,12 @@ export function generateInfraReport(error, phase) {
 /**
  * Main watch runner function.
  * @param {object} [options]
- * @returns {Promise<{ driftResult: object, reportMarkdown: string, updatedState?: object }>}
+ * @param {boolean} [options.update] full re-baseline from live data (critical files included)
+ * @param {boolean} [options.advance] advance informational signals, holding critical SHAs
+ * @param {object} [options.mockLiveData] pre-collected live data (tests / replay)
+ * @param {string} [options.output] markdown report path
+ * @param {string} [options.stateFile] state path override
+ * @returns {Promise<{ driftResult: object, reportMarkdown: string, updatedState?: object, exitCode: number }>}
  */
 export async function runWatch(options = {}) {
  const statePath = options.stateFile || DEFAULT_STATE_FILE;
@@ -702,9 +773,21 @@ export async function runWatch(options = {}) {
  const reportMarkdown = generateDriftReport(driftResult);
 
  let updatedState = null;
- if (options.update || (options.check && options.updateOnDrift && driftResult.hasDrift)) {
+ if (options.update) {
+  // Manual re-baseline: trust live data for every watched file, critical included.
   updatedState = updateStateWithLive(currentState, liveData);
   await saveState(statePath, updatedState);
+ } else if (options.advance) {
+  // Informational churn advances the baseline so it is reported once. A
+  // critically changed schema file keeps its previous SHA, so the alert repeats
+  // until a human re-baselines with --update.
+  const candidate = updateStateWithLive(currentState, liveData, {
+   holdFiles: criticalChangedFiles(driftResult),
+  });
+  if (baselineChanged(currentState, candidate)) {
+   updatedState = candidate;
+   await saveState(statePath, updatedState);
+  }
  }
 
  if (options.output) {
@@ -716,7 +799,7 @@ export async function runWatch(options = {}) {
   driftResult,
   reportMarkdown,
   updatedState,
-  exitCode: driftResult.hasDrift ? 1 : 0,
+  exitCode: driftResult.criticalDrift ? 1 : 0,
  };
 }
 
@@ -727,6 +810,7 @@ async function main() {
  const args = process.argv.slice(2);
  let check = false;
  let update = false;
+ let advance = false;
  let json = false;
  let output = null;
  let stateFile = DEFAULT_STATE_FILE;
@@ -737,6 +821,8 @@ async function main() {
    check = true;
   } else if (arg === "--update") {
    update = true;
+  } else if (arg === "--advance") {
+   advance = true;
   } else if (arg === "--json") {
    json = true;
   } else if (arg === "--output" || arg === "--report") {
@@ -749,8 +835,11 @@ async function main() {
 Usage: node scripts/opencode-watch.mjs [flags]
 
 Flags:
-  --check       Dry-run / check mode; exits 1 if drift detected.
-  --update      Updates the state file with live data.
+  --check       Check mode; exits 1 only for critical drift (identifier.ts / session-id.ts).
+  --advance     Advances the informational baseline (release, zen.mdx, free models,
+                lastChecked) while holding the previous SHA of any critically
+                changed file.
+  --update      Re-baselines the state file with live data (manual rebaseline path).
   --json        Emits structured JSON drift report to stdout.
   --output <f>  Writes markdown drift report to specified file.
   --state <f>   Overrides path to state file (default: ${DEFAULT_STATE_FILE}).
@@ -764,6 +853,7 @@ Flags:
   const { driftResult, reportMarkdown } = await runWatch({
    check,
    update,
+   advance,
    output,
    stateFile,
   });
@@ -774,7 +864,7 @@ Flags:
    console.log(reportMarkdown);
   }
 
-  if (check && driftResult.hasDrift) {
+  if (check && driftResult.criticalDrift) {
    process.exit(1);
   }
  } catch (err) {

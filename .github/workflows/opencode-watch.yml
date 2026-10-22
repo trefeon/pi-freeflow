@@ -5,6 +5,11 @@ on:
     # Daily at 04:00 UTC
     - cron: "0 4 * * *"
   workflow_dispatch:
+    inputs:
+      rebaseline:
+        description: "Re-baseline the watcher state and close any open drift issue"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -29,13 +34,27 @@ jobs:
         with:
           node-version: "lts/*"
 
+      - name: Rebaseline Watcher State
+        if: github.event.inputs.rebaseline == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Manual path: trust live upstream for every watched file, critical
+          # included, and write the full baseline. No issue is created here.
+          node scripts/opencode-watch.mjs --update --output drift-report.md
+
       - name: Run OpenCode Watch Check
         id: check
+        if: github.event.inputs.rebaseline != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
-          node scripts/opencode-watch.mjs --check --output drift-report.md
+          # --advance re-baselines informational signals (release, zen.mdx, the
+          # model listing) so they report once, while holding the previous SHA of
+          # a critically changed schema file: that alert repeats until a human
+          # re-baselines with the rebaseline dispatch input.
+          node scripts/opencode-watch.mjs --check --advance --output drift-report.md
           EXIT_CODE=$?
           set -e
 
@@ -43,20 +62,15 @@ jobs:
 
           if [ $EXIT_CODE -eq 2 ]; then
             echo "Watcher infra failure (exit code 2) — report only, no drift issue"
-            echo "DRIFT_DETECTED=false" >> "$GITHUB_ENV"
             echo "INFRA_FAILURE=true" >> "$GITHUB_ENV"
-            echo "drift=false" >> "$GITHUB_OUTPUT"
           elif [ $EXIT_CODE -ne 0 ]; then
-            echo "Drift detected (exit code $EXIT_CODE)"
-            echo "DRIFT_DETECTED=true" >> "$GITHUB_ENV"
+            echo "Critical drift detected (exit code $EXIT_CODE)"
             echo "INFRA_FAILURE=false" >> "$GITHUB_ENV"
-            echo "drift=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No drift detected (exit code 0)"
-            echo "DRIFT_DETECTED=false" >> "$GITHUB_ENV"
+            echo "No critical drift (exit code 0)"
             echo "INFRA_FAILURE=false" >> "$GITHUB_ENV"
-            echo "drift=false" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Publish Step Summary
         if: always()
         run: |
@@ -69,29 +83,30 @@ jobs:
         run: |
           echo "::error::OpenCode watcher infra failure — see step summary; no drift issue filed."
 
-      - name: Open or Update GitHub Issue on Drift
-        if: env.DRIFT_DETECTED == 'true'
+      - name: File or Update Critical Drift Issue
+        if: steps.check.outputs.exit_code == '1'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           LABEL="opencode-drift"
           # Ensure label exists in repository
-          gh label create "$LABEL" --description "Upstream OpenCode drift detected" --color "d73a4a" --force || true
+          gh label create "$LABEL" --description "Critical upstream OpenCode drift (session-ID/auth format)" --color "d73a4a" --force || true
 
           # Materialize the fallback so gh is always handed a file. A quoted
           # "--body <text>" string kept in a variable is word-split and reaches
           # gh as a broken argument list.
           if [ ! -f drift-report.md ]; then
-            printf '%s\n' "OpenCode upstream drift detected but drift-report.md is missing. See workflow logs." > drift-report.md
+            printf '%s\n' "Critical OpenCode upstream drift detected but drift-report.md is missing. See workflow logs." > drift-report.md
           fi
 
-          # Check for existing open issue with the opencode-drift label
+          # One issue per open drift: edit its body in place instead of
+          # commenting on every scheduled run.
           EXISTING_ISSUE=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number')
 
           if [ -n "$EXISTING_ISSUE" ]; then
             echo "Updating existing drift issue #$EXISTING_ISSUE"
-            gh issue comment "$EXISTING_ISSUE" --body-file drift-report.md
+            gh issue edit "$EXISTING_ISSUE" --body-file drift-report.md
           else
             echo "Creating new drift issue"
             CURRENT_DATE=$(date -u +'%Y-%m-%d')
@@ -108,26 +123,44 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           LABEL="opencode-drift"
-          # Only a clean run (exit 0) closes the alert: exit 1 is drift and
-          # exit 2 is a watcher infra failure, where upstream was never read.
+          # Exit 0 means no critical drift: informational signals may have moved
+          # (and were re-baselined by --advance), but session format is intact.
+          # Exit 1 keeps the issue open; exit 2 never reached upstream.
           EXISTING_ISSUE=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number')
           if [ -z "$EXISTING_ISSUE" ]; then
             echo "No open $LABEL issue to close"
           else
             CURRENT_DATE=$(date -u +'%Y-%m-%d %H:%M UTC')
-            echo "Upstream drift recovered — closing drift issue #$EXISTING_ISSUE"
-            gh issue comment "$EXISTING_ISSUE" --body "OpenCode upstream drift is back in sync as of ${CURRENT_DATE}. Auto-closing this drift alert."
+            echo "No critical drift — closing drift issue #$EXISTING_ISSUE"
+            gh issue comment "$EXISTING_ISSUE" --body "OpenCode upstream is back in sync as of ${CURRENT_DATE}: no critical schema change is outstanding. Auto-closing this drift alert."
             gh issue close "$EXISTING_ISSUE" --reason completed
           fi
 
-      - name: Update State and Commit
-        if: env.DRIFT_DETECTED == 'true'
+      - name: Close Drift Issue After Rebaseline
+        if: github.event.inputs.rebaseline == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LABEL="opencode-drift"
+          EXISTING_ISSUE=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number')
+          if [ -z "$EXISTING_ISSUE" ]; then
+            echo "No open $LABEL issue to close"
+          else
+            CURRENT_DATE=$(date -u +'%Y-%m-%d %H:%M UTC')
+            echo "Baseline re-established — closing drift issue #$EXISTING_ISSUE"
+            gh issue comment "$EXISTING_ISSUE" --body "Watcher baseline re-established by a manual rebaseline as of ${CURRENT_DATE}."
+            gh issue close "$EXISTING_ISSUE" --reason completed
+          fi
+
+      - name: Commit Watcher State
+        # Advance the committed baseline after any successful read (exit 0 or 1),
+        # not only when a critical alert fires: informational churn must not be
+        # re-reported on the next run.
+        if: github.event.inputs.rebaseline == 'true' || steps.check.outputs.exit_code == '0' || steps.check.outputs.exit_code == '1'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Updating .github/opencode-watch-state.json..."
-          node scripts/opencode-watch.mjs --update
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .github/opencode-watch-state.json

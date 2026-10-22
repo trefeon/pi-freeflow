@@ -211,6 +211,8 @@ test("detectDrift returns no drift when live matches state baseline", () => {
 	};
 	const result = detectDrift(BASELINE_STATE, liveData);
 	assert.equal(result.hasDrift, false);
+	assert.equal(result.criticalDrift, false);
+	assert.equal(result.severity, "none");
 	assert.equal(result.summary.length, 0);
 	assert.equal(result.release.changed, false);
 	assert.equal(result.sessionIdAffected, false);
@@ -227,7 +229,10 @@ test("detectDrift detects when a free model is removed", () => {
 	};
 	const result = detectDrift(BASELINE_STATE, liveData);
 	assert.equal(result.hasDrift, true);
+	assert.equal(result.criticalDrift, false);
+	assert.equal(result.informationalDrift, true);
 	assert.equal(result.freeModels.changed, true);
+	assert.equal(result.freeModels.severity, "informational");
 	assert.deepEqual(result.freeModels.removed, ["ling-3.0-flash-fin-free"]);
 	assert.equal(result.freeModels.added.length, 0);
 	assert.ok(result.summary.some((s: string) => s.includes("Free models removed") && s.includes("ling-3.0-flash-fin-free")));
@@ -241,6 +246,7 @@ test("detectDrift detects when a free model is added", () => {
 	};
 	const result = detectDrift(BASELINE_STATE, liveData);
 	assert.equal(result.hasDrift, true);
+	assert.equal(result.criticalDrift, false);
 	assert.equal(result.freeModels.changed, true);
 	assert.deepEqual(result.freeModels.added, ["deepseek-v4-flash-free"]);
 	assert.equal(result.freeModels.removed.length, 0);
@@ -258,9 +264,15 @@ test("detectDrift detects schema SHA changes and flags session ID impact", () =>
 	};
 	const result = detectDrift(BASELINE_STATE, liveData);
 	assert.equal(result.hasDrift, true);
+	assert.equal(result.criticalDrift, true);
+	assert.equal(result.informationalDrift, false);
+	assert.equal(result.severity, "critical");
 	assert.equal(result.sessionIdAffected, true);
 	assert.equal(result.fileShas["session-id.ts"].changed, true);
+	assert.equal(result.fileShas["session-id.ts"].critical, true);
+	assert.equal(result.fileShas["session-id.ts"].severity, "critical");
 	assert.equal(result.fileShas["identifier.ts"].changed, false);
+	assert.equal(result.fileShas["identifier.ts"].critical, false);
 	assert.ok(result.summary.some((s: string) => s.includes("session ID generator affected")));
 });
 
@@ -275,8 +287,11 @@ test("detectDrift detects zen.mdx documentation/pricing changes", () => {
 	};
 	const result = detectDrift(BASELINE_STATE, liveData);
 	assert.equal(result.hasDrift, true);
+	assert.equal(result.criticalDrift, false);
 	assert.equal(result.zenDocAffected, true);
 	assert.equal(result.sessionIdAffected, false);
+	assert.equal(result.fileShas["zen.mdx"].critical, false);
+	assert.equal(result.fileShas["zen.mdx"].severity, "informational");
 	assert.ok(result.summary.some((s: string) => s.includes("Zen documentation / pricing drift")));
 });
 
@@ -288,7 +303,9 @@ test("detectDrift detects new release tag", () => {
 	};
 	const result = detectDrift(BASELINE_STATE, liveData);
 	assert.equal(result.hasDrift, true);
+	assert.equal(result.criticalDrift, false);
 	assert.equal(result.release.changed, true);
+	assert.equal(result.release.severity, "informational");
 	assert.equal(result.release.previous, "v1.18.31");
 	assert.equal(result.release.current, "v1.19.0");
 	assert.ok(result.summary.some((s: string) => s.includes("New release: `v1.18.31` -> `v1.19.0`")));
@@ -302,6 +319,7 @@ test("detectDrift treats unknown file SHAs as stale, never as drift", () => {
 	};
 	const result = detectDrift(BASELINE_STATE, liveData);
 	assert.equal(result.hasDrift, false);
+	assert.equal(result.criticalDrift, false);
 	assert.equal(result.fileShas["zen.mdx"].changed, false);
 	assert.equal(result.fileShas["zen.mdx"].stale, true);
 	assert.deepEqual(result.staleFiles, ["zen.mdx"]);
@@ -317,6 +335,7 @@ test("detectDrift carries free-model candidates without flagging drift", () => {
 	};
 	const result = detectDrift(BASELINE_STATE, liveData);
 	assert.equal(result.hasDrift, false);
+	assert.equal(result.criticalDrift, false);
 	assert.deepEqual(result.freeModelCandidates, ["mystery-model"]);
 });
 test("generateDriftReport produces clean in-sync markdown when no drift", () => {
@@ -347,6 +366,7 @@ test("generateDriftReport produces clean in-sync markdown when no drift", () => 
 test("generateDriftReport produces comprehensive issue body on drift with session ID warning", () => {
 	const driftResult = {
 		hasDrift: true,
+		criticalDrift: true,
 		timestamp: "2026-09-19T04:00:00.000Z",
 		release: { previous: "v1.18.30", current: "v1.18.31", changed: true },
 		fileShas: {
@@ -355,12 +375,16 @@ test("generateDriftReport produces comprehensive issue body on drift with sessio
 				current: "4a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b",
 				changed: true,
 				stale: false,
+				critical: true,
+				severity: "critical",
 			},
 			"session-id.ts": {
 				previous: "e9bf2bb2382af14577371b17b22b36f07ef6cf97923e655935fde0460ec3bdc6",
 				current: "e9bf2bb2382af14577371b17b22b36f07ef6cf97923e655935fde0460ec3bdc6",
 				changed: false,
 				stale: false,
+				critical: false,
+				severity: "none",
 			},
 		},
 		staleFiles: [],
@@ -391,11 +415,14 @@ test("generateDriftReport produces comprehensive issue body on drift with sessio
 	assert.ok(markdown.includes("`deepseek-v4-flash-free`"));
 	assert.ok(markdown.includes("`ling-3.0-flash-fin-free`"));
 	assert.ok(markdown.includes("### Recommended Actions"));
+	assert.ok(markdown.includes("**critical**"), "the changed critical file must be marked in the file table");
+	assert.ok(markdown.includes("404/410"), "removed models must require a live 404/410 before catalog action");
 });
 
 test("generateDriftReport lists stale baselines and model candidates", () => {
 	const driftResult = {
 		hasDrift: true,
+		criticalDrift: false,
 		timestamp: "2026-09-19T04:00:00.000Z",
 		release: { previous: "v1.18.31", current: "v1.18.31", changed: false },
 		fileShas: {
@@ -418,6 +445,26 @@ test("generateDriftReport lists stale baselines and model candidates", () => {
 	assert.ok(markdown.includes("Stale Baselines"));
 	assert.ok(markdown.includes("`zen.mdx`"));
 	assert.ok(markdown.includes("mystery-model"));
+	assert.ok(markdown.includes("## ℹ️ OpenCode Upstream Informational Changes"));
+	assert.ok(markdown.includes("No issue was filed for this run"));
+	assert.ok(!markdown.includes("CRITICAL WARNING"));
+	assert.ok(!markdown.includes("### Recommended Actions"), "informational runs carry no action checklist");
+});
+
+test("generateDriftReport treats release / docs / listing churn as informational", () => {
+	const driftResult = detectDrift(BASELINE_STATE, {
+		latestRelease: "v1.19.0",
+		fileShas: { ...BASELINE_STATE.fileShas, "zen.mdx": "b".repeat(64) },
+		freeModels: [...BASELINE_STATE.freeModels.filter((m) => m !== "ling-3.0-flash-fin-free"), "deepseek-v4-flash-free"],
+	});
+	const markdown = generateDriftReport(driftResult);
+	assert.ok(markdown.includes("## ℹ️ OpenCode Upstream Informational Changes"));
+	assert.ok(!markdown.includes("🚨"));
+	assert.ok(!markdown.includes("CRITICAL WARNING"));
+	assert.ok(markdown.includes("No issue was filed for this run"));
+	assert.ok(markdown.includes("not authoritative for model presence"));
+	assert.ok(markdown.includes("release / docs churn is expected"));
+	assert.ok(markdown.includes("404/410 with a model-level message"));
 });
 
 test("generateInfraReport marks the failure as non-drift", () => {
@@ -468,6 +515,25 @@ test("updateStateWithLive never persists unknown markers", () => {
 	assert.ok(!Object.values(updated.fileShas).some((v) => v === null || String(v).startsWith("error:")));
 });
 
+test("updateStateWithLive holds the previous SHA of requested files", () => {
+	const liveSession = "e".repeat(64);
+	const liveZen = "d".repeat(64);
+	const updated = updateStateWithLive(
+		BASELINE_STATE,
+		{
+			latestRelease: "v1.19.0",
+			fileShas: { "identifier.ts": "f".repeat(64), "session-id.ts": liveSession, "zen.mdx": liveZen },
+			freeModels: [...BASELINE_STATE.freeModels, "deepseek-v4-flash-free"],
+		},
+		{ holdFiles: ["identifier.ts"] },
+	);
+	assert.equal(updated.lastRelease, "v1.19.0");
+	assert.equal(updated.fileShas["identifier.ts"], BASELINE_STATE.fileShas["identifier.ts"], "held SHA survives");
+	assert.equal(updated.fileShas["session-id.ts"], liveSession);
+	assert.equal(updated.fileShas["zen.mdx"], liveZen);
+	assert.ok(updated.freeModels.includes("deepseek-v4-flash-free"));
+});
+
 test("collectLiveData records unknown for failed files, never an error string SHA", async () => {
 	const mockFetch = async (url: string) => {
 		if (url.includes("releases")) {
@@ -487,7 +553,7 @@ test("collectLiveData records unknown for failed files, never an error string SH
 	assert.deepEqual(liveData.freeModels, ["big-pickle"]);
 });
 
-test("runWatch exit-code matrix: 0 in sync, 1 on drift", async () => {
+test("runWatch exit-code matrix: 0 in sync, 1 only on critical drift, 0 on informational drift", async () => {
 	await withTempDir(async (dir) => {
 		const statePath = await writeState(dir, BASELINE_STATE);
 		const inSync = await runWatch({
@@ -500,7 +566,8 @@ test("runWatch exit-code matrix: 0 in sync, 1 on drift", async () => {
 		});
 		assert.equal(inSync.exitCode, 0);
 		assert.equal(inSync.driftResult.hasDrift, false);
-		const drifted = await runWatch({
+
+		const informational = await runWatch({
 			stateFile: statePath,
 			mockLiveData: {
 				latestRelease: "v1.19.0",
@@ -508,8 +575,104 @@ test("runWatch exit-code matrix: 0 in sync, 1 on drift", async () => {
 				freeModels: [...BASELINE_STATE.freeModels],
 			},
 		});
-		assert.equal(drifted.exitCode, 1);
-		assert.equal(drifted.driftResult.hasDrift, true);
+		assert.equal(informational.exitCode, 0, "release churn must not fail the check");
+		assert.equal(informational.driftResult.hasDrift, true);
+		assert.equal(informational.driftResult.criticalDrift, false);
+		assert.ok(informational.reportMarkdown.includes("Informational Changes"));
+
+		const critical = await runWatch({
+			stateFile: statePath,
+			mockLiveData: {
+				latestRelease: "v1.19.0",
+				fileShas: { ...BASELINE_STATE.fileShas, "session-id.ts": "f".repeat(64) },
+				freeModels: [...BASELINE_STATE.freeModels],
+			},
+		});
+		assert.equal(critical.exitCode, 1);
+		assert.equal(critical.driftResult.criticalDrift, true);
+		assert.ok(critical.reportMarkdown.includes("🚨"));
+	});
+});
+
+test("runWatch --advance re-baselines informational signals and holds a critical SHA", async () => {
+	await withTempDir(async (dir) => {
+		const statePath = await writeState(dir, BASELINE_STATE);
+		const liveData = {
+			latestRelease: "v1.19.0",
+			fileShas: {
+				...BASELINE_STATE.fileShas,
+				"identifier.ts": "f".repeat(64),
+				"zen.mdx": "c".repeat(64),
+			},
+			freeModels: [...BASELINE_STATE.freeModels, "deepseek-v4-flash-free"],
+		};
+		const first = await runWatch({ stateFile: statePath, advance: true, mockLiveData: liveData });
+		assert.equal(first.exitCode, 1, "a critical schema change keeps alerting");
+		const saved = await loadState(statePath);
+		assert.equal(saved.lastRelease, "v1.19.0");
+		assert.equal(saved.fileShas["identifier.ts"], BASELINE_STATE.fileShas["identifier.ts"], "critical SHA held");
+		assert.equal(saved.fileShas["zen.mdx"], "c".repeat(64), "informational SHA advanced");
+		assert.ok(saved.freeModels.includes("deepseek-v4-flash-free"));
+
+		const second = await runWatch({ stateFile: statePath, advance: true, mockLiveData: liveData });
+		assert.equal(second.exitCode, 1, "the held critical SHA reports again");
+		assert.equal(second.updatedState, null, "an unchanged informational baseline is not rewritten");
+	});
+});
+
+test("runWatch --advance exits 0 and baselines informational-only drift once", async () => {
+	await withTempDir(async (dir) => {
+		const statePath = await writeState(dir, BASELINE_STATE);
+		const liveData = {
+			latestRelease: "v1.19.0",
+			fileShas: { ...BASELINE_STATE.fileShas, "zen.mdx": "c".repeat(64) },
+			freeModels: [...BASELINE_STATE.freeModels.filter((m) => m !== "ling-3.0-flash-fin-free"), "deepseek-v4-flash-free"],
+		};
+		const first = await runWatch({ stateFile: statePath, advance: true, mockLiveData: liveData });
+		assert.equal(first.exitCode, 0);
+		assert.equal(first.driftResult.hasDrift, true);
+		assert.equal(first.driftResult.criticalDrift, false);
+		const saved = await loadState(statePath);
+		assert.equal(saved.lastRelease, "v1.19.0");
+		assert.equal(saved.fileShas["zen.mdx"], "c".repeat(64));
+		assert.ok(!saved.freeModels.includes("ling-3.0-flash-fin-free"));
+		assert.ok(saved.freeModels.includes("deepseek-v4-flash-free"));
+
+		const second = await runWatch({ stateFile: statePath, advance: true, mockLiveData: liveData });
+		assert.equal(second.driftResult.hasDrift, false, "informational churn must not re-report");
+		assert.equal(second.exitCode, 0);
+		assert.equal(second.updatedState, null);
+	});
+});
+
+test("runWatch --update re-baselines critical SHAs (manual rebaseline path)", async () => {
+	await withTempDir(async (dir) => {
+		const statePath = await writeState(dir, BASELINE_STATE);
+		const liveIdentifier = "f".repeat(64);
+		const run = await runWatch({
+			stateFile: statePath,
+			update: true,
+			mockLiveData: {
+				latestRelease: "v1.19.0",
+				fileShas: { ...BASELINE_STATE.fileShas, "identifier.ts": liveIdentifier },
+				freeModels: [...BASELINE_STATE.freeModels],
+			},
+		});
+		assert.equal(run.driftResult.criticalDrift, true, "the run still reports what it saw");
+		const saved = await loadState(statePath);
+		assert.equal(saved.fileShas["identifier.ts"], liveIdentifier, "--update trusts live data for critical files");
+		assert.equal(saved.lastRelease, "v1.19.0");
+
+		const after = await runWatch({
+			stateFile: statePath,
+			advance: true,
+			mockLiveData: {
+				latestRelease: "v1.19.0",
+				fileShas: { ...saved.fileShas },
+				freeModels: [...saved.freeModels],
+			},
+		});
+		assert.equal(after.driftResult.hasDrift, false, "the rebaseline cleared the critical alert");
 	});
 });
 

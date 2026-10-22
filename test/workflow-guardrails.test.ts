@@ -24,13 +24,13 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WORKFLOWS = path.join(ROOT, ".github", "workflows");
 
 const WATCH_JOB = "watch";
-const DRIFT_ISSUE_STEP = "Open or Update GitHub Issue on Drift";
-const STATE_STEP = "Update State and Commit";
+const DRIFT_ISSUE_STEP = "File or Update Critical Drift Issue";
+const STATE_STEP = "Commit Watcher State";
 const RELEASE_JOB = "validate-and-publish";
 const TAG_VALIDATION_STEP = "Validate tag against package version";
 const RELEASE_STEP = "Create or Update GitHub Release";
 const TAG_GATE = "startsWith(github.ref, 'refs/tags/')";
-const FALLBACK_BODY = "OpenCode upstream drift detected but drift-report.md is missing. See workflow logs.";
+const FALLBACK_BODY = "Critical OpenCode upstream drift detected but drift-report.md is missing. See workflow logs.";
 
 type Step = { name?: string; if?: string; run?: string; uses?: string };
 type Job = { "runs-on"?: unknown; strategy?: { matrix?: Record<string, unknown> }; steps?: Step[] };
@@ -182,21 +182,13 @@ if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
   printf '%s' "\${GH_STUB_LIST:-}"
   exit 0
 fi
-if [ "$1" = "issue" ] && { [ "$2" = "comment" ] || [ "$2" = "create" ]; }; then
+if [ "$1" = "issue" ] && { [ "$2" = "comment" ] || [ "$2" = "create" ] || [ "$2" = "edit" ]; }; then
   shift 2
   while [ $# -gt 0 ]; do
     if [ "$1" = "--body-file" ]; then cp "$2" "$GH_STUB_DIR/body.txt"; fi
     shift
   done
 fi
-exit 0
-`;
-
-const NODE_STUB = `#!/bin/sh
-# Stands in for \`node scripts/opencode-watch.mjs --update\`: records the call and
-# produces a state change so the push path runs without contacting upstream.
-printf '%s\\n' "$*" >> "$NODE_STUB_DIR/node.log"
-printf '%s\\n' '{"simulated":true}' > .github/opencode-watch-state.json
 exit 0
 `;
 
@@ -231,8 +223,8 @@ test("opencode-watch.yml files the drift issue body when the report is missing",
 	});
 });
 
-test("opencode-watch.yml comments the open drift issue with the report file", { skip: SKIP_NO_YAML ?? SKIP_NO_STUBS }, () => {
-	withTempDir("pff-drift-comment-", (dir) => {
+test("opencode-watch.yml edits the open drift issue body in place", { skip: SKIP_NO_YAML ?? SKIP_NO_STUBS }, () => {
+	withTempDir("pff-drift-edit-", (dir) => {
 		const report = "# Drift\n\n- upstream file changed\n";
 		fs.writeFileSync(path.join(dir, "drift-report.md"), report);
 		const gh = makeStub(dir, "gh", GH_STUB);
@@ -245,9 +237,15 @@ test("opencode-watch.yml comments the open drift issue with the report file", { 
 
 		const calls = ghCalls(gh.bin);
 		assert.deepEqual(
-			calls.find((call) => call[1] === "comment"),
-			["issue", "comment", "42", "--body-file", "drift-report.md"],
+			calls.find((call) => call[1] === "edit"),
+			["issue", "edit", "42", "--body-file", "drift-report.md"],
 		);
+		assert.equal(
+			calls.filter((call) => call[1] === "comment").length,
+			0,
+			"an open issue is edited, never commented on every run",
+		);
+		assert.equal(calls.filter((call) => call[0] === "issue" && call[1] === "create").length, 0);
 		assert.equal(fs.readFileSync(path.join(gh.bin, "body.txt"), "utf8"), report);
 	});
 });
@@ -284,17 +282,14 @@ test(
 			git(["commit", "-m", "feat: concurrent change on main"], other);
 			git(["push", "origin", "main"], other);
 
-			const node = makeStub(dir, "node", NODE_STUB);
-			const result = runShell(scriptOf("opencode-watch.yml", WATCH_JOB, STATE_STEP), work, {
-				...node.env,
-				NODE_STUB_DIR: slash(node.bin),
-			});
+			// The watcher already advanced the state in this checkout; the step only commits it.
+			fs.writeFileSync(path.join(work, ".github", "opencode-watch-state.json"), '{"simulated":true}\n');
+			const result = runShell(scriptOf("opencode-watch.yml", WATCH_JOB, STATE_STEP), work, {});
 			assert.equal(result.status, 0, result.output);
 
 			const history = git(["--git-dir", slash(origin), "log", "--pretty=%s", "main"]);
 			assert.match(history, /chore\(watch\): update opencode watch state \[skip ci\]/, history);
 			assert.match(history, /feat: concurrent change on main/, history);
-			assert.equal(fs.readFileSync(path.join(node.bin, "node.log"), "utf8").trim(), "scripts/opencode-watch.mjs --update");
 			// The rebase carries the state file through git, so the checkout may hand it back in the
 			// host's line-ending convention (CRLF on Windows runners): the contract is that the content
 			// survives the rebase-then-push, not which newline the OS writes.
