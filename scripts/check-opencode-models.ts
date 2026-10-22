@@ -21,6 +21,7 @@
  * CLI options:
  *   --output <file>  Write markdown report to file
  *   --json           Print structured JSON after the progress lines
+ *   --json-output <file>  Write the same structured JSON as a bare file (no logs)
  *
  * Exit codes: 0 = no dead model (healthy, unavailable, and timeout all exit 0),
  * 1 = at least one dead model, 2 = fatal/infra.
@@ -317,6 +318,8 @@ async function main() {
   const args = process.argv.slice(2);
   const outputIdx = args.indexOf("--output");
   const outputFile = outputIdx !== -1 ? args[outputIdx + 1] : null;
+  const jsonFileIdx = args.indexOf("--json-output");
+  const jsonFile = jsonFileIdx !== -1 ? args[jsonFileIdx + 1] : null;
   const isJson = args.includes("--json");
 
   const { server, port } = await startOwnedProxy();
@@ -344,41 +347,40 @@ async function main() {
     console.log(`[check-opencode] Report written to ${outputFile}`);
   }
 
-  if (isJson) {
-    console.log(
-      JSON.stringify(
-        {
-          affectedCount: summary.affectedCount,
-          deadCount: summary.deadCount,
-          degradedCount: summary.degradedCount,
-          results,
-        },
-        null,
-        2,
-      ),
-    );
+  const payload = {
+    affectedCount: summary.affectedCount,
+    deadCount: summary.deadCount,
+    degradedCount: summary.degradedCount,
+    results,
+  };
+  // The file form is what the workflow reads. It is written as a bare JSON
+  // document so no progress or summary line can break the parse; stdout mode
+  // below keeps the same object as the stream's last line.
+  if (jsonFile) {
+    await fs.writeFile(jsonFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   }
 
   if (summary.exitCode === 1) {
     console.error(`[check-opencode] ${summary.deadCount} OpenCode model(s) dead (model-level failure).`);
-    process.exit(1);
+  } else {
+    // Availability faults and probe timeouts exit 0: they are reported, never
+    // alerted on, so a shared-runner blip can never file an issue.
+    for (const result of [...summary.unavailable, ...summary.timeouts]) {
+      console.log(
+        `[check-opencode] ${VERDICT_LABELS[result.verdict]}: ${result.id} — HTTP ${result.status || "network"} ${result.error ?? ""}`.trimEnd(),
+      );
+    }
+    if (summary.degradedCount > 0) {
+      console.log(
+        `[check-opencode] ${summary.degradedCount} model(s) degraded by availability or probe timeout — no dead model, no alert.`,
+      );
+    } else {
+      console.log(`[check-opencode] All ${results.length} models healthy.`);
+    }
   }
 
-  // Availability faults and probe timeouts exit 0: they are reported, never
-  // alerted on, so a shared-runner blip can never file an issue.
-  for (const result of [...summary.unavailable, ...summary.timeouts]) {
-    console.log(
-      `[check-opencode] ${VERDICT_LABELS[result.verdict]}: ${result.id} — HTTP ${result.status || "network"} ${result.error ?? ""}`.trimEnd(),
-    );
-  }
-  if (summary.degradedCount > 0) {
-    console.log(
-      `[check-opencode] ${summary.degradedCount} model(s) degraded by availability or probe timeout — no dead model, no alert.`,
-    );
-  } else {
-    console.log(`[check-opencode] All ${results.length} models healthy.`);
-  }
-  process.exit(0);
+  if (isJson) console.log(JSON.stringify(payload, null, 2));
+  process.exit(summary.exitCode);
 }
 
 // Run the CLI only when this file is the process entry point; tests import

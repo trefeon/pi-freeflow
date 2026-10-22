@@ -471,17 +471,25 @@ globalThis.fetch = async (input, init) => {
  * loopback, so it passes the real gate (not a stub of it). Every upstream
  * answer is stubbed, which makes the exit-code contract observable offline.
  */
-async function runHealthCheckCli(upstream: { status: number; message?: string }) {
+async function runHealthCheckCli(upstream: { status: number; message?: string; args?: string[] }) {
 	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ff-model-check-"));
 	const preload = path.join(scratch, "stub-fetch.mjs");
+	const jsonOut = path.join(scratch, "health.json");
 	fs.writeFileSync(preload, UPSTREAM_STUB_SOURCE, "utf8");
 	// Fresh data dir: the CLI's daemon writes its own token there and the CLI
 	// reads it back, while the empty relay state keeps the run on the direct
 	// (stubbed) upstream path.
 	const dataDir = path.join(scratch, "data");
+	const args = [
+		"--experimental-strip-types",
+		"--import",
+		pathToFileURL(preload).href,
+		path.join(ROOT, "scripts", "check-opencode-models.ts"),
+		...(upstream.args ?? []).map((arg) => (arg === "<json-output>" ? jsonOut : arg)),
+	];
 	const child = spawn(
 		process.execPath,
-		["--experimental-strip-types", "--import", pathToFileURL(preload).href, path.join(ROOT, "scripts", "check-opencode-models.ts")],
+		args,
 		{
 			cwd: ROOT,
 			env: {
@@ -505,7 +513,13 @@ async function runHealthCheckCli(upstream: { status: number; message?: string })
 		const exited = Promise.withResolvers<number | null>();
 		child.on("exit", (code) => exited.resolve(code));
 		const code = await exited.promise;
-		return { code, stdout, stderr, tokenWritten: fs.existsSync(path.join(dataDir, "token")) };
+		return {
+			code,
+			stdout,
+			stderr,
+			jsonReport: fs.existsSync(jsonOut) ? fs.readFileSync(jsonOut, "utf8") : null,
+			tokenWritten: fs.existsSync(path.join(dataDir, "token")),
+		};
 	} finally {
 		fs.rmSync(scratch, { recursive: true, force: true });
 	}
@@ -521,6 +535,20 @@ test("the health-check CLI exits 0 through the real daemon gate", async () => {
 	assert.match(run.stdout, /All \d+ models healthy/);
 	assert.ok(!/affected/.test(run.stderr), `no model may be reported affected: ${run.stderr.slice(-300)}`);
 	assert.ok(run.tokenWritten, "the CLI's daemon wrote the token the CLI authenticated with");
+});
+
+test("the health-check CLI writes a bare JSON file the workflow can parse", async () => {
+	const run = await runHealthCheckCli({ status: 200, args: ["--json-output", "<json-output>"] });
+	assert.equal(
+		run.code,
+		0,
+		`CLI must exit 0 against a healthy catalog; stdout=${run.stdout.slice(-300)} stderr=${run.stderr.slice(-300)}`,
+	);
+	assert.ok(run.jsonReport, "the CLI must write the file named by --json-output");
+	const report = JSON.parse(run.jsonReport as string) as { deadCount: number; degradedCount: number; affectedCount: number };
+	assert.equal(report.deadCount, 0);
+	assert.equal(report.degradedCount, 0);
+	assert.equal(report.affectedCount, 0);
 });
 
 test("the health-check CLI exits 1 only when a model is dead", async () => {

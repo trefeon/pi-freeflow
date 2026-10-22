@@ -49,15 +49,12 @@ jobs:
           set +e
           node --experimental-strip-types scripts/check-opencode-models.ts \
             --output model-health-report.md \
-            --json > model-health-output.log
+            --json-output model-health.json
           EXIT_CODE=$?
           set -e
 
-          cat model-health-output.log || true
-          # --json prints human progress first and the report object last, so keep
-          # the tail from the first line that opens an object. Later steps read
-          # dead/degraded counts from this file instead of probing again.
-          sed -n '/^{/,$p' model-health-output.log > model-health.json
+          # The JSON contract lives in its own file: the workflow never parses
+          # human progress lines, so a new log line cannot break the counts.
 
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
 
@@ -109,7 +106,8 @@ jobs:
             const fs = require("node:fs");
             const report = JSON.parse(fs.readFileSync("model-health.json", "utf8"));
             process.stdout.write(String(report.degradedCount ?? 0));
-          ')
+          ' 2>/dev/null) || DEGRADED=0
+          case "$DEGRADED" in ''|*[!0-9]*) DEGRADED=0 ;; esac
           if [ "${DEGRADED:-0}" -gt 0 ]; then
             echo "::warning::${DEGRADED} OpenCode free-tier model(s) unavailable or inconclusive — availability fault retried at probe time; no catalog action and no alert issue filed."
           fi

@@ -384,7 +384,7 @@ test("opencode-model-check.yml maps the probe exit code onto the alert/infra fla
 			const args = fs.readFileSync(path.join(node.bin, "node.log"), "utf8").trim();
 			assert.equal(
 				args,
-				"--experimental-strip-types scripts/check-opencode-models.ts --output model-health-report.md --json",
+				"--experimental-strip-types scripts/check-opencode-models.ts --output model-health-report.md --json-output model-health.json",
 			);
 		});
 	}
