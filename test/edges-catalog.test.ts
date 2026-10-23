@@ -284,11 +284,12 @@ test("isFreeCatalogId accepts -free, :free, /free and known ids, rejects paid an
 	assert.equal(isFreeCatalogId("ovh-free/Mistral-7B-Instruct-v0.3"), false);
 	assert.equal(isFreeCatalogId("ovh-free/Meta-Llama-3_3-70B-Instruct"), true);
 	assert.equal(isFreeCatalogId("ovh/Mistral-Nemo-Instruct-2407"), false, "an unnamespaced OVH id is not in the catalog");
-	// Added 2026-10-22: two Zen ids without a `:free` suffix rely on the static
-	// catalog for recognition, and the five Kilo ids carry `:free`.
-	assert.equal(isFreeCatalogId("minimax-m3.1-flash-free"), true);
+	// Added 2026-10-22: a Zen free id relies on the static catalog for
+	// recognition, and the Kilo ids carry `:free`. Both free MiniMax M3.1
+	// Flash endpoints retired on 2026-10-23, so both are dead now.
+	assert.equal(isFreeCatalogId("minimax-m3.1-flash-free"), false);
 	assert.equal(isFreeCatalogId("flint-40b-free"), true);
-	assert.equal(isFreeCatalogId("minimax/minimax-m3.1-flash:free"), true);
+	assert.equal(isFreeCatalogId("minimax/minimax-m3.1-flash:free"), false);
 	assert.equal(isFreeCatalogId("nvidia/nemotron-3.5-super-vl:free"), true);
 	assert.equal(isFreeCatalogId("reflection/beam-free"), true);
 	assert.equal(isFreeCatalogId("recursive/flint-v1.0:free"), true);

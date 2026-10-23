@@ -101,7 +101,8 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "mimo-v2.5-free",
  "stealth/space-bunny-alpha",
  // space-bunny-free: deprecated on the Zen free tier (2026-10-20) — the
- // endpoint answers 410 ModelDeprecated and points at minimax-m3.1-flash-free.
+ // endpoint answers 410 ModelDeprecated and points at minimax-m3.1-flash-free,
+ // which was itself retired on 2026-10-23 (see below).
  "space-bunny-free",
  "qwen/qwen3.8-27b:free",
  "nvidia/nemotron-3.5-content-safety:free",
@@ -159,6 +160,18 @@ export const DEAD_MODEL_IDS = new Set<string>([
  // path and gone from the live Zen listing, four days after it was re-registered
  // from a 2026-10-16 revival. Permanently dead-listed.
  "exo-free",
+ // minimax-m3.1-flash-free: the Zen free endpoint of MiniMax M3.1 Flash was
+ // retired on 2026-10-23 — it answers HTTP 410 with a model-level deprecation
+ // and points at deepseek-v4.1-flash-free. The KiloCode free twin of the same
+ // weights died the same day (see below), so both free endpoints are gone.
+ "minimax-m3.1-flash-free",
+ // minimax/minimax-m3.1-flash:free: the KiloCode free endpoint was retired on
+ // 2026-10-23 too — a direct gateway request answers HTTP 404 "The requested
+ // model 'minimax/minimax-m3.1-flash:free' does not exist" (model_not_found)
+ // on every attempt, and the live /api/gateway/models listing carries only the
+ // PAID minimax/minimax-m3.1-flash. No short alias exists for it: a short name
+ // must never route to a paid model.
+ "minimax/minimax-m3.1-flash:free",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.
@@ -198,7 +211,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 37 verified models for 0ms instant availability.
+ * Initialized with all 35 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
  ...m,

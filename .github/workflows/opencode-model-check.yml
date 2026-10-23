@@ -18,8 +18,8 @@ jobs:
   check-models:
     name: Probe OpenCode Free Models
     runs-on: ubuntu-latest
-    # Worst case is 12 catalog models x (3 attempts x 25s probe timeout + 2s + 5s
-    # backoff) =~ 16.5 min plus install — a 15-min ceiling would kill the job and
+    # Worst case is 11 catalog models x (3 attempts x 25s probe timeout + 2s + 5s
+    # backoff) =~ 15 min plus install — a 15-min ceiling would kill the job and
     # swallow the alert exactly when a mass upstream hang needs it filed.
     timeout-minutes: 30
 

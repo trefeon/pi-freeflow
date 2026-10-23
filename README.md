@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 37 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 35 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **37 free models** | 12 from OpenCode Zen, 16 from KiloCode Gateway, 1 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
+| **35 free models** | 11 from OpenCode Zen, 15 from KiloCode Gateway, 1 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own relays: a self-hosted egress pool (many egress IPs on one small host) or Cloudflare Workers / Deno Deploy / Vercel Edge workers. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your host or platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`; the Cline model has no alias and must be typed in full. | **$0** |
@@ -214,17 +214,17 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 37 models, one command
+### 35 models, one command
 
 ```bash
 /model → freeflow → pick
 ```
 
-Every model specification is reconciled against [models.dev](https://models.dev/), [OpenRouter](https://openrouter.ai/), and OMP's built-in catalog on 2026-10-22: a free and a non-free variant of the same model share the highest published context window, output ceiling, and input modalities across its twins. The catalog follows that published spec even where a free lane enforces a lower runtime cap; the authentic upstream error is surfaced above it. Where the lane itself refuses above a published figure, the served boundary wins (MiniMax M3.1 Flash: published 512,000, served 524,288). (Measured runtime caps: MiMo ~348K, GLM 5.3 Flash ~297K, Laguna S 262K.) Lane-published hard caps stay authoritative where the lane refuses above them: OVH's advertised context windows, the 1,000,000-token Nemotron 3 Ultra ceiling, and Dots3-Note's 393,216 served window (its only provider refused a 460,800 output budget on 2026-10-20).
+Every model specification is reconciled against [models.dev](https://models.dev/), [OpenRouter](https://openrouter.ai/), and OMP's built-in catalog on 2026-10-22: a free and a non-free variant of the same model share the highest published context window, output ceiling, and input modalities across its twins. The catalog follows that published spec even where a free lane enforces a lower runtime cap; the authentic upstream error is surfaced above it. Where the lane itself refuses above a published figure, the served boundary wins (DeepSeek V4.1 Flash: published 384,000, served 393,216). (Measured runtime caps: MiMo ~348K, GLM 5.3 Flash ~297K, Laguna S 262K.) Lane-published hard caps stay authoritative where the lane refuses above them: OVH's advertised context windows, the 1,000,000-token Nemotron 3 Ultra ceiling, and Dots3-Note's 393,216 served window (its only provider refused a 460,800 output budget on 2026-10-20). These tables mirror `src/models.ts`, and the scheduled health check retires a model only after a live model-level 404/410 — so a row that no longer answers is a bug worth filing.
 
 The host catalog carries text and image inputs only. Upstream video and audio support (MiMo: audio + video; GLM 5.3 Flash: video + PDF; Nemotron Super VL and Nano Omni: video) is therefore not selectable from the picker and is not declared in `input`.
 
-#### OpenCode Zen (12 models), Chat Completions API
+#### OpenCode Zen (11 models), Chat Completions API
 
 Good defaults for long coding sessions and agentic work.
 
@@ -240,10 +240,9 @@ Good defaults for long coding sessions and agentic work.
 | `glm-5.3-flash-free` | Zhipu AI | **1M** (1.048.576) | **131K** (131.072) | `low / high / max` | ✅ |
 | `beam-free` | Reflection AI | **1M** (1.048.576) | **131K** (131.072) | `low … max` | ❌ |
 | `deepseek-v4.1-flash-free` | DeepSeek | **1M** (1.048.576) | **393K** (393.216) | `low / high / max` | ✅ |
-| `minimax-m3.1-flash-free` | MiniMax | **1M** (1.000.000) | **512K** (524.288) | `low … max` | ✅ |
 | `flint-40b-free` | Recursive | **262K** (262.144) | **65K** (65.536) | `low … max` | ❌ |
 
-#### KiloCode Gateway (16 models), OpenRouter compatible
+#### KiloCode Gateway (15 models), OpenRouter compatible
 
 Keyless access. Most rows have a short alias (shown with the full ID in parentheses); a row that shows only the full ID has no short form.
 
@@ -260,7 +259,6 @@ Keyless access. Most rows have a short alias (shown with the full ID in parenthe
 | `kilo-auto` (`kilo-auto/free`) | Kilo Gateway Auto | **256K** (256.000) | **10K** (10.000) | `minimal…xhigh`\* | ❌ |
 | `openrouter` (`openrouter/free`) | OpenRouter Free | **200K** (200.000) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
 | `glyph-cluster` (`stealth/glyph-cluster`) | Stealth preview (lab undisclosed) | **256K** (256.000) | **256K** (256.000) | `minimal…xhigh`\* | ❌ |
-| `minimax/minimax-m3.1-flash:free` | MiniMax | **1M** (1.000.000) | **512K** (524.288) | `low…max`\* | ✅ |
 | `nvidia/nemotron-3.5-super-vl:free` | NVIDIA | **1M** (1.000.000) | **131K** (131.072) | `minimal…xhigh`\* | ✅ |
 | `beam-kilo` (`reflection/beam-free`) | Reflection AI | **1M** (1.048.576) | **131K** (131.072) | `low…max`\* | ❌ |
 | `flint-kilo` (`recursive/flint-v1.0:free`) | Recursive | **262K** (262.144) | **65K** (65.536) | `minimal…xhigh`\* | ❌ |
@@ -396,7 +394,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 #### Project structure
 
 ```
-├── models.ts                # 37-model catalog definitions
+├── models.ts                # 35-model catalog definitions
 ├── index.ts                 # extension entry, lifecycle hooks
 ├── catalog.ts               # model catalog cache (24h disk)
 ├── proxy.ts                 # local proxy server (127.0.0.1:28180)

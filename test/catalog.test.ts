@@ -245,6 +245,15 @@ test("step-5-preview entries stay dead across both lanes (2026-10-16)", () => {
 	assert.equal(ALL_MODELS.some((m) => m.id === "stepfun/step-5-preview-free"), false);
 });
 
+test("both free MiniMax M3.1 Flash endpoints are dead (2026-10-23)", () => {
+	for (const id of ["minimax-m3.1-flash-free", "minimax/minimax-m3.1-flash:free"]) {
+		assert.equal(DEAD_MODEL_IDS.has(id), true, id + " must be dead-listed");
+		assert.equal(isFreeCatalogId(id), false, id + " must never enter the picker");
+		assert.equal(ALL_MODELS.some((m) => m.id === id), false, id + " must not be in the static catalog");
+	}
+	assert.equal(isFreeCatalogId("minimax-m3.1-flash"), false);
+});
+
 test("union-alpha is a dead model id (pruned, never re-enters)", () => {
 	assert.equal(DEAD_MODEL_IDS.has("union-alpha"), true);
 	assert.equal(isFreeCatalogId("union-alpha"), false);

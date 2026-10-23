@@ -78,9 +78,9 @@ test("1M context window models are properly configured", () => {
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
 		"poolside/laguna-s-2.1:free",
-		// Added 2026-10-22: two Zen/Kilo twin pairs at the 1M tier.
-		"minimax-m3.1-flash-free",
-		"minimax/minimax-m3.1-flash:free",
+		// Added 2026-10-22: twin pairs at the 1M tier. Both free MiniMax M3.1
+		// Flash endpoints were retired on 2026-10-23, so its ids leave this
+		// list entirely.
 		"nvidia/nemotron-3.5-super-vl:free",
 		"reflection/beam-free",
 	];
@@ -198,8 +198,12 @@ test("model aliases resolve correctly to canonical IDs", () => {
  assert.equal(resolveCanonicalModelId("qwen3-coder-480b-free"), "qwen3-coder-480b-free");
  // Added 2026-10-22: "flint" stays on the Zen lane, the Kilo twin is
  // "flint-kilo"; "beam" and "nemotron-3.5-super-vl" stay on Zen while their
- // Kilo twins get their own names.
- assert.equal(resolveCanonicalModelId("minimax-m3.1-flash"), "minimax-m3.1-flash-free");
+ // Kilo twins get their own names. Both free MiniMax M3.1 Flash endpoints
+ // retired on 2026-10-23, so its short alias is gone — a removed alias must
+ // fall through to the verbatim id, never to the surviving paid model.
+ assert.equal(resolveCanonicalModelId("minimax-m3.1-flash"), "minimax-m3.1-flash");
+ assert.equal(getModelDef("minimax-m3.1-flash"), undefined);
+ assert.equal(MODEL_MAP.has("minimax-m3.1-flash"), false);
  assert.equal(resolveCanonicalModelId("flint"), "flint-40b-free");
  assert.equal(resolveCanonicalModelId("flint-kilo"), "recursive/flint-v1.0:free");
  assert.equal(resolveCanonicalModelId("beam-kilo"), "reflection/beam-free");
@@ -217,9 +221,8 @@ test("model aliases resolve correctly to canonical IDs", () => {
  assert.equal(allRegistered.length, ALL_MODELS.length);
 });
 
-test("2026-10-22 additions: seven lane-verified entries and their twins", () => {
+test("2026-10-22 additions: five lane-verified entries and their twins", () => {
 	const zenLane: Array<[string, number, number]> = [
-		["minimax-m3.1-flash-free", 1_000_000, 524_288],
 		["flint-40b-free", 262_144, 65_536],
 	];
 	for (const [id, ctx, max] of zenLane) {
@@ -238,11 +241,9 @@ test("2026-10-22 additions: seven lane-verified entries and their twins", () => 
 		assert.equal(map.xhigh, "xhigh", `${id}.xhigh`);
 		assert.equal(map.max, "max", `${id}.max`);
 	}
-	assert.deepEqual(getModelDef("minimax-m3.1-flash-free")!.input, ["text", "image"]);
 	assert.deepEqual(getModelDef("flint-40b-free")!.input, ["text"]);
 
 	const kiloLane: Array<[string, number, number, string[]]> = [
-		["minimax/minimax-m3.1-flash:free", 1_000_000, 524_288, ["text", "image"]],
 		["nvidia/nemotron-3.5-super-vl:free", 1_000_000, 131_072, ["text", "image"]],
 		["reflection/beam-free", 1_048_576, 131_072, ["text"]],
 		["recursive/flint-v1.0:free", 262_144, 65_536, ["text"]],
@@ -277,10 +278,12 @@ test("2026-10-22 additions: seven lane-verified entries and their twins", () => 
 	assert.equal(getModelUpstream("flint-kilo"), "kilo");
 	assert.equal(getModelUpstream("beam"), "opencode");
 	assert.equal(getModelUpstream("beam-kilo"), "kilo");
-	// The two minimax twins are different lanes with the same served boundary.
-	assert.equal(getModelUpstream("minimax-m3.1-flash"), "opencode");
-	assert.equal(getModelDef("minimax-m3.1-flash")!.contextWindow, 1_000_000);
-	assert.equal(getModelDef("minimax/minimax-m3.1-flash:free")!.contextWindow, 1_000_000);
+	// Both free MiniMax M3.1 Flash endpoints retired on 2026-10-23, so neither
+	// the canonical ids nor the short alias may resolve any more.
+	assert.equal(getModelDef("minimax-m3.1-flash"), undefined);
+	assert.equal(getModelDef("minimax-m3.1-flash-free"), undefined);
+	assert.equal(getModelDef("minimax/minimax-m3.1-flash:free"), undefined);
+	assert.equal(MODEL_MAP.has("minimax-m3.1-flash"), false);
 });
 
 test("every reasoning model declares a thinkingLevelMap so the picker is lockable", () => {
@@ -362,11 +365,6 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
   // named paid id. Output 393,216, the live gateway boundary (384 * 1024) and
   // the highest twin figure; models.dev rounds it to 384,000.
   "deepseek-v4.1-flash-free": { ctx: 1_048_576, max: 393_216, reasoning: true },
-  // Added 2026-10-22: measured on the lane — needle recalled at
-  // prompt_tokens 991,641, >1M refused; 524,288 output accepted, 600,000
-  // refused "does not support max tokens > 524288" (models.dev rounds to
-  // 512,000; the boundary is the budget).
-  "minimax-m3.1-flash-free": { ctx: 1_000_000, max: 524_288, reasoning: true },
   // Added 2026-10-22: the gateway refuses a 323,580-token input with
   // "longer than the model's context length (262144)" and recalls a needle at
   // prompt_tokens 129,736; 65,536 output is the published figure (70,000 is
@@ -396,10 +394,7 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
 	// Retired 2026-10-09 (demoted to paid upstream — :free IDs 404 keyless)
 	// Added 2026-10-09 (live: Kilo free list isFree:true + keyless chat served; 256K/1M ctx)
 	"stealth/glyph-cluster": { ctx: 256_000, max: 256_000, reasoning: true },
-  // Added 2026-10-22: gateway `top_provider` 1,000,000 / 524,288 — the same
-  // output boundary the Zen twin measured (524,288 accepted, 600,000 refused).
-  "minimax/minimax-m3.1-flash:free": { ctx: 1_000_000, max: 524_288, reasoning: true },
-  // Added 2026-10-22: the FREE row — Kilo free listing, gateway top_provider,
+	// Added 2026-10-22: the FREE row — Kilo free listing, gateway top_provider,
   // the Kilo model page, OpenRouter and models.dev all publish 1,000,000 /
   // 131,072. The 262,144 / 235,929 pair is the PAID row behind another id.
   "nvidia/nemotron-3.5-super-vl:free": { ctx: 1_000_000, max: 131_072, reasoning: true },
@@ -543,6 +538,19 @@ test("muse-spark-1.2-contributor-free is retired and cannot re-enter the catalog
 	assert.equal(MODEL_MAP.get("muse-spark-1.2-contributor-free"), undefined, "muse-spark-1.2-contributor-free must not be in MODEL_MAP");
 	assert.equal(ALL_MODELS.some((m) => m.id === "muse-spark-1.2-contributor-free"), false, "muse-spark-1.2-contributor-free must not be in ALL_MODELS");
 	assert.ok(DEAD_MODEL_IDS.has("muse-spark-1.2-contributor-free"), "the retired id must be dead-listed so stale caches and upstream merges cannot revive it");
+});
+
+test("both free MiniMax M3.1 Flash endpoints are retired and cannot re-enter the catalog (2026-10-23)", () => {
+	// Zen retired its free endpoint on 2026-10-23 (410 model-level
+	// deprecation, pointing at deepseek-v4.1-flash-free); the KiloCode free
+	// endpoint of the same weights died the same day (404 model_not_found, and
+	// the gateway listing keeps only the paid id).
+	for (const id of ["minimax-m3.1-flash-free", "minimax/minimax-m3.1-flash:free"]) {
+		assert.equal(MODEL_MAP.get(id), undefined, id + " must not be in MODEL_MAP");
+		assert.equal(ALL_MODELS.some((m) => m.id === id), false, id + " must not be in ALL_MODELS");
+		assert.ok(DEAD_MODEL_IDS.has(id), id + " must be dead-listed so stale caches and upstream merges cannot revive it");
+	}
+	assert.equal(MODEL_MAP.has("minimax-m3.1-flash"), false, "the removed short alias must not resolve");
 });
 
 test("cline-free/muse-spark-1.3-contributor is retired and cannot re-enter the catalog", () => {

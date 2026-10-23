@@ -324,8 +324,8 @@ test("startProxy binds ephemeral and isProxyAlive true", async () => {
  }
 });
 
-test("alive catalog init 37 models", () => {
+test("alive catalog init 35 models", () => {
 	setAliveCatalog(ALL_MODELS as unknown as RegisteredModel[]);
 	assert.equal(getAliveCatalog().length, ALL_MODELS.length);
-	assert.equal(getAliveCatalog().length, 37);
+	assert.equal(getAliveCatalog().length, 35);
 });
