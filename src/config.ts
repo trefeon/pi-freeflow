@@ -75,7 +75,7 @@ export const PORT = resolvePort();
 // OPENCODE_VERSION_FLOOR pins the minimum; OPENCODE_VERSION_FALLBACK is the
 // last-known-good npm version used when the live lookup is stale/offline.
 export const OPENCODE_VERSION_FLOOR = "1.17.0";
-export const OPENCODE_VERSION_FALLBACK = "1.19.0";
+export const OPENCODE_VERSION_FALLBACK = "1.19.4";
 /** Live npm lookup TTL: 6h — within one window the cached UA is reused. */
 export const OPENCODE_VERSION_TTL_MS = 6 * 60 * 60 * 1_000;
 /** Env override: exact `opencode/<version>` UA (or bare version) for tests/pins. */
@@ -239,6 +239,10 @@ export function createOpenCodeId(descending: boolean, timestamp = Date.now()): s
  return time + Array.from(bytes, (byte) => ID_CHARS[byte % 62]).join("");
 }
 
+// Upstream v1.19.4 refactored `SessionID.create` to compose the prefix itself
+// (`schema.make("ses_" + descending())` in packages/schema/src/session-id.ts).
+// The identifier generator is unchanged, so this call is still byte-for-byte
+// equivalent: `ses_` + 12 hex timestamp chars + 14 base62 random chars.
 export function createOpenCodeSessionId(): string {
  return `ses_${createOpenCodeId(true)}`;
 }

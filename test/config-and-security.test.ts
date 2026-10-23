@@ -132,13 +132,17 @@ test("resolvePort honors the source-derived env override and falls back to defau
 });
 
 test("OpenCode session and request IDs match required OpenCode schema", () => {
+ // Wire contract (unchanged by upstream v1.19.4): 12 lowercase hex chars
+ // encoding the timestamp, then 14 base62 random chars.
  const ses = createOpenCodeSessionId();
  assert.ok(ses.startsWith("ses_"), "session ID must start with ses_ prefix");
  assert.equal(ses.length, 30, "session ID must be ses_ prefix + 26 char identifier");
+ assert.ok(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(ses), `session ID shape: ${ses}`);
 
  const msg = createOpenCodeRequestId();
  assert.ok(msg.startsWith("msg_"), "request ID must start with msg_ prefix");
  assert.equal(msg.length, 30, "request ID must be msg_ prefix + 26 char identifier");
+ assert.ok(/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(msg), `request ID shape: ${msg}`);
 
  const headers = opencodeHeaders();
  assert.equal(headers["User-Agent"], getOpenCodeUserAgent());
@@ -172,6 +176,20 @@ test("OpenCode IDs match the upstream identifier algorithm vectors", () => {
  assert.equal(first.slice(0, 12), "0004c4b40001");
  assert.equal(second.slice(0, 12), "0004c4b40002");
  assert.equal(Number(BigInt("0x" + second.slice(0, 12)) / 0x1000n), 5_000_000);
+ // The 9 high hex chars carry the timestamp, the 3 low hex chars the counter.
+ assert.equal(first.slice(0, 9), second.slice(0, 9), "same-millisecond IDs share the timestamp portion");
+ assert.notEqual(first.slice(12), second.slice(12), "same-millisecond IDs differ in the random tail");
+
+ // Same timestamp, ascending then descending: the counter advances by one
+ // between the two calls, so the descending prefix is the exact bitwise
+ // complement of (ascending prefix + 1) — the `~current` branch.
+ const sameMs = 7_000_000;
+ const forward = createOpenCodeId(false, sameMs);
+ const reverse = createOpenCodeId(true, sameMs);
+ const forwardPrefix = BigInt("0x" + forward.slice(0, 12));
+ const expectedReverse = (0xffffffffffffn - (forwardPrefix + 1n)).toString(16).padStart(12, "0");
+ assert.equal(reverse.slice(0, 12), expectedReverse, "descending prefix inverts the same timestamp");
+ assert.ok(/^[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(reverse), `descending identifier shape: ${reverse}`);
 });
 
 test("OpenCode UA floor and normalization", () => {

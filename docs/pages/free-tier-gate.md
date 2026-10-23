@@ -44,7 +44,7 @@ was wrong.
 
 | # | Axis | Accepted | Missing |
 | --- | --- | --- | --- |
-| 1 | `User-Agent` | `opencode/1.19.0` and other `opencode/*` values | `403` |
+| 1 | `User-Agent` | `opencode/1.19.4` and other `opencode/*` values | `403` |
 | 2 | Session header | `x-opencode-session` **or** `x-session-affinity`, carrying a canonical id | `403` |
 | 3 | Tool declarations | the placeholder sextet `{bash, glob, grep, read, edit, write}` | `403` |
 | 4 | Streaming | `stream: true` | `403` |
@@ -244,7 +244,7 @@ const res = await fetch("https://opencode.ai/zen/v1/chat/completions", {
   headers: {
     "content-type": "application/json",
     accept: "text/event-stream",
-    "user-agent": "opencode/1.19.0",      // axis 1
+    "user-agent": "opencode/1.19.4",      // axis 1
     "x-opencode-client": "cli",
     "x-opencode-session": session,        // axis 2
   },
