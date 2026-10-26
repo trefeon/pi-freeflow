@@ -182,6 +182,19 @@ export const DEAD_MODEL_IDS = new Set<string>([
  // model that drains account credits and answers HTTP 402 insufficient_credits.
  // Replaced with Cline's verified working free tier model.
  "z-ai/glm-5.3-flash",
+ // longcat-2.5-preview-free: deprecated upstream (2026-10-26, issue #121) —
+ // the endpoint answers HTTP 410 "Model longcat-2.5-preview-free has been
+ // deprecated", and the id is absent from the live Zen free listing (watch
+ // state 2026-10-24). Permanently dead-listed so no disk cache or upstream
+ // merge can put it back.
+ "longcat-2.5-preview-free",
+ // nemotron-3-ultra-free: retired upstream (2026-10-26, issue #121) — the
+ // endpoint answers HTTP 400 "Model is unavailable", and the id is absent
+ // from the live Zen free listing (watch state 2026-10-24 lastChecked), the
+ // same removal-plus-unavailable signature as step-5-preview-free. The
+ // sibling Kilo id nvidia/nemotron-3-ultra-550b-a55b:free is a separate
+ // serving route and is unaffected.
+ "nemotron-3-ultra-free",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.
@@ -221,7 +234,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 35 verified models for 0ms instant availability.
+ * Initialized with all 32 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
  ...m,

@@ -207,6 +207,134 @@ test("ensureChatFingerprintTools: case-insensitive idempotent, no Bash/bash dup"
 	assert.equal(names.length, 6);
 });
 
+test("enforceOpencodeFingerprint: a chat system prompt without an env block gains one", () => {
+	// Zen answers 429 FreeUsageLimitError when the system prompt carries no
+	// complete env block, whatever the headers or tools say (issue #117/#118).
+	const body: Record<string, unknown> = {
+		model: "m",
+		messages: [
+			{ role: "system", content: "You are a coding agent." },
+			{ role: "user", content: "hi" },
+		],
+	};
+	enforceOpencodeFingerprint(body, "/v1/chat/completions");
+	const messages = body.messages as Array<{ role: string; content: string }>;
+	const system = messages[0].content;
+	const pairs = system.match(/<env>[\s\S]*?<\/env>/g) ?? [];
+	assert.equal(pairs.length, 1, "exactly one pair: upstream reads only the first");
+	assert.match(pairs[0], /Working directory:/, "the load-bearing key is inside the pair");
+	assert.ok(system.startsWith("You are a coding agent."), "the host's own prompt is preserved");
+});
+
+test("enforceOpencodeFingerprint: the env block lands in the last system message", () => {
+	const body: Record<string, unknown> = {
+		model: "m",
+		messages: [
+			{ role: "system", content: "first" },
+			{ role: "system", content: "second" },
+			{ role: "user", content: "hi" },
+		],
+	};
+	enforceOpencodeFingerprint(body, "/v1/chat/completions");
+	const messages = body.messages as Array<{ role: string; content: string }>;
+	assert.equal(messages[0].content, "first", "earlier system prompts stay untouched");
+	assert.match(messages[1].content, /^second\n\n<env>\n  Working directory: [^\n]+\n<\/env>$/);
+});
+
+test("enforceOpencodeFingerprint: a tool-less chat body gains a system message for the block", () => {
+	const body: Record<string, unknown> = { model: "m", messages: [{ role: "user", content: "hi" }] };
+	enforceOpencodeFingerprint(body, "/v1/chat/completions");
+	const messages = body.messages as Array<{ role: string; content: string }>;
+	assert.equal(messages[0].role, "system", "the block needs a system message to live in");
+	assert.match(messages[0].content, /Working directory:/);
+	assert.deepEqual(messages[1], { role: "user", content: "hi" });
+});
+
+test("enforceOpencodeFingerprint: a complete host env block rides through byte-for-byte", () => {
+	// The host knows its environment; a correct block is richer than anything
+	// synthesized here, so it is neither rewritten nor duplicated.
+	const hostBlock = "<env>\n  Working directory: /repo\n  Platform: darwin\n</env>";
+	const body: Record<string, unknown> = {
+		model: "m",
+		messages: [
+			{ role: "system", content: `You are a coding agent.\n\n${hostBlock}` },
+			{ role: "user", content: "hi" },
+		],
+	};
+	enforceOpencodeFingerprint(body, "/v1/chat/completions");
+	const messages = body.messages as Array<{ content: string }>;
+	assert.equal(messages[0].content, `You are a coding agent.\n\n${hostBlock}`);
+});
+
+test("enforceOpencodeFingerprint: a stale block above the real one is dropped", () => {
+	// Upstream reads only the first pair, so a block missing the key above the
+	// real one shadows it and the request 429s even though the real one passes.
+	const body: Record<string, unknown> = {
+		model: "m",
+		messages: [
+			{
+				role: "system",
+				content: "<env>\n  Platform: darwin\n</env>\n\nYou are a coding agent.\n\n<env>\n  Working directory: /repo\n</env>",
+			},
+			{ role: "user", content: "hi" },
+		],
+	};
+	enforceOpencodeFingerprint(body, "/v1/chat/completions");
+	const system = (body.messages as Array<{ content: string }>)[0].content;
+	const pairs = system.match(/<env>[\s\S]*?<\/env>/g) ?? [];
+	assert.equal(pairs.length, 1, "only one pair may survive");
+	assert.match(pairs[0], /Working directory: \/repo/, "the load-bearing block is the survivor");
+	assert.ok(!system.includes("Platform:"), "the shadowing copy is gone");
+});
+
+test("enforceOpencodeFingerprint: a block without Working directory is replaced, not duplicated", () => {
+	const body: Record<string, unknown> = {
+		model: "m",
+		messages: [
+			{ role: "system", content: "<env>\n  Shell: zsh\n</env>\n\nYou are a coding agent." },
+			{ role: "user", content: "hi" },
+		],
+	};
+	enforceOpencodeFingerprint(body, "/v1/chat/completions");
+	const system = (body.messages as Array<{ content: string }>)[0].content;
+	const pairs = system.match(/<env>[\s\S]*?<\/env>/g) ?? [];
+	assert.equal(pairs.length, 1);
+	assert.match(pairs[0], /Working directory:/);
+	assert.ok(!system.includes("Shell: zsh"), "the refused block does not linger");
+});
+
+test("enforceOpencodeFingerprint: the env block reaches the responses and messages shapes", () => {
+	const responses: Record<string, unknown> = { model: "m", input: "watchdog inspection" };
+	enforceOpencodeFingerprint(responses, "/v1/responses");
+	assert.equal(typeof responses.instructions, "string");
+	assert.equal((responses.instructions as string).match(/<env>[\s\S]*?<\/env>/g)?.length, 1);
+
+	const messagesString: Record<string, unknown> = { model: "m", system: "You are Claude." };
+	enforceOpencodeFingerprint(messagesString, "/v1/messages");
+	assert.match(messagesString.system as string, /^You are Claude\.\n\n<env>\n  Working directory: [^\n]+\n<\/env>$/);
+
+	const messagesBlocks: Record<string, unknown> = {
+		model: "m",
+		system: [{ type: "text", text: "You are Claude." }],
+	};
+	enforceOpencodeFingerprint(messagesBlocks, "/v1/messages");
+	const blocks = messagesBlocks.system as Array<{ type: string; text: string }>;
+	assert.equal(blocks.length, 1, "the block extends the host's system block");
+	assert.match(blocks[0].text, /Working directory:/);
+	assert.equal(blocks[0].text.match(/<env>/g)?.length, 1);
+});
+
+test("enforceOpencodeFingerprint: the env block is stable across repeated enforcement", () => {
+	const body: Record<string, unknown> = {
+		model: "m",
+		messages: [{ role: "system", content: "You are a coding agent." }],
+	};
+	enforceOpencodeFingerprint(body, "/v1/chat/completions");
+	const once = (body.messages as Array<{ content: string }>)[0].content;
+	enforceOpencodeFingerprint(body, "/v1/chat/completions");
+	assert.equal((body.messages as Array<{ content: string }>)[0].content, once);
+});
+
 test("parseSseEvents: parses raw SSE text blocks into events and data", () => {
 	const sse = "event: message\ndata: hello\n\nevent: done\ndata: [DONE]\n\n";
 	const events = parseSseEvents(sse);
@@ -991,9 +1119,9 @@ test("normalizeResponsesBody: generalized model effort clamping for mimo and nem
 	assert.equal(mimo.reasoning_effort, "xhigh", "mimo max clamped to highest supported xhigh");
 	assert.equal(mimo.reasoningEffort, "xhigh", "mimo ultra clamped to highest supported xhigh");
 
-	// nemotron-3-ultra-free: max is null, highest non-null is xhigh
+	// nemotron-3.5-lightning-free: max is null, highest non-null is xhigh
 	const nemo: Record<string, unknown> = {
-		model: "nemotron-3-ultra-free",
+		model: "nemotron-3.5-lightning-free",
 		input: "hi",
 		reasoning_effort: "max",
 		reasoningEffort: "ultra",

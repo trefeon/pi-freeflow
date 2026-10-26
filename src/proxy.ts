@@ -91,6 +91,7 @@ import {
  pickFailoverModel,
  recordUpstreamFailure,
  recordUpstreamSuccess,
+ rejectionFingerprint,
  rememberGateRejection,
  sessionKeyOf,
  wasGateRejected,
@@ -1866,6 +1867,13 @@ export function startProxy(
     : undefined;
 
    const sessionKey = sessionKeyOf(parsedBody);
+   // Gate-rejection memory, captured BEFORE the body is rewritten: the next
+   // attempt of this conversation is hashed from the caller's own bytes, so a
+   // fingerprint taken after the fingerprint/tool normalization and the env
+   // block landed would never match and the retry would replay the refusal.
+   const gateFingerprint = parsedBody !== null
+   ? (rejectionFingerprint(parsedBody, target.pathname) ?? undefined)
+   : undefined;
    // Zen free-tier gate failover: refused or fresh Zen sessions ride a
    // healthy Kilo model on the same wire API via the existing Kilo branch.
    // Working sessions pass through untouched; canary sessions pass through
@@ -2137,7 +2145,7 @@ export function startProxy(
          try {
           const gateText = await response.clone().text();
           recordUpstreamFailure("zen", 403, gateText);
-          rememberGateRejection(parsedBody, target.pathname, 403, gateText);
+          rememberGateRejection(parsedBody, target.pathname, 403, gateText, gateFingerprint);
          } catch { }
         }
 
@@ -2395,7 +2403,7 @@ export function startProxy(
        try {
         const gateText = await upstreamRes.clone().text();
         recordUpstreamFailure("zen", 403, gateText);
-        rememberGateRejection(parsedBody, target.pathname, 403, gateText);
+        rememberGateRejection(parsedBody, target.pathname, 403, gateText, gateFingerprint);
        } catch { }
       }
 

@@ -329,9 +329,14 @@ export function rememberGateRejection(
  pathname: string,
  status: number,
  bodyText: unknown,
+ fingerprint?: string,
 ): void {
  if (!isFreeTierGate(status, bodyText)) return;
- const fp = rejectionFingerprint(parsedBody, pathname);
+ // The caller may hand over the fingerprint it took before rewriting the body
+ // it sent (proxy normalizes tools and system prompts in place). The next
+ // attempt of the same conversation is hashed from the caller's own bytes, so a
+ // post-rewrite hash would never match and the retry would replay the refusal.
+ const fp = fingerprint ?? rejectionFingerprint(parsedBody, pathname);
  if (!fp) return;
  const now = Date.now();
  pruneRejected(now);

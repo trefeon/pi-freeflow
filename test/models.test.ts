@@ -70,10 +70,8 @@ test("1M context window models are properly configured", () => {
 		"mimo-v2.6-flash-free",
 		"beam-free",
 		"deepseek-v4.1-flash-free",
-		"longcat-2.5-preview-free",
 		"nemotron-3.5-lightning-free",
 		"nemotron-3.5-super-vl-free",
-		"nemotron-3-ultra-free",
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
 		"poolside/laguna-s-2.1:free",
@@ -330,12 +328,6 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
   // Built-in catalog spec: 1,048,576 ctx / 131,072 output. The free lane's
   // runtime cap is ~348K; the catalog follows the model's highest spec.
   "mimo-v2.6-flash-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
-  // Added 2026-09-27 (live: Zen listing + keyless chat 200; models.dev 1,048,576 ctx / 131,072 out)
-  "longcat-2.5-preview-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
-  // Reconciled 2026-10-20: the lane caps at 1,000,000 (a 1.29M-token request
-  // is refused with "maximum context length is 1000000 tokens"); output 182,520
-  // is the NVIDIA family ceiling.
-  "nemotron-3-ultra-free": { ctx: 1_000_000, max: 182_520, reasoning: true },
   // Datasheet: 235,929 is the highest published output below the 1M window;
   // the 262,144 entries repeat the context as an output cap.
   "nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 235_929, reasoning: true },

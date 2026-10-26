@@ -1,8 +1,8 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 34 verified free models (live-verified 2026-10-24):
- * - 10 OpenCode Zen models (all Chat Completions)
+ * Defines the 32 verified free models (live-verified 2026-10-26):
+ * - 8 OpenCode Zen models (all Chat Completions)
  * - 15 KiloCode Keyless Gateway models (OpenRouter format)
  * - 1 Cline direct-only model (per-user pool; z-ai/glm-5.3-flash)
  * - 8 OVHcloud AI Endpoints models (keyless, direct-only)
@@ -52,26 +52,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
    medium: "medium",
    high: "high",
    xhigh: "high",
-   max: null,
-  },
- },
- {
-  id: "nemotron-3-ultra-free",
-  name: "Nemotron 3 Ultra [OpenCode]",
-  reasoning: true,
-  // The lane itself caps at 1,000,000 (a 1.29M-token request is refused with
-  // "maximum context length is 1000000 tokens"); the 1,048,576 figure belongs
-  // to a different provider row and is not served here.
-  contextWindow: 1_000_000,
-  maxTokens: 182_520,
-  input: ["text"],
-  thinkingLevelMap: {
-   off: null,
-   minimal: "minimal",
-   low: "low",
-   medium: "medium",
-   high: "high",
-   xhigh: "xhigh",
    max: null,
   },
  },
@@ -149,25 +129,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
    high: "high",
    xhigh: null,
    max: "max",
-  },
- },
- {
-  id: "longcat-2.5-preview-free",
-  name: "LongCat 2.5 Preview [OpenCode]",
-  reasoning: true,
-  // Raised 2026-10-20 (spec reconciliation): 1,048,576 ctx per the published
-  // twin, replacing the round 1M this entry used to declare.
-  contextWindow: 1_048_576,
-  maxTokens: 131_072,
-  input: ["text", "image"],
-  thinkingLevelMap: {
-   off: null,
-   minimal: "minimal",
-   low: "low",
-   medium: "medium",
-   high: "high",
-   xhigh: "xhigh",
-   max: null,
   },
  },
  {
@@ -774,8 +735,6 @@ export const MODEL_ALIASES: Record<string, string> = {
  "glyph-cluster": "stealth/glyph-cluster",
  "mimo-v2.6-flash": "mimo-v2.6-flash-free",
  "nemotron-3.5-super-vl": "nemotron-3.5-super-vl-free",
- "longcat-2.5-preview": "longcat-2.5-preview-free",
- "longcat": "longcat-2.5-preview-free",
  "beam": "beam-free",
  "deepseek-v4.1-flash": "deepseek-v4.1-flash-free",
  "flint": "flint-40b-free",
@@ -836,7 +795,7 @@ export const OVH_MODEL_IDS = new Set<string>([
   .map(([alias]) => alias),
 ]);
 /**
- * Combined list of all 35 static free models (canonical)
+ * Combined list of all 32 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS, ...OVH_MODELS];
 

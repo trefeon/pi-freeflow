@@ -181,6 +181,12 @@ test("probeRelay supports chat endpoint mode with ping payload and spoofing", as
   const parsedBody = JSON.parse(String(calledInit?.body));
   assert.equal(parsedBody.model, "nemotron-3.5-lightning-free");
   assert.equal(parsedBody.max_tokens, 1);
+  // A probe must carry the same body-side gate as real traffic: without the env
+  // block upstream answers 429 and a working relay would be graded as broken.
+  const systemText = String(parsedBody.messages[0].content);
+  assert.equal(systemText.match(/<env>[\s\S]*?<\/env>/g)?.length, 1);
+  assert.match(systemText, /Working directory:/);
+  assert.equal(parsedBody.stream, true);
  } finally {
   globalThis.fetch = realFetch;
  }
@@ -268,6 +274,87 @@ test("probeRelay exhausts retries and returns the last failure if all attempts f
   assert.equal(result.status, 404);
   assert.equal(calls, 3);
   assert.deepEqual(retryEvents, [1, 2]);
+ } finally {
+  globalThis.fetch = realFetch;
+ }
+});
+
+test("probeRelay default chat probe stays on the /v1 lane without stream_options", async () => {
+ const realFetch = globalThis.fetch;
+ try {
+  let calledUrl = "";
+  let calledInit: RequestInit | undefined;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+   calledUrl = requestUrl(input);
+   calledInit = init;
+   return fakeResponse(true, 200);
+  }) as typeof fetch;
+
+  const result = await probeRelay("https://relay.example.com", undefined, { endpoint: "chat" });
+
+  assert.equal(result.ok, true);
+  assert.equal(calledUrl, "https://relay.example.com/inference/v1/chat/completions");
+  const parsedBody = JSON.parse(String(calledInit?.body));
+  assert.equal(parsedBody.stream_options, undefined, "default probe never sends the compat marker");
+ } finally {
+  globalThis.fetch = realFetch;
+ }
+});
+
+test("probeRelay openaiCompat chat probe rides the openai lane with stream_options and env block", async () => {
+ const realFetch = globalThis.fetch;
+ try {
+  let calledUrl = "";
+  let calledInit: RequestInit | undefined;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+   calledUrl = requestUrl(input);
+   calledInit = init;
+   return fakeResponse(true, 200);
+  }) as typeof fetch;
+
+  const result = await probeRelay("https://relay.example.com", undefined, {
+   endpoint: "chat",
+   openaiCompat: true,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calledUrl, "https://relay.example.com/inference/openai/v1/chat/completions");
+  const headers = (calledInit?.headers ?? {}) as Record<string, string>;
+  assert.equal(headers["x-relay-target"], "https://opencode.ai");
+  assert.equal(headers["x-relay-path"], "/inference/openai/v1/chat/completions");
+  const parsedBody = JSON.parse(String(calledInit?.body));
+  assert.deepEqual(parsedBody.stream_options, { include_usage: true });
+  assert.equal(parsedBody.stream, true);
+  const systemText = String(parsedBody.messages[0].content);
+  assert.equal(systemText.match(/<env>[\s\S]*?<\/env>/g)?.length, 1, "compat probe still carries the env block");
+  assert.match(systemText, /Working directory:/);
+ } finally {
+  globalThis.fetch = realFetch;
+ }
+});
+
+test("probeRelay openaiCompat direct probe rides the openai URL with stream_options", async () => {
+ const realFetch = globalThis.fetch;
+ try {
+  let calledUrl = "";
+  let calledInit: RequestInit | undefined;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+   calledUrl = requestUrl(input);
+   calledInit = init;
+   return fakeResponse(true, 200);
+  }) as typeof fetch;
+
+  const result = await probeRelay("direct", undefined, {
+   endpoint: "chat",
+   openaiCompat: true,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calledUrl, "https://opencode.ai/inference/openai/v1/chat/completions");
+  const headers = (calledInit?.headers ?? {}) as Record<string, string>;
+  assert.equal(headers["x-relay-target"], undefined);
+  const parsedBody = JSON.parse(String(calledInit?.body));
+  assert.deepEqual(parsedBody.stream_options, { include_usage: true });
  } finally {
   globalThis.fetch = realFetch;
  }

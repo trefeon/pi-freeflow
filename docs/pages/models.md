@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **34 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
+pi-freeflow provides unified access to **32 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
 
 ## Upstream Protocol Distinction
 
@@ -11,7 +11,7 @@ pi-freeflow provides unified access to **34 curated free models** across four up
 
 ### OpenCode Zen — Chat Completions (`/v1/chat/completions`)
 - **Endpoint**: `https://opencode.ai/inference/v1/chat/completions`
-- **Models**: 10 models (DeepSeek V4.1 Flash, LongCat, GLM-5.3 Flash, Beam, Flint, MiMo, Nemotron, Big Pickle, etc.)
+- **Models**: 8 models (DeepSeek V4.1 Flash, GLM-5.3 Flash, Beam, Flint, MiMo, Nemotron, Big Pickle, etc.)
 - **Config**: `api: "openai-completions"`, supports reasoning effort
 
 ### OpenCode Zen — Messages API (`/v1/messages`)
@@ -37,18 +37,16 @@ pi-freeflow provides unified access to **34 curated free models** across four up
 - **Routing**: direct only, never through the relay pool
 - **Config**: `api: "openai-completions"`. Chat is the only upstream shape: OVH's responses endpoint rejects every array `input` with `422 input: data did not match any variant of untagged enum ResponseInput` and accepts only a bare string, so a responses-path request is translated to chat upstream and the answer mapped back — the same shape mapping the Cline lane uses.
 
-## 34 Model Specifications
+## 32 Model Specifications
 
-### OpenCode Zen (10 models)
+### OpenCode Zen (8 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
 | `mimo-v2.6-flash-free` | 1,048,576 | 131,072 | minimal..xhigh | ❌ |
-| `nemotron-3-ultra-free` | 1,000,000 | 182,520 | minimal..xhigh | ❌ |
 | `nemotron-3.5-lightning-free` | 1,000,000 | 235,929 | minimal..xhigh | ❌ |
 | `nemotron-3.5-super-vl-free` | 1,048,576 | 235,929 | minimal..xhigh | ✅ |
 | `big-pickle` | 200,000 | 32,000 | high, max | ❌ |
-| `longcat-2.5-preview-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `glm-5.3-flash-free` | 1,048,576 | 131,072 | low, high, max | ✅ |
 | `beam-free` | 1,048,576 | 131,072 | low..max | ❌ |
 | `deepseek-v4.1-flash-free` | 1,048,576 | 393,216 | low, high, max | ✅ |

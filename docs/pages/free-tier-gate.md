@@ -106,7 +106,9 @@ Two details worth stating precisely:
   call them. Requests without them are refused.
 
 These four axes are stated where they are enforced, at the top of
-`src/opencode-fingerprint.ts`.
+`src/opencode-fingerprint.ts`. A fifth, body-side axis refuses with `429`
+instead of `403` — see
+[the other refusal](#the-other-refusal-429-freeusagelimiterror).
 
 ### No exception
 
@@ -141,6 +143,48 @@ gone`, and `space-bunny-free` settled it by always answering. It can no longer
 settle anything, and a bare-probe `403` now proves neither hypothesis. Only a
 request that satisfies all four axes, as in the gate table above, reaches a
 model at all, so a refusal is only interpretable when it comes from that shape.
+
+## The other refusal: `429 FreeUsageLimitError`
+
+Measured 2026-10-24 (issues #117/#118). A request that satisfies all four axes
+can still be refused, and this time it looks like a spent quota:
+
+```json
+{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached. Subscribe to OpenCode Go to keep going"}}
+```
+
+It is not the quota. Same machine, same minute, same model:
+
+| System prompt | Status |
+| --- | --- |
+| `You are a coding agent.` | `429` |
+| the same, plus an `<env>` block containing `Working directory:` | **`200`** |
+| a block carrying `Platform:` / `Shell:` but no `Working directory:` | `429` |
+| only an opening tag, or only a closing tag | `429` |
+| the block in the 1st, 2nd or 3rd system message | **`200`** |
+
+Repeating the pair six times flips `200`/`429` every six requests, and the
+`retry-after` that arrives with the `429` keeps counting down to 00:00 UTC
+while requests succeed — so that countdown is a generic error body, not a
+window.
+
+Two details decide whether a block works:
+
+- **Only the first pair is read.** A stale, partial or duplicated copy above the
+  real block shadows it, and the request is refused even though the real block
+  is complete and correct. Exactly one pair must be present.
+- **`Working directory:` is load-bearing.** Any value passes, but a
+  plausible-looking block keyed `Platform:` or `Shell:` is refused.
+
+pi-freeflow repairs this on the outgoing request for every Zen wire shape —
+chat `messages[]`, Responses `instructions`, the Anthropic `system` field. A
+block the host already sent that satisfies both rules rides through untouched;
+anything else is folded into exactly one block appended to the last system
+prompt. The Kilo, Cline and OVHcloud lanes are not touched.
+
+This is separate from the relay egress refusal: a request that leaves through a
+Cloudflare/WARP-class egress is refused whatever its body says, so a relay
+`429` is not fixed by the block (see [Relays](/pages/relays)).
 
 ## What does not matter
 
@@ -229,6 +273,38 @@ the refusal, fails fresh sessions over to a healthy KiloCode model on the same
 wire API, and remembers the rejection so a retried or resumed conversation
 fails over immediately rather than replaying a refusal that cannot succeed.
 
+## Variants to try once quota recovers
+
+Right now the free tier answers every request with `429`, so no header or lane
+change can be measured — every shape fails the same way. The three variants
+below are recorded for the moment quota returns, so the comparison can run
+then instead of burning requests now. Nothing about the default request
+changes in the meantime: it keeps the `opencode/1.19.4`-style User-Agent, the
+pinned project value, the `/inference/v1` lane with no usage-accounting
+marker, and the six placeholder tools.
+
+- **Newer client shape.** The client that passes the gate today identifies
+  itself with a four-part string — name, channel, 2.x version, client kind
+  (for example `opencode/latest/2.0.27/cli`) — where the default lane sends
+  the older two-part form. Worth one controlled request pair: same session,
+  same body, only the User-Agent differs.
+- **Project value.** The default lane sends a fixed project identifier. The
+  client instead sends the literal word `global` outside a repository and a
+  digest of the working directory inside one. Worth the same one-variable
+  comparison per value, since the gateway reads this header but has accepted
+  every value tried so far.
+- **Alternate lane plus usage marker.** The client addresses the free tier on
+  a lane with an extra path segment and marks the body for usage accounting
+  (`stream_options` carrying `include_usage`). Either half without the other
+  is a different request than the client's, so test path and marker together
+  against the default — never separately.
+
+Run each comparison as a pair on the same model within the same minute, keep
+the environment block in the system prompt (a request without it fails for an
+unrelated reason — see above), and treat a transport-level difference as a
+separate question: if the passing client and an identical replay from another
+runtime disagree, no header variant will close that gap.
+
 ## Testing this yourself
 
 A minimal direct probe that satisfies all four axes. The session id has to be
@@ -289,3 +365,28 @@ now-retired `muse-spark-1.2-contributor-free`, which answered `400` below it.
 - [Architecture](/pages/architecture) — how the proxy applies this fingerprint
 - [Model Catalog](/pages/models) — which models are listed
 - [Commands & Troubleshooting](/pages/commands) — reading the log for refusals
+
+## Third-party corroboration (2026-10-27)
+
+Independent public projects that proxy the same free tier agree on the
+mechanics above, and pin down three disputed details against the official
+client source:
+
+- **Session ids are 30 characters** (`ses_` + 12 lowercase hex + 14 base62),
+  generated from the clock with a small pinned counter. Shorter shapes are
+  miscounts; longer counters are refused.
+- **The project header is a sha1 digest of the working checkout by default**
+  (`global` is only the fallback when nothing is discoverable). Either value
+  currently passes, but the digest is what the real client sends.
+- **The client sends its full tool roster, never a fixed subset.** The gate
+  itself only needs a non-empty tool list containing `read` — which is why
+  minimal tool pairs work and tool-less requests do not.
+- **The current client lane is the OpenAI-compatible one**
+  (`/inference/openai/v1/chat/completions`); the older `/zen/v1` paths now
+  refuse free requests. Both `/inference/v1` and `/inference/openai/v1`
+  answer when the rest of the fingerprint holds.
+- **No third party synthesizes the `<env>` block** — every other proxy passes
+  the caller's system prompt through untouched, so hosts that never emit the
+  block fail on those proxies exactly as in issue #117. The Bun-based proxies
+  additionally document a transport-level check: byte-identical requests pass
+  from Bun's network stack and are refused from Node's.
