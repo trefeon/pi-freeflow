@@ -351,6 +351,13 @@ now-retired `muse-spark-1.2-contributor-free`, which answered `400` below it.
 
 ## Operational notes
 
+- **Shared egress shares one quota.** Requests leaving through Cloudflare-edge
+  addresses (tunnels, workers, VPN exits) draw from the same per-address pool,
+  so a busy shared range exhausts before a quiet residential one — and
+  flagged ranges can be refused regardless of shape. A relay pool only adds
+  quota when each relay exits through its own dedicated address; more relays
+  on the same shared egress add reachability, not quota.
+
 - **A live probe costs free-tier quota.** Every request above is a real
   inference request. A catalog sweep across 13 models is 13 requests.
 - **Probe through the local proxy, not against a relay directly.** Direct
