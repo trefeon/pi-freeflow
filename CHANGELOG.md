@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.43.0
+
+### Minor Changes
+
+- Auto-detect the installed OpenCode 1.x version and auto-repair the OpenCode lane on version drift. The proxy now parses the real client version (`parseOpenCodeBinaryVersion` plus a memoized `probeInstalledOpenCodeVersion` via `opencode --version`) with precedence env override > installed 1.x > live registry > disk > `1.19.4` fallback, so fingerprint User-Agent and headers track the actual installed client instead of a pinned constant. A 2.x major never auto-switches the compat UA; it surfaces via `getLiveOpenCodeVersion` only. Outgoing requests strip stale caller `x-opencode-*` stamps and always stamp the live roster, relay shape-429s stay terminal with no health mark, and the proxy retries once through `refreshOpenCodeUserAgent` on 426/version-drift language.
+
+### Patch Changes
+
+- Harden the OpenCode fingerprint, account pools, and relay/update paths. Requests collapse to a single live OpenCode fingerprint (11-tool roster, full client User-Agent, fresh request id per prepare); silent Zen-to-Kilo failover moves behind the `PI_FREEFLOW_ZEN_KILO_FAILOVER` opt-in. The Cline pool clones on load/save with trimmed tokens and tightened stream sniffing, hedge rate-limit signals are preserved, sticky relay removal is trimmed, quota markers are narrowed, and state writes share one atomic path. Also fixes version comparison, updater probing, token mtime caching, and lease validation. The OpenCode lane is live SERVING (200 billing free).
+- fb521b1: Retire two OpenCode Zen models that upstream removed (issue #121): `longcat-2.5-preview-free` answers `410 Model has been deprecated`, and `nemotron-3-ultra-free` answers `400 Model is unavailable` — both ids are also absent from the live Zen free listing, so neither can serve traffic anymore. The catalog drops from 34 to 32 models (Zen lane 10 to 8); both ids are dead-listed so no stale disk cache or upstream merge can re-register them, and their `longcat` / `longcat-2.5-preview` short aliases are removed. The eight models that answered `429 FreeUsageLimitError` in the same run are untouched: rate-limit verdicts are an availability fault, never a catalog action. The sibling Kilo id `nvidia/nemotron-3-ultra-550b-a55b:free` is a separate serving route and is unaffected.
+- fb521b1: Record opt-in OpenCode Zen free-tier request variants for A/B testing once upstream quota recovers, with no change to the default request. A newer four-part client identifier, alternate project header values (fixed, global, or working-directory digest), and the alternate usage-marked request lane are now available as selectable variants for controlled one-variable comparisons. Default traffic is byte-identical: same User-Agent, project value, lane, tool set, and exactly-one environment block as before.
+- fb521b1: Fix OpenCode Zen free-tier requests being refused with `429 FreeUsageLimitError` ("Free usage limit reached") when the system prompt carries no environment block. The same body answers `200` with the block and `429` without it on the same machine, in the same minute, so the countdown to 00:00 UTC is a generic error body rather than a spent quota. Outgoing Zen requests now carry exactly one `<env>` block containing `Working directory:`: a complete block the host already sent is passed through untouched, a stale or incomplete one is replaced instead of duplicated, and the Kilo, Cline and OVHcloud lanes are unchanged. A conversation that already ate a refusal also keeps failing over to Kilo on its retry instead of replaying the refusal.
+
 ## 1.42.1
 
 ### Patch Changes
