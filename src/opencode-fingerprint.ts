@@ -1,15 +1,28 @@
 /**
  * OpenCode Zen free-tier client fingerprint enforcement & SSE stream aggregator.
  *
- * Upstream OpenCode Zen (/zen/v1/chat/completions, /zen/v1/responses and
- * /zen/v1/messages) validates requests against the official OpenCode agentic
- * client fingerprint. If any of the following 4 axes are missing, upstream
+ * Upstream OpenCode Zen (/inference/openai/v1/chat/completions, /inference/v1
+ * chat/completions, /inference/v1/responses and /inference/v1/messages)
+ * validates requests against the official OpenCode agentic client fingerprint
+ * (v1 1.19.4 MITM, SG). If any of the following 4 axes are missing, upstream
  * answers HTTP 403 FreeTierError:
- * 1. User-Agent (`opencode/<version>`; the pinned fallback, live npm lookup,
+ * 1. User-Agent (full CLI shape `opencode/<v> ai-sdk/provider-utils/4.0.23
+ *    runtime/bun/1.4.4`; the pinned fallback, live npm lookup,
  *    and the >= 1.17.0 floor live in src/config.ts)
- * 2. x-opencode-session (canonical ses_[0-9a-f]{12}[0-9A-Za-z]{14} format)
- * 3. Tools: must declare the placeholder sextet {bash, glob, grep, read, edit, write}
- * 4. Streaming: must be stream: true
+ * 2. x-opencode-session (canonical ses_[0-9a-f]{12}[0-9A-Za-z]{14} format,
+ *    stable per conversation) plus a fresh x-opencode-request (msg_*) per
+ *    prepare, x-opencode-client cli, and the cwd-derived x-opencode-project
+ * 3. Tools: must declare the 11-tool roster {bash, edit, glob, grep, read,
+ *    skill, task, todowrite, webfetch, websearch, write} with the verbatim
+ *    CLI schemas (bash {command, timeout, workdir}, read {filePath, offset,
+ *    limit}, edit {filePath, oldString, newString, replaceAll?}, glob
+ *    {pattern, path?}, grep {pattern, path?, include?}, skill {name}, task
+ *    {description, prompt, subagent_type, task_id?, command?, background?},
+ *    todowrite {todos}, webfetch {url, format?, timeout?}, websearch {query,
+ *    numResults?, livecrawl?, type?, contextMaxCharacters?}, write {content,
+ *    filePath}). Agent turns send bare model ids with no temperature and no
+ *    reasoning_effort; title-only (0-tool) turns keep both.
+ * 4. Streaming: must be stream: true with stream_options {include_usage: true}
  *
  * A fifth axis lives in the body rather than the headers: the free tier refuses
  * any request whose system prompt carries no complete `<env>` environment block,
@@ -34,12 +47,9 @@
  * per-request map (never module-global).
  */
 import {
- COMPAT_FINGERPRINT_SCHEMAS,
- COMPAT_TOOL_DESCRIPTION,
- OMP_FINGERPRINT_DEFS,
- OPENCODE_FINGERPRINT_TOOLS,
+ FULL11_TOOL_DEFS,
+ FULL11_TOOL_NAMES,
  buildFindGlobRestore,
- isOmpLikeCaller,
  restoreToolNameForCaller,
  sanitizeUpstreamToolName,
  translateToolsForPath,
@@ -101,32 +111,16 @@ export function toolNameOf(tool: unknown): string {
  const raw = typeof t.name === "string" ? t.name : typeof fn?.name === "string" ? fn.name : "";
  return raw.trim();
 }
-export { OPENCODE_FINGERPRINT_TOOLS };
-export type { FingerprintToolName, FindGlobRestore } from "./tool-translation.ts";
+export type { FindGlobRestore } from "./tool-translation.ts";
 
-/** Lowercase placeholder names the gate expects (canonical translator set). */
+/** Lowercase roster names the gate expects (live-truth 11-tool roster). */
 const PLACEHOLDER_BY_LOWER_NAME: Record<string, true> = {};
-for (const n of OPENCODE_FINGERPRINT_TOOLS) PLACEHOLDER_BY_LOWER_NAME[n.toLowerCase()] = true;
+for (const n of FULL11_TOOL_NAMES) PLACEHOLDER_BY_LOWER_NAME[n.toLowerCase()] = true;
 
 /** True for placeholder names (case-insensitive): injected compat tools only. */
 export function isPlaceholderToolName(name: unknown): boolean {
  return typeof name === "string" && PLACEHOLDER_BY_LOWER_NAME[name.toLowerCase()] === true;
 }
-/**
- * Fill for one missing fingerprint slot: the shared OMP real definition when
- * the caller is OMP-like, otherwise the empty COMPAT placeholder Pi keeps.
- * `edit` is always COMPAT, even for OMP-like callers: no single static edit
- * executes on either host (OMP is edit-mode dependent, Pi wants
- * edits[]), so it must stay in the cloaked `injected` list even when the
- * caller would otherwise receive real definitions. Single lockstep source for the three wire-shape ensure
- * functions below.
- */
-function fingerprintFill(name: FingerprintToolName, omp: boolean): { description: string; schema: Record<string, unknown> } {
- if (!omp || name === "edit") return { description: COMPAT_TOOL_DESCRIPTION, schema: COMPAT_FINGERPRINT_SCHEMAS[name] };
- const def = OMP_FINGERPRINT_DEFS[name];
- return { description: def.description, schema: { ...(def.parameters as Record<string, unknown>) } };
-}
-
 /**
  * Bounded per-request restore map: lowercase placeholder name -> caller casing.
  * Built fresh by normalizePlaceholderCase for each enforced request and threaded
@@ -180,16 +174,13 @@ function restoreCallerName(name: string, caseRestore?: CaseRestoreMap, findGlob?
 }
 
 /**
- * Merge missing fingerprint declarations (canonical translator set) into Chat
- * Completions bodies. Case-insensitive and idempotent: Bash counts as bash.
- * Preserves caller tools verbatim; missing slots become executable real
- * definitions for OMP-like callers (edit excepted, always the cloaked
- * placeholder), empty no-ops otherwise. Explicit ompLike
- * overrides auto-detection (pass pre-translation caller names when find was
- * already renamed to glob).
+ * Merge the missing live-truth 11-tool roster into a body in its wire shape.
+ * Idempotent and case-insensitive; caller tools pass through verbatim.
+ * Every slot carries the verbatim CLI definition (edit included — real
+ * schema, never a no-op placeholder), and every injected slot stays in the
+ * cloak list so model calls to non-caller tools never execute downstream.
  */
-export function ensureChatFingerprintTools(body: Record<string, unknown>, ompLike?: boolean): void {
- if (!body || typeof body !== "object") return;
+function full11Present(body: Record<string, unknown>): Set<string> {
  const present = new Set<string>();
  if (Array.isArray(body.tools)) {
   for (const tool of body.tools) {
@@ -199,82 +190,53 @@ export function ensureChatFingerprintTools(body: Record<string, unknown>, ompLik
  } else {
   body.tools = [];
  }
- const omp = ompLike ?? isOmpLikeCaller(present);
- for (const name of OPENCODE_FINGERPRINT_TOOLS) {
+ return present;
+}
+
+export function ensureChatFull11Tools(body: Record<string, unknown>): void {
+ if (!body || typeof body !== "object") return;
+ const present = full11Present(body);
+ for (const name of FULL11_TOOL_NAMES) {
   if (present.has(name)) continue;
-  const fill = fingerprintFill(name, omp);
+  const def = FULL11_TOOL_DEFS[name];
   (body.tools as unknown[]).push({
    type: "function",
    function: {
     name,
-    description: fill.description,
-    parameters: fill.schema,
+    description: def.description,
+    parameters: { ...(def.parameters as Record<string, unknown>) },
    },
   });
   present.add(name);
  }
 }
 
-/**
- * Merge missing fingerprint declarations (canonical translator set) into
- * Responses API bodies. Case-insensitive and idempotent.
- * Uses the flat Responses tool shape ({ type: "function", name, description, parameters }).
- * Missing slots become executable real definitions for OMP-like callers
- * (edit excepted, always the cloaked placeholder),
- * empty no-ops otherwise; see ensureChatFingerprintTools for the override.
- */
-export function ensureResponsesFingerprintTools(body: Record<string, unknown>, ompLike?: boolean): void {
+export function ensureResponsesFull11Tools(body: Record<string, unknown>): void {
  if (!body || typeof body !== "object") return;
- const present = new Set<string>();
- if (Array.isArray(body.tools)) {
-  for (const tool of body.tools) {
-   const name = toolNameOf(tool);
-   if (name) present.add(name.toLowerCase());
-  }
- } else {
-  body.tools = [];
- }
- const omp = ompLike ?? isOmpLikeCaller(present);
- for (const name of OPENCODE_FINGERPRINT_TOOLS) {
+ const present = full11Present(body);
+ for (const name of FULL11_TOOL_NAMES) {
   if (present.has(name)) continue;
-  const fill = fingerprintFill(name, omp);
+  const def = FULL11_TOOL_DEFS[name];
   (body.tools as unknown[]).push({
    type: "function",
    name,
-   description: fill.description,
-   parameters: fill.schema,
+   description: def.description,
+   parameters: { ...(def.parameters as Record<string, unknown>) },
   });
   present.add(name);
  }
 }
 
-/**
- * Merge missing fingerprint declarations (canonical translator set) into
- * Anthropic Messages bodies. Case-insensitive and idempotent.
- * Uses the Anthropic tool shape ({ name, description, input_schema }).
- * Missing slots become executable real definitions for OMP-like callers
- * (edit excepted, always the cloaked placeholder),
- * empty no-ops otherwise; see ensureChatFingerprintTools for the override.
- */
-export function ensureMessagesFingerprintTools(body: Record<string, unknown>, ompLike?: boolean): void {
+export function ensureMessagesFull11Tools(body: Record<string, unknown>): void {
  if (!body || typeof body !== "object") return;
- const present = new Set<string>();
- if (Array.isArray(body.tools)) {
-  for (const tool of body.tools) {
-   const name = toolNameOf(tool);
-   if (name) present.add(name.toLowerCase());
-  }
- } else {
-  body.tools = [];
- }
- const omp = ompLike ?? isOmpLikeCaller(present);
- for (const name of OPENCODE_FINGERPRINT_TOOLS) {
+ const present = full11Present(body);
+ for (const name of FULL11_TOOL_NAMES) {
   if (present.has(name)) continue;
-  const fill = fingerprintFill(name, omp);
+  const def = FULL11_TOOL_DEFS[name];
   (body.tools as unknown[]).push({
    name,
-   description: fill.description,
-   input_schema: fill.schema,
+   description: def.description,
+   input_schema: { ...(def.parameters as Record<string, unknown>) },
   });
   present.add(name);
  }
@@ -561,8 +523,11 @@ function contentSegments(message: Record<string, unknown>): SystemText[] {
  */
 function chatSystemSegments(body: Record<string, unknown>): SystemText[] {
  const existing = body.messages;
- if (existing !== undefined && !Array.isArray(existing)) return [];
- const messages: unknown[] = Array.isArray(existing) ? existing : ((body.messages = []) as unknown[]);
+ // A non-array messages value carries no system prompt; coerce to an array
+ // so the env block still lands (a shape violation either way, but a 429
+ // without the block hides the real error).
+ if (existing !== undefined && !Array.isArray(existing)) body.messages = [];
+ const messages: unknown[] = Array.isArray(body.messages) ? body.messages : ((body.messages = []) as unknown[]);
  const segments: SystemText[] = [];
  for (const message of messages) {
   if (!message || typeof message !== "object" || Array.isArray(message)) continue;
@@ -604,8 +569,15 @@ function responsesSystemSegments(body: Record<string, unknown>): SystemText[] {
    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
    const rec = item as Record<string, unknown>;
    if (rec.role !== "system" && rec.role !== "developer") continue;
-   if (typeof rec.content !== "string") continue;
-   segments.push(stringSegment(rec, "content"));
+   if (typeof rec.content === "string") {
+    segments.push(stringSegment(rec, "content"));
+   } else if (Array.isArray(rec.content)) {
+    // Array-content system/developer items (Responses text-block parts):
+    // edit the text blocks in place rather than ignoring the item.
+    segments.push(...textBlockSegments(rec.content));
+   } else {
+    continue;
+   }
   }
   if (segments.length > 0) return segments;
  }
@@ -648,6 +620,25 @@ function statedWorkingDirectory(segments: SystemText[]): string | null {
 }
 
 /**
+ * Build the exact 5-line env block the live CLI sends (v1 1.19.4 MITM, SG):
+ * Working directory, Workspace root, Is git, Platform, Today's date.
+ * The directory values fall back to the fingerprint constant when the caller
+ * stated nothing — the gate reads the keys, not usable paths.
+ */
+export function buildLiveEnvBlock(workingDirectory: string): string {
+ const today = new Date().toISOString().slice(0, 10);
+ return [
+  "<env>",
+  `  Working directory: ${workingDirectory}`,
+  `  Workspace root: ${workingDirectory}`,
+  "  Is git: false",
+  `  Platform: ${process.platform}`,
+  `  Today's date: ${today}`,
+  "</env>",
+ ].join("\n");
+}
+
+/**
  * Guarantee the free-tier environment gate: exactly one `<env>` … `</env>` pair
  * in the system prompt, with `Working directory:` inside it.
  *
@@ -684,32 +675,30 @@ export function ensureEnvBlock(body: Record<string, unknown>, pathname: string):
  const carrying = blocks.find((block) => WORKING_DIRECTORY_RE.test(block.body));
  // Already the single pair upstream reads, with the key inside: leave it be.
  if (carrying !== undefined && blocks.length === 1) return;
- const fallback = carrying === undefined ? (statedWorkingDirectory(segments) ?? FALLBACK_WORKING_DIRECTORY) : "";
  segments.forEach((segment, index) => {
   segment.write(stripEnvBlocks(segment.read(), carrying !== undefined && carrying.segment === index ? carrying : undefined));
  });
  if (carrying !== undefined) return;
  const last = segments[segments.length - 1];
  const text = last.read();
- last.write(`${text ? `${text}\n\n` : ""}<env>\n  Working directory: ${fallback}\n</env>`);
+ last.write(`${text ? `${text}\n\n` : ""}${buildLiveEnvBlock(statedWorkingDirectory(segments) ?? FALLBACK_WORKING_DIRECTORY)}`);
 }
 
 /**
  * Enforce the full OpenCode free-tier client fingerprint on a parsed request body.
  * Caller placeholders are lowercased (Bash -> bash),
  * tools translated to the target path's wire shape (Pi find -> upstream glob via
- * src/tool-translation.ts), then the missing slots injected in that shape: real
- * executable definitions for OMP-like callers (ask/task/todo/hub/lsp present,
- * or glob without find, detected on pre-translation caller names), empty
- * no-ops for Pi. `edit` is always the cloaked placeholder (no static edit
- * schema executes on either host). Returns the original stream flag,
- * caller-tools flag, whether injection added tools, and the bounded
- * per-request restore records (caseRestore, findGlob, injected)
- * for downstream cloaking. Cloaking strips by `injected` only: any missing
- * slot the caller received with an executable definition is not a
- * placeholder, so model calls to it execute downstream instead of being
- * cloaked.
- *
+ * src/tool-translation.ts), then the missing live-truth 11-roster slots injected
+ * in that shape with their verbatim CLI definitions (bash {command, timeout,
+ * workdir}, read {filePath, offset, limit}, edit {filePath, oldString,
+ * newString}). `edit` rides real-or-drop: the real schema when injected, still
+ * cloaked downstream like every other injected slot. Returns the original
+ * stream flag, caller-tools flag, whether injection added tools, and the
+ * bounded per-request restore records (caseRestore, findGlob, injected)
+ * for downstream cloaking. Cloaking strips by `injected` only: injected slots
+ * are never the caller's own tools, so model calls to them never execute.
+ * Chat bodies additionally gain stream_options {include_usage: true} for the
+ * openai-compat lane.
  * `argSchemas` (lowercased caller tool name -> declared parameters) lets
  * downstream repair malformed arguments against the caller's own schema; it
  * is empty when no caller tool declares a structured parameter, so such
@@ -729,6 +718,12 @@ export function enforceOpencodeFingerprint(
 } {
  const clientRequestedStream = body.stream === true;
  const callerHadTools = Array.isArray(body.tools) && body.tools.length > 0;
+ // Zen takes the bare model id: the live CLI sends `model: <bare>` (e.g.
+ // glm-5.3-flash-free), never the `opencode/`-prefixed catalog id the host
+ // may carry. Strip one prefix so a prefixed id still routes.
+ if (typeof body.model === "string" && body.model.startsWith("opencode/")) {
+  body.model = body.model.slice("opencode/".length);
+ }
  // Zen responses shape conformance first (Chat leftovers, tool_choice, spark
  // effort clamp, store default): Kilo/Cline bodies never reach here.
  if (pathname.endsWith("/responses")) normalizeResponsesBody(body);
@@ -738,6 +733,20 @@ export function enforceOpencodeFingerprint(
  // messages lane keeps its own choice semantics: Anthropic names choices with
  // `any` / `{ type: "tool", name: ... }`, and the drop would delete them.
  if (!pathname.endsWith("/messages")) enforceAutoToolChoice(body);
+ // Agent turns carry no sampling knobs: the live CLI's agent calls send
+ // neither temperature nor reasoning_effort, while its title calls
+ // (0 caller tools) send both. Strip on tool-carrying turns only; the
+ // title-only path keeps the caller's values (clamped above).
+ if (callerHadTools && !pathname.endsWith("/messages")) {
+  delete body.temperature;
+  delete body.reasoning_effort;
+  delete body.reasoningEffort;
+  const reasoning = body.reasoning;
+  if (reasoning !== null && typeof reasoning === "object" && !Array.isArray(reasoning)) {
+   delete (reasoning as Record<string, unknown>).effort;
+   if (Object.keys(reasoning as Record<string, unknown>).length === 0) delete body.reasoning;
+  }
+ }
  // Upstream Zen free tier mandates stream: true for all free requests
  body.stream = true;
  // Fifth axis, body-side: a system prompt without a complete env block answers
@@ -756,26 +765,22 @@ export function enforceOpencodeFingerprint(
  // repairable.
  const argSchemas = buildArgRepairSchemas(Array.isArray(body.tools) ? body.tools : []);
  const callerUpstream = new Set<string>();
- const callerNames = new Set<string>();
  if (Array.isArray(body.tools)) {
   for (const tool of body.tools) {
    const n = toolNameOf(tool);
    if (n) {
-    callerNames.add(n.toLowerCase());
     callerUpstream.add(upstreamToolNameFor(n).toLowerCase());
    }
   }
  }
- // OMP detection runs on pre-translation names: find is still visible here,
- // so Pi find-callers are never mistaken for OMP glob-callers.
- const ompLike = isOmpLikeCaller(callerNames);
- const missing = OPENCODE_FINGERPRINT_TOOLS.filter((n) => !callerUpstream.has(n.toLowerCase()));
- // Cloak list carries the truly-empty placeholders plus `edit` (never
- // executable when injected); real definitions survive downstream so
- // injected OMP calls execute.
- const injected = missing.filter((n) => !ompLike || n === "edit");
+ const missing = FULL11_TOOL_NAMES.filter((n) => !callerUpstream.has(n.toLowerCase()));
+ // Cloak list carries every injected slot: none of them is the caller's own
+ // tool, so model calls to them must never execute downstream — edit included,
+ // even though it now rides with its real schema (real-or-drop, never a
+ // no-op placeholder).
+ const injected = [...missing];
 
- // Zen alone asks for a rename: its free-tier gate looks for the sextet name
+ // Zen alone asks for a rename: its free-tier gate looks for the roster name
  // `glob`, so a Pi caller that sent `find` needs it renamed into that slot.
  // Every other lane accepts the caller's own names untouched.
  if (Array.isArray(body.tools)) {
@@ -784,11 +789,14 @@ export function enforceOpencodeFingerprint(
 
  const before = Array.isArray(body.tools) ? body.tools.length : 0;
  if (pathname.endsWith("/responses")) {
-  ensureResponsesFingerprintTools(body, ompLike);
+  ensureResponsesFull11Tools(body);
  } else if (pathname.endsWith("/messages")) {
-  ensureMessagesFingerprintTools(body, ompLike);
+  ensureMessagesFull11Tools(body);
  } else {
-  ensureChatFingerprintTools(body, ompLike);
+  ensureChatFull11Tools(body);
+  // The openai-compat lane carries usage accounting the way the CLI's
+  // openai-compat request does.
+  applyOpenAiCompatVariant(body);
  }
  const after = Array.isArray(body.tools) ? body.tools.length : 0;
 
@@ -1453,89 +1461,10 @@ export function repairJsonToolArguments(
 }
 
 /**
- * Profiled OpenCode fingerprint (A/B-able). V1_PROFILE mirrors the legacy
- * opencodeHeaders()/sextet behaviour byte-for-byte.
- */
-import {
- OPENCODE_CLIENT as PROFILE_OPENCODE_CLIENT,
- OPENCODE_PROJECT as PROFILE_OPENCODE_PROJECT,
- buildOpenCodeUserAgent,
- createOpenCodeRequestId,
- getLiveOpenCodeV2Version,
- getLiveOpenCodeVersion,
- getOpenCodeUserAgent,
- resolveOpenCodeProject,
- type OpenCodeProjectVariant,
-} from "./config.ts";
-import {
- BASH_READ_119_PARAM_SCHEMAS,
- READ_SHELL_V2_DEFS,
-} from "./tool-translation.ts";
-
-export type FingerprintToolSet = "sextet" | "bash-read" | "read-shell";
-export interface OpenCodeProfile {
- id: string;
- uaShape: "v1" | "full" | "v2";
- uaChannel: string;
- client: string;
- project: string;
- sendRequestId: boolean;
- sendAffinity: boolean;
- tools: FingerprintToolSet;
-}
-export const V1_PROFILE: OpenCodeProfile = {
- id: "v1",
- uaShape: "v1",
- uaChannel: "latest",
- client: PROFILE_OPENCODE_CLIENT,
- project: PROFILE_OPENCODE_PROJECT,
- sendRequestId: false,
- sendAffinity: true,
- tools: "sextet",
-};
-function profileUserAgent(profile: OpenCodeProfile): string {
- if (profile.uaShape === "v1") return getOpenCodeUserAgent();
- if (profile.uaShape === "v2") {
-  return buildOpenCodeUserAgent(profile.uaShape, getLiveOpenCodeV2Version(), profile.uaChannel, profile.client);
- }
- return buildOpenCodeUserAgent(profile.uaShape, getLiveOpenCodeVersion(), profile.uaChannel, profile.client);
-}
-/**
- * Selectable v2 profile for the User-Agent A/B (opt-in only — the default
- * lane keeps V1_PROFILE above byte-for-byte).
- * Emits the CLI shape the passing client sends today:
- * `opencode/latest/<2.x>/cli` on the latest channel with a live 2.x version
- * (pinned 2.0.27 fallback while no live 2.x lookup has landed). Headers,
- * affinity pair and sextet toolset match V1 otherwise, so the A/B isolates
- * the UA string.
- */
-export const V2_PROFILE: OpenCodeProfile = {
- id: "v2",
- uaShape: "v2",
- uaChannel: "latest",
- client: PROFILE_OPENCODE_CLIENT,
- project: PROFILE_OPENCODE_PROJECT,
- sendRequestId: false,
- sendAffinity: true,
- tools: "sextet",
-};
-/**
- * Return a copy of `profile` sending one project-header variant
- * ("fixed" | "global" | "cwd"). The caller's profile is never mutated, and
- * the default lane never calls this — it keeps the fixed pin.
- */
-export function withProjectHeader(
- profile: OpenCodeProfile,
- variant: OpenCodeProjectVariant,
- cwd?: string,
-): OpenCodeProfile {
- return { ...profile, id: `${profile.id}:project=${variant}`, project: resolveOpenCodeProject(variant, cwd) };
-}
-/**
- * Opt-in OpenAI-compat body variant for the lane A/B: mark the body for usage
+ * OpenAI-compat body variant for the default lane: mark the body for usage
  * accounting the way the CLI's openai-compat request does. Merges into an
- * existing stream_options object rather than replacing it. Never applied by
- * the default lane — only probes or A/B callers invoke this.
+ * existing stream_options object rather than replacing it. Applied to every
+ * chat-lane enforcement (see enforceOpencodeFingerprint).
  */
 export function applyOpenAiCompatVariant(body: Record<string, unknown>): void {
  if (!body || typeof body !== "object") return;
@@ -1545,65 +1474,4 @@ export function applyOpenAiCompatVariant(body: Record<string, unknown>): void {
   return;
  }
  body.stream_options = { include_usage: true };
-}
-export function opencodeHeadersFor(sessionId: string, profile: OpenCodeProfile): Record<string, string> {
- const headers: Record<string, string> = {
-  Authorization: "Bearer public",
-  "User-Agent": profileUserAgent(profile),
-  "x-opencode-client": profile.client,
-  "x-opencode-project": profile.project,
-  "x-opencode-session": sessionId,
-  "x-opencode-session-id": sessionId,
- };
- if (profile.sendAffinity) {
-  headers["x-session-affinity"] = sessionId;
-  headers["x-session-id"] = sessionId;
- }
- if (profile.sendRequestId) headers["x-opencode-request"] = createOpenCodeRequestId();
- return headers;
-}
-function pushChatTool(body: Record<string, unknown>, name: string, description: string, parameters: Record<string, unknown>): void {
- (body.tools as unknown[]).push({
-  type: "function",
-  function: { name, description, parameters },
- });
-}
-/**
- * Ensure the profile's toolset on a Chat Completions body. Idempotent and
- * case-insensitive; caller tools pass through verbatim, missing slots append.
- * bash-read descriptions follow fingerprintFill (OMP-like real defs, else
- * COMPAT placeholder) with verbatim 1.19.0 parameters; read-shell uses the
- * verbatim v2.0.26 definitions.
- */
-export function ensureFingerprintToolsFor(body: Record<string, unknown>, tools: FingerprintToolSet, ompLike?: boolean): void {
- if (tools === "sextet") {
-  ensureChatFingerprintTools(body, ompLike);
-  return;
- }
- if (!body || typeof body !== "object") return;
- const present = new Set<string>();
- if (Array.isArray(body.tools)) {
-  for (const tool of body.tools) {
-   const name = toolNameOf(tool);
-   if (name) present.add(name.toLowerCase());
-  }
- } else {
-  body.tools = [];
- }
- const omp = ompLike ?? isOmpLikeCaller(present);
- if (tools === "bash-read") {
-  for (const name of ["bash", "read"] as const) {
-   if (present.has(name)) continue;
-   const fill = fingerprintFill(name, omp);
-   pushChatTool(body, name, fill.description, { ...(BASH_READ_119_PARAM_SCHEMAS[name] as Record<string, unknown>) });
-   present.add(name);
-  }
-  return;
- }
- for (const name of ["read", "shell"] as const) {
-  if (present.has(name)) continue;
-  const def = READ_SHELL_V2_DEFS[name];
-  pushChatTool(body, name, def.description, { ...(def.parameters as Record<string, unknown>) });
-  present.add(name);
- }
 }

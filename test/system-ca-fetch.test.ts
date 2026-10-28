@@ -97,4 +97,20 @@ describe("fetchWithSystemCA", () => {
    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
  });
+ it("surfaces fallback body errors instead of the masked cert error", async () => {
+  const realFetch = globalThis.fetch;
+  const certErr = chainError("SELF_SIGNED_CERT_IN_CHAIN");
+  globalThis.fetch = (async () => { throw certErr; }) as typeof fetch;
+  try {
+   await assert.rejects(
+    fetchWithSystemCA("https://api.cline.bot/api/v1/models", {
+     method: "POST",
+     body: new FormData() as unknown as BodyInit,
+    }),
+    (e: unknown) => e instanceof Error && e.message.includes("string/form bodies only") && e !== certErr,
+   );
+  } finally {
+   globalThis.fetch = realFetch;
+  }
+ });
 });

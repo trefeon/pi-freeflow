@@ -58,6 +58,29 @@ test("enrichModelDef with missing context_length falls back to sane defaults", (
  assert.deepEqual(def.input, ["text"], "non-vision model defaults to text-only input");
 });
 
+test("enrichModelDef declared fields win over wire aliases and heuristics", () => {
+ const def = enrichModelDef(
+  {
+   id: "deepseek-lab/custom-reasoner",
+   contextWindow: 100_000,
+   context_length: 200_000,
+   maxTokens: 8_000,
+   max_output_tokens: 16_000,
+   reasoning: false,
+  },
+  "opencode",
+ );
+ assert.equal(def.contextWindow, 100_000, "declared contextWindow beats the snake_case alias");
+ assert.equal(def.maxTokens, 8_000, "declared maxTokens beats the wire alias");
+ assert.equal(def.reasoning, false, "declared reasoning:false beats the id heuristic");
+ const aliased = enrichModelDef(
+  { id: "plain-lab/plain-model", context_length: 300_000, max_output_tokens: 24_000 },
+  "opencode",
+ );
+ assert.equal(aliased.contextWindow, 300_000, "wire alias still fills the gap");
+ assert.equal(aliased.maxTokens, 24_000, "wire output alias still fills the gap");
+});
+
 test("enrichModelDef kilocode source keeps :free suffix id and tags thinkingFormat", () => {
  const known = enrichModelDef(
   { id: "dots-studio/dots-3-note-preview:free" },

@@ -114,21 +114,51 @@ export function validateRelayUrl(
  return { ok: true, url };
 }
 /**
+ * Narrow one raw relay entry from disk. Drops entries without a usable URL
+ * (wrong type, empty after trim) and strips non-string optionals so a
+ * hand-edited or half-written state file can never plant a non-string url,
+ * label, or auth into the live pool.
+ */
+function narrowRelayEntry(entry: unknown): KnownRelay | null {
+ if (typeof entry !== "object" || entry === null) return null;
+ const rec = entry as Record<string, unknown>;
+ if (typeof rec.url !== "string") return null;
+ const url = rec.url.trim();
+ if (!url) return null;
+ const out: KnownRelay = { url };
+ if (typeof rec.label === "string" && rec.label.trim()) out.label = rec.label;
+ if (typeof rec.addedAt === "string") out.addedAt = rec.addedAt;
+ if (typeof rec.auth === "string" && rec.auth) out.auth = rec.auth;
+ return out;
+}
+
+/**
  * Parse a relay-state JSON blob into a usable state.
  * Returns null when the blob is corrupt or has an empty relay pool —
- * either makes the state unusable for routing.
+ * either makes the state unusable for routing. Entries are narrowed (not
+ * cast): a valid-JSON blob carrying a non-array pool, non-object entries,
+ * or non-string urls still recovers the usable remainder instead of routing
+ * on attacker- or editor-shaped data.
  */
 function parseRelayState(raw: string): RelayState | null {
  try {
-  const s = JSON.parse(raw);
-  const relays: KnownRelay[] = Array.isArray(s?.relays) ? s.relays : [];
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const s = parsed as Record<string, unknown>;
+  const rawRelays: unknown = s.relays;
+  const relays: KnownRelay[] = Array.isArray(rawRelays)
+   ? rawRelays
+     .map(narrowRelayEntry)
+     .filter((r): r is KnownRelay => r !== null)
+   : [];
   if (relays.length === 0) {
    return null;
   }
   const mode: RelayMode =
-   s?.mode === "on" || s?.mode === "off" || s?.mode === "auto" || s?.mode === "spread"
+   s.mode === "on" || s.mode === "off" || s.mode === "auto" || s.mode === "spread"
     ? s.mode
     : "auto";
+  const sticky = typeof s.url === "string" ? s.url.trim() : "";
   return {
    mode,
    enabled:
@@ -136,12 +166,12 @@ function parseRelayState(raw: string): RelayState | null {
      ? true
      : mode === "off"
       ? false
-      : s?.enabled !== false && relays.length > 0,
-   url: typeof s?.url === "string" ? s.url.trim() : (relays[0]?.url || ""),
+      : s.enabled !== false && relays.length > 0,
+   url: sticky || relays[0]?.url || "",
    relays,
-			hideWidget: s?.hideWidget === true,
-			autoUpdate: s?.autoUpdate === true,
-		};
+   hideWidget: s.hideWidget === true,
+   autoUpdate: s.autoUpdate === true,
+  };
  } catch {
   return null;
  }
@@ -149,16 +179,18 @@ function parseRelayState(raw: string): RelayState | null {
 
 /**
  * Remove leftover `<state>.<uuid>.tmp` files from crashed or failed saves.
- * Only files older than an hour are removed, so an in-flight save by a
+ * Sweeps every `*.tmp` file in the state dir — not just this module's own
+ * prefix — because upstream-health, catalog, and cline pool writes all stage
+ * sibling tmp files via the same writeFileAtomic helper into the same data
+ * dir. Only files older than an hour are removed, so an in-flight save by a
  * sibling process is never disturbed.
  */
 function cleanupStaleTmpFiles(): void {
  try {
   const dir = path.dirname(RELAY_STATE_FILE);
-  const prefix = `${path.basename(RELAY_STATE_FILE)}.`;
   const cutoff = Date.now() - 60 * 60 * 1000;
   for (const entry of fs.readdirSync(dir)) {
-   if (!entry.startsWith(prefix) || !entry.endsWith(".tmp")) {
+   if (!entry.endsWith(".tmp")) {
     continue;
    }
    const full = path.join(dir, entry);
@@ -206,7 +238,7 @@ export function loadRelayState(): RelayState {
    if (healed) {
     return healed;
    }
-			return { mode: "auto", enabled: true, url: "", relays: [], hideWidget: false, autoUpdate: false };
+   return { mode: "auto", enabled: true, url: "", relays: [], hideWidget: false, autoUpdate: false };
   }
   const raw = fs.readFileSync(RELAY_STATE_FILE, "utf8");
   const main = parseRelayState(raw);
@@ -223,16 +255,16 @@ export function loadRelayState(): RelayState {
   });
   // parse returns null on an empty pool by design (wipe-protection above);
   // preserve an explicit hide so hide-with-zero-relays survives reload.
-		let hide = false;
-		let autoUpdate = false;
-		try {
-			const parsed = JSON.parse(raw) as RelayState;
-			hide = parsed?.hideWidget === true;
-			autoUpdate = parsed?.autoUpdate === true;
-		} catch {}
-		return { mode: "auto", enabled: true, url: "", relays: [], hideWidget: hide, autoUpdate };
-	} catch {
-		return { mode: "auto", enabled: true, url: "", relays: [], hideWidget: false, autoUpdate: false };
+  let hide = false;
+  let autoUpdate = false;
+  try {
+   const parsed = JSON.parse(raw) as RelayState;
+   hide = parsed?.hideWidget === true;
+   autoUpdate = parsed?.autoUpdate === true;
+  } catch {}
+  return { mode: "auto", enabled: true, url: "", relays: [], hideWidget: hide, autoUpdate };
+ } catch {
+  return { mode: "auto", enabled: true, url: "", relays: [], hideWidget: false, autoUpdate: false };
  }
 }
 
@@ -357,10 +389,17 @@ export function findRelay(
 }
 
 /**
- * Remove a relay URL from the known relay list.
+ * Remove a relay URL from the known relay list. The match is trimmed so a
+ * padded CLI arg still removes the entry, and a removed sticky primary falls
+ * back to the first remaining relay (or "" when the pool is empty) instead
+ * of pointing at a relay that no longer exists.
  */
 export function removeRelay(s: RelayState, url: string): void {
- s.relays = s.relays.filter((r) => r.url !== url);
+ const clean = (url || "").trim();
+ s.relays = s.relays.filter((r) => r.url !== clean && r.url.trim() !== clean);
+ if ((s.url || "").trim() === clean) {
+  s.url = s.relays[0]?.url || "";
+ }
 }
 
 /**
@@ -583,30 +622,39 @@ function tryAcquireRelayLock(): boolean {
    // proceed unlocked; the atomic tmp+rename save already prevents torn files.
    return false;
   }
-  // Held or stale: take over locks older than LOCK_STALE_MS so a crashed
-  // process cannot wedge the state file forever.
+  // EEXIST: the lock is held by a live writer, or abandoned by a crashed
+  // one. Only a lock older than LOCK_STALE_MS is taken over; a fresh lock
+  // means a concurrent writer is active right now.
+  let stale = false;
   try {
-   const age = Date.now() - fs.statSync(RELAY_STATE_LOCK_FILE).mtimeMs;
-   if (age > LOCK_STALE_MS) {
-    fs.rmSync(RELAY_STATE_LOCK_FILE, { force: true });
-    return tryAcquireRelayLock();
-   }
+   stale = Date.now() - fs.statSync(RELAY_STATE_LOCK_FILE).mtimeMs > LOCK_STALE_MS;
   } catch {
-   return tryAcquireRelayLock(); // lock vanished between stat and here
+   // The lock vanished between the failed create and the stat — retry once.
+   return tryAcquireRelayLock();
   }
-  return false;
+  if (!stale) return false;
+  try {
+   fs.rmSync(RELAY_STATE_LOCK_FILE, { force: true });
+  } catch {
+   // Stale but undeletable: proceed unlocked rather than spin or throw on
+   // the proxy request path.
+   return false;
+  }
+  return tryAcquireRelayLock();
  }
 }
 
 /**
  * Apply a mutation to relay state with a compare-and-swap discipline.
- * Makes a single lock acquisition attempt, loads the freshest on-disk state,
- * runs the updater against it, persists atomically, and releases the lock.
- * When the lock is held the write proceeds unlocked — the atomic tmp+rename
- * save already prevents torn files; the lock only serializes write intent.
- * (Never spin here: this runs on the proxy request path and blocking the
- * event loop stalls all in-flight streams.)
- * Returns the state that was actually persisted (also becomes the in-memory
+ * Tries once to create the lock file (`wx`, failing with EEXIST when another
+ * writer holds it); a lock older than LOCK_STALE_MS is treated as abandoned
+ * and taken over, while a fresh lock — or any lock that cannot be created or
+ * removed — falls back to proceeding unlocked. Either way the freshest
+ * on-disk state is loaded, the updater runs against it, and the result is
+ * persisted atomically (tmp+rename, never a torn file) before a held lock is
+ * released. Never spins here: this runs on the proxy request path and
+ * blocking the event loop stalls all in-flight streams.
+ * Returns the state that was actually persisted (also becoming the in-memory
  * active state).
  */
 export function withRelayState(updater: (s: RelayState) => RelayState): RelayState {
@@ -825,24 +873,24 @@ export function isSessionPinEligible(pin: string, ordered: string[]): boolean {
  * so a rate-limited IP is never preferred.
  */
 export function orderedRelayCandidates(
-	preferredRelay?: string,
-	spreadKey?: string,
-	forceRoundRobin?: boolean,
+ preferredRelay?: string,
+ spreadKey?: string,
+ forceRoundRobin?: boolean,
 ): string[] {
-	const ordered = getOrderedRelayUrls();
-	const preferred = (preferredRelay ?? "").trim();
-	if (preferred) {
-		const index = ordered.indexOf(preferred);
-		if (index <= 0) return ordered;
-		if (!isSessionPinEligible(preferred, ordered)) return ordered;
-		return [ordered[index], ...ordered.slice(0, index), ...ordered.slice(index + 1)];
-	}
-	if (activeRelayState.mode !== "spread" && !forceRoundRobin) return ordered;
-	const healthy = ordered.filter((u) => isRelayHealthy(u));
-	const cooling = ordered.filter((u) => !isRelayHealthy(u));
-	if (healthy.length <= 1) return [...healthy, ...cooling];
-	const k = spreadKey ? stableHash(spreadKey) % healthy.length : spreadCursor++ % healthy.length;
-	return [...healthy.slice(k), ...healthy.slice(0, k), ...cooling];
+ const ordered = getOrderedRelayUrls();
+ const preferred = (preferredRelay ?? "").trim();
+ if (preferred) {
+  const index = ordered.indexOf(preferred);
+  if (index <= 0) return ordered;
+  if (!isSessionPinEligible(preferred, ordered)) return ordered;
+  return [ordered[index], ...ordered.slice(0, index), ...ordered.slice(index + 1)];
+ }
+ if (activeRelayState.mode !== "spread" && !forceRoundRobin) return ordered;
+ const healthy = ordered.filter((u) => isRelayHealthy(u));
+ const cooling = ordered.filter((u) => !isRelayHealthy(u));
+ if (healthy.length <= 1) return [...healthy, ...cooling];
+ const k = spreadKey ? stableHash(spreadKey) % healthy.length : spreadCursor++ % healthy.length;
+ return [...healthy.slice(k), ...healthy.slice(0, k), ...cooling];
 }
 
 /** Round-robin cursor for spread mode when no stable key is available. */

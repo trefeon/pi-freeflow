@@ -7,19 +7,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import {
-	DEBUG_STATE_FILE,
-	LOG_FILE,
-	LOG_MAX_BYTES,
-	LOG_MAX_FILES,
+ DEBUG_STATE_FILE,
+ LOG_FILE,
+ LOG_MAX_BYTES,
+ LOG_MAX_FILES,
 } from "./config.ts";
 import type { DebugState, LogLevel } from "./types.ts";
 
 export const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
-	debug: 0,
-	info: 1,
-	warn: 2,
-	error: 3,
-	audit: 4,
+ debug: 0,
+ info: 1,
+ warn: 2,
+ error: 3,
+ audit: 4,
 };
 
 /**
@@ -31,7 +31,7 @@ export const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
 const EMITTED_LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
 
 export function isEmittedLogLevel(level: string): level is LogLevel {
-	return (EMITTED_LEVELS as readonly string[]).includes(level);
+ return (EMITTED_LEVELS as readonly string[]).includes(level);
 }
 
 let cachedDebugState: DebugState | null | undefined = undefined;
@@ -42,124 +42,124 @@ let cachedDebugAt = 0;
  * Load persisted debug state from disk with a 1-second in-memory mtime cache.
  */
 export function loadDebugState(): DebugState | null {
-	const now = Date.now();
-	if (cachedDebugState !== undefined && now - cachedDebugAt < 1000) {
-		return cachedDebugState;
-	}
+ const now = Date.now();
+ if (cachedDebugState !== undefined && now - cachedDebugAt < 1000) {
+  return cachedDebugState;
+ }
 
-	try {
-		if (!fs.existsSync(DEBUG_STATE_FILE)) {
-			cachedDebugState = null;
-			cachedDebugAt = now;
-			return null;
-		}
+ try {
+  if (!fs.existsSync(DEBUG_STATE_FILE)) {
+   cachedDebugState = null;
+   cachedDebugAt = now;
+   return null;
+  }
 
-		const stat = fs.statSync(DEBUG_STATE_FILE);
-		if (stat.mtimeMs === cachedDebugMtime && cachedDebugState !== undefined) {
-			cachedDebugAt = now;
-			return cachedDebugState;
-		}
+  const stat = fs.statSync(DEBUG_STATE_FILE);
+  if (stat.mtimeMs === cachedDebugMtime && cachedDebugState !== undefined) {
+   cachedDebugAt = now;
+   return cachedDebugState;
+  }
 
-		const raw = fs.readFileSync(DEBUG_STATE_FILE, "utf8");
-		const parsed = JSON.parse(raw) as DebugState;
-		if (typeof parsed?.debug === "boolean") {
-			// A stray 'audit' level (or any unknown level) must not suppress the
-			// whole log — keep the debug boolean, drop the unusable level.
-			const clean: DebugState = { debug: parsed.debug };
-			if (typeof parsed.level === "string" && isEmittedLogLevel(parsed.level)) {
-				clean.level = parsed.level;
-			}
-			cachedDebugState = clean;
-			cachedDebugMtime = stat.mtimeMs;
-			cachedDebugAt = now;
-			return clean;
-		}
-	} catch {
-		// Non-fatal if parsing or reading fails
-	}
+  const raw = fs.readFileSync(DEBUG_STATE_FILE, "utf8");
+  const parsed = JSON.parse(raw) as DebugState;
+  if (typeof parsed?.debug === "boolean") {
+   // A stray 'audit' level (or any unknown level) must not suppress the
+   // whole log — keep the debug boolean, drop the unusable level.
+   const clean: DebugState = { debug: parsed.debug };
+   if (typeof parsed.level === "string" && isEmittedLogLevel(parsed.level)) {
+    clean.level = parsed.level;
+   }
+   cachedDebugState = clean;
+   cachedDebugMtime = stat.mtimeMs;
+   cachedDebugAt = now;
+   return clean;
+  }
+ } catch {
+  // Non-fatal if parsing or reading fails
+ }
 
-	cachedDebugState = null;
-	cachedDebugAt = now;
-	return null;
+ cachedDebugState = null;
+ cachedDebugAt = now;
+ return null;
 }
 
 /**
  * Atomically persist debug state to disk.
  */
 export function saveDebugState(s: DebugState): void {
-	try {
-		const dir = path.dirname(DEBUG_STATE_FILE);
-		if (!fs.existsSync(dir)) {
-			fs.mkdirSync(dir, { recursive: true });
-		}
-		const tmp = `${DEBUG_STATE_FILE}.${randomUUID()}.tmp`;
-		fs.writeFileSync(tmp, JSON.stringify(s, null, 2), "utf8");
-		fs.renameSync(tmp, DEBUG_STATE_FILE);
+ try {
+  const dir = path.dirname(DEBUG_STATE_FILE);
+  if (!fs.existsSync(dir)) {
+   fs.mkdirSync(dir, { recursive: true });
+  }
+  const tmp = `${DEBUG_STATE_FILE}.${randomUUID()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(s, null, 2), "utf8");
+  fs.renameSync(tmp, DEBUG_STATE_FILE);
 
-		try {
-			const stat = fs.statSync(DEBUG_STATE_FILE);
-			cachedDebugState = s;
-			cachedDebugMtime = stat.mtimeMs;
-			cachedDebugAt = Date.now();
-		} catch {
-			cachedDebugState = s;
-			cachedDebugAt = Date.now();
-		}
-	} catch (err) {
-		// Avoid recursive logger calls on save failure
-	}
+  try {
+   const stat = fs.statSync(DEBUG_STATE_FILE);
+   cachedDebugState = s;
+   cachedDebugMtime = stat.mtimeMs;
+   cachedDebugAt = Date.now();
+  } catch {
+   cachedDebugState = s;
+   cachedDebugAt = Date.now();
+  }
+ } catch (err) {
+  // Avoid recursive logger calls on save failure
+ }
 }
 
 /** Test-only: drop the in-memory debug-state cache so a test's disk write is re-read. */
 export function _resetDebugStateCacheForTest(): void {
-	cachedDebugState = undefined;
-	cachedDebugMtime = 0;
-	cachedDebugAt = 0;
+ cachedDebugState = undefined;
+ cachedDebugMtime = 0;
+ cachedDebugAt = 0;
 }
 
 /**
  * Calculate the active minimum log level threshold based on state and env.
  */
 export function getMinLogLevel(): number {
-	const dbg = loadDebugState();
-	if (dbg?.debug) {
-		return LOG_LEVEL_ORDER.debug;
-	}
-	if (dbg?.level && isEmittedLogLevel(dbg.level)) {
-		return LOG_LEVEL_ORDER[dbg.level];
-	}
+ const dbg = loadDebugState();
+ if (dbg?.debug) {
+  return LOG_LEVEL_ORDER.debug;
+ }
+ if (dbg?.level && isEmittedLogLevel(dbg.level)) {
+  return LOG_LEVEL_ORDER[dbg.level];
+ }
 
-	const rawEnv = process.env.FREEFLOW_LOG_LEVEL;
-	const raw = (typeof rawEnv === "string" ? rawEnv : "").toLowerCase();
+ const rawEnv = process.env.FREEFLOW_LOG_LEVEL;
+ const raw = (typeof rawEnv === "string" ? rawEnv : "").toLowerCase();
 
-	if (isEmittedLogLevel(raw)) {
-		return LOG_LEVEL_ORDER[raw as LogLevel];
-	}
+ if (isEmittedLogLevel(raw)) {
+  return LOG_LEVEL_ORDER[raw as LogLevel];
+ }
 
-	const isEnvDebug =
-		process.env.FREEFLOW_DEBUG === "1" ||
-		process.env.FREEFLOW_DEBUG === "true";
+ const isEnvDebug =
+  process.env.FREEFLOW_DEBUG === "1" ||
+  process.env.FREEFLOW_DEBUG === "true";
 
-	if (isEnvDebug) {
-		return LOG_LEVEL_ORDER.debug;
-	}
+ if (isEnvDebug) {
+  return LOG_LEVEL_ORDER.debug;
+ }
 
-	// Fresh installs default to full debug so users can attach complete
-	// request lifecycles when reporting errors (10MB rotation bounds volume).
-	// An explicit persisted off state or env level above still wins, so
-	// /freeflow debug off keeps working on every platform.
-	if (dbg !== null) {
-		return LOG_LEVEL_ORDER.info;
-	}
-	return LOG_LEVEL_ORDER.debug;
+ // Fresh installs default to full debug so users can attach complete
+ // request lifecycles when reporting errors (10MB rotation bounds volume).
+ // An explicit persisted off state or env level above still wins, so
+ // /freeflow debug off keeps working on every platform.
+ if (dbg !== null) {
+  return LOG_LEVEL_ORDER.info;
+ }
+ return LOG_LEVEL_ORDER.debug;
 }
 
 export function shouldLog(level: LogLevel): boolean {
-	return LOG_LEVEL_ORDER[level] >= getMinLogLevel();
+ return LOG_LEVEL_ORDER[level] >= getMinLogLevel();
 }
 
 export function isDebugEnabled(): boolean {
-	return LOG_LEVEL_ORDER.debug >= getMinLogLevel();
+ return LOG_LEVEL_ORDER.debug >= getMinLogLevel();
 }
 
 /**
@@ -167,132 +167,132 @@ export function isDebugEnabled(): boolean {
  * Rotates: log -> log.1 -> log.2 -> log.3 ... up to LOG_MAX_FILES.
  */
 export function rotateLogsIfNeeded(targetFile: string = LOG_FILE): void {
-	try {
-		if (!fs.existsSync(targetFile)) return;
-		const stat = fs.statSync(targetFile);
-		if (stat.size <= LOG_MAX_BYTES) return;
+ try {
+  if (!fs.existsSync(targetFile)) return;
+  const stat = fs.statSync(targetFile);
+  if (stat.size <= LOG_MAX_BYTES) return;
 
-		for (let i = LOG_MAX_FILES; i >= 1; i--) {
-			const src = i === 1 ? targetFile : `${targetFile}.${i - 1}`;
-			const dst = `${targetFile}.${i}`;
-			try {
-				if (fs.existsSync(src)) {
-					if (fs.existsSync(dst)) {
-						fs.unlinkSync(dst);
-					}
-					fs.renameSync(src, dst);
-				}
-			} catch {
-				// Ignore rotation step error and continue
-			}
-		}
-	} catch {
-		// Ignore rotation errors
-	}
+  for (let i = LOG_MAX_FILES; i >= 1; i--) {
+   const src = i === 1 ? targetFile : `${targetFile}.${i - 1}`;
+   const dst = `${targetFile}.${i}`;
+   try {
+    if (fs.existsSync(src)) {
+     if (fs.existsSync(dst)) {
+      fs.unlinkSync(dst);
+     }
+     fs.renameSync(src, dst);
+    }
+   } catch {
+    // Ignore rotation step error and continue
+   }
+  }
+ } catch {
+  // Ignore rotation errors
+ }
 }
 
 /**
  * Safely format metadata object and optional requestId for log output.
  */
 export function formatLogMeta(
-	meta?: Record<string, unknown>,
-	reqId?: string,
+ meta?: Record<string, unknown>,
+ reqId?: string,
 ): string {
-	const parts: string[] = [];
-	if (reqId) {
-		parts.push(`req=${reqId}`);
-	}
+ const parts: string[] = [];
+ if (reqId) {
+  parts.push(`req=${reqId}`);
+ }
 
-	if (meta && Object.keys(meta).length > 0) {
-		const safe: Record<string, unknown> = {};
-		for (const [k, v] of Object.entries(meta)) {
-			if (/(auth|token|secret|password|bearer|api.?key|cookie|x-relay-auth)/i.test(k)) {
-				safe[k] = "[REDACTED]";
-				continue;
-			}
-			if (typeof v === "string" && v.length > 800) {
-				safe[k] = `${v.slice(0, 800)}…(${v.length})`;
-			} else if (v instanceof Error) {
-				safe[k] = {
-					name: v.name,
-					message: v.message,
-					stack: v.stack?.split("\n").slice(0, 3).join(" | "),
-				};
-			} else {
-				safe[k] = v;
-			}
-		}
-		parts.push(JSON.stringify(safe));
-	}
+ if (meta && Object.keys(meta).length > 0) {
+  const safe: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(meta)) {
+   if (/(auth|token|secret|password|bearer|api.?key|cookie|x-relay-auth)/i.test(k)) {
+    safe[k] = "[REDACTED]";
+    continue;
+   }
+   if (typeof v === "string" && v.length > 800) {
+    safe[k] = `${v.slice(0, 800)}…(${v.length})`;
+   } else if (v instanceof Error) {
+    safe[k] = {
+     name: v.name,
+     message: v.message,
+     stack: v.stack?.split("\n").slice(0, 3).join(" | "),
+    };
+   } else {
+    safe[k] = v;
+   }
+  }
+  parts.push(JSON.stringify(safe));
+ }
 
-	return parts.length > 0 ? ` ${parts.join(" ")}` : "";
+ return parts.length > 0 ? ` ${parts.join(" ")}` : "";
 }
 
 /**
  * Write a structured log entry to disk if level passes threshold.
  */
 export function log(
-	level: LogLevel,
-	message: string,
-	meta?: Record<string, unknown>,
-	reqId?: string,
+ level: LogLevel,
+ message: string,
+ meta?: Record<string, unknown>,
+ reqId?: string,
 ): void {
-	if (!shouldLog(level)) return;
+ if (!shouldLog(level)) return;
 
-	try {
-		const ts = new Date().toISOString();
-		const reqTag = reqId ? ` [${reqId}]` : "";
-		const line = `[${ts}] [${level.toUpperCase()}]${reqTag} ${message}${formatLogMeta(meta)}\n`;
+ try {
+  const ts = new Date().toISOString();
+  const reqTag = reqId ? ` [${reqId}]` : "";
+  const line = `[${ts}] [${level.toUpperCase()}]${reqTag} ${message}${formatLogMeta(meta)}\n`;
 
-		rotateLogsIfNeeded(LOG_FILE);
+  rotateLogsIfNeeded(LOG_FILE);
 
-		const dir = path.dirname(LOG_FILE);
-		if (!fs.existsSync(dir)) {
-			fs.mkdirSync(dir, { recursive: true });
-		}
-		fs.appendFileSync(LOG_FILE, line, "utf8");
-	} catch {
-		// Fallback silent failure
-	}
+  const dir = path.dirname(LOG_FILE);
+  if (!fs.existsSync(dir)) {
+   fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.appendFileSync(LOG_FILE, line, "utf8");
+ } catch {
+  // Fallback silent failure
+ }
 }
 
 export function logDebug(
-	message: string,
-	meta?: Record<string, unknown>,
-	reqId?: string,
+ message: string,
+ meta?: Record<string, unknown>,
+ reqId?: string,
 ): void {
-	log("debug", message, meta, reqId);
+ log("debug", message, meta, reqId);
 }
 
 export function logInfo(
-	message: string,
-	meta?: Record<string, unknown>,
-	reqId?: string,
+ message: string,
+ meta?: Record<string, unknown>,
+ reqId?: string,
 ): void {
-	log("info", message, meta, reqId);
+ log("info", message, meta, reqId);
 }
 
 export function logWarn(
-	message: string,
-	meta?: Record<string, unknown>,
-	reqId?: string,
+ message: string,
+ meta?: Record<string, unknown>,
+ reqId?: string,
 ): void {
-	log("warn", message, meta, reqId);
+ log("warn", message, meta, reqId);
 }
 
 export function logError(
-	message: string,
-	meta?: Record<string, unknown>,
-	reqId?: string,
+ message: string,
+ meta?: Record<string, unknown>,
+ reqId?: string,
 ): void {
-	log("error", message, meta, reqId);
+ log("error", message, meta, reqId);
 }
 
 export interface ReadRecentLogsResult {
-	lines: string[];
-	totalMatched: number;
-	totalLines: number;
-	logFile: string;
+ lines: string[];
+ totalMatched: number;
+ totalLines: number;
+ logFile: string;
 }
 
 /**
@@ -305,74 +305,74 @@ export interface ReadRecentLogsResult {
  *   LOG_FILE and its rotated archives (.1-<LOG_MAX_FILES>).
  */
 export function readRecentLogs(
-	filterLevel?: LogLevel | null,
-	filterReqId?: string | null,
-	count = 25,
-	filterText?: string | null,
-	files?: string[],
+ filterLevel?: LogLevel | null,
+ filterReqId?: string | null,
+ count = 25,
+ filterText?: string | null,
+ files?: string[],
 ): ReadRecentLogsResult {
-	const filesList: string[] = (
-		files ?? [
-			LOG_FILE,
-			...Array.from({ length: LOG_MAX_FILES }, (_, i) => `${LOG_FILE}.${i + 1}`),
-		]
-	).filter((f) => fs.existsSync(f));
+ const filesList: string[] = (
+  files ?? [
+   LOG_FILE,
+   ...Array.from({ length: LOG_MAX_FILES }, (_, i) => `${LOG_FILE}.${i + 1}`),
+  ]
+ ).filter((f) => fs.existsSync(f));
 
-	if (filesList.length === 0) {
-		return {
-			lines: [],
-			totalMatched: 0,
-			totalLines: 0,
-			logFile: LOG_FILE,
-		};
-	}
+ if (filesList.length === 0) {
+  return {
+   lines: [],
+   totalMatched: 0,
+   totalLines: 0,
+   logFile: LOG_FILE,
+  };
+ }
 
-	let allLines: string[] = [];
-	for (const f of filesList) {
-		try {
-			const content = fs.readFileSync(f, "utf8");
-			const lines = content.trim().split("\n").filter(Boolean);
-			allLines = lines.concat(allLines);
-		} catch {
-			// Skip unreadable rotated files
-		}
-	}
+ let allLines: string[] = [];
+ for (const f of filesList) {
+  try {
+   const content = fs.readFileSync(f, "utf8");
+   const lines = content.trim().split("\n").filter(Boolean);
+   allLines = lines.concat(allLines);
+  } catch {
+   // Skip unreadable rotated files
+  }
+ }
 
-	let filtered = allLines;
-	if (filterLevel) {
-		const levelTag = `[${filterLevel.toUpperCase()}]`;
-		filtered = filtered.filter((l) => l.includes(levelTag));
-	}
+ let filtered = allLines;
+ if (filterLevel) {
+  const levelTag = `[${filterLevel.toUpperCase()}]`;
+  filtered = filtered.filter((l) => l.includes(levelTag));
+ }
 
-	if (filterReqId) {
-		const cleanedReqId = filterReqId.replace(/^req=/, "");
-		filtered = filtered.filter(
-			(l) => l.includes(cleanedReqId) || l.includes(`[${cleanedReqId}]`),
-		);
-	}
+ if (filterReqId) {
+  const cleanedReqId = filterReqId.replace(/^req=/, "");
+  filtered = filtered.filter(
+   (l) => l.includes(cleanedReqId) || l.includes(`[${cleanedReqId}]`),
+  );
+ }
 
-	if (filterText) {
-		const lower = filterText.toLowerCase();
-		filtered = filtered.filter((l) => l.toLowerCase().includes(lower));
-	}
+ if (filterText) {
+  const lower = filterText.toLowerCase();
+  filtered = filtered.filter((l) => l.toLowerCase().includes(lower));
+ }
 
-	const clampedCount = Math.min(200, Math.max(1, count));
-	const resultLines = filtered.slice(-clampedCount);
+ const clampedCount = Math.min(200, Math.max(1, count));
+ const resultLines = filtered.slice(-clampedCount);
 
-	return {
-		lines: resultLines,
-		totalMatched: filtered.length,
-		totalLines: allLines.length,
-		logFile: LOG_FILE,
-	};
+ return {
+  lines: resultLines,
+  totalMatched: filtered.length,
+  totalLines: allLines.length,
+  logFile: LOG_FILE,
+ };
 }
 
 export interface LogFollowerOptions {
-	level?: LogLevel | null;
-	reqId?: string | null;
-	text?: string | null;
-	/** Max lines returned per next() call. Default 50. */
-	maxLines?: number;
+ level?: LogLevel | null;
+ reqId?: string | null;
+ text?: string | null;
+ /** Max lines returned per next() call. Default 50. */
+ maxLines?: number;
 }
 
 /**
@@ -393,99 +393,99 @@ export interface LogFollowerOptions {
  * line instead — its prefix belongs to the discarded file.
  */
 export function createLogFollower(
-	opts: LogFollowerOptions = {},
+ opts: LogFollowerOptions = {},
 ): { next(): string[] } {
-	const levelTag = opts.level ? `[${opts.level.toUpperCase()}]` : null;
-	const reqId = opts.reqId ? opts.reqId.replace(/^req=/, "") : null;
-	const text = opts.text ? opts.text.toLowerCase() : null;
-	const maxLines =
-		opts.maxLines && opts.maxLines > 0 ? Math.floor(opts.maxLines) : 50;
+ const levelTag = opts.level ? `[${opts.level.toUpperCase()}]` : null;
+ const reqId = opts.reqId ? opts.reqId.replace(/^req=/, "") : null;
+ const text = opts.text ? opts.text.toLowerCase() : null;
+ const maxLines =
+  opts.maxLines && opts.maxLines > 0 ? Math.floor(opts.maxLines) : 50;
 
-	let offset = 0;
-	try {
-		offset = fs.statSync(LOG_FILE).size;
-	} catch {
-		// No log file yet — follow from 0 so the first append is reported.
-		offset = 0;
-	}
-	let carry = "";
-	// A read can end in the middle of a multi-byte UTF-8 sequence: the
-	// decoder holds those bytes and completes them with the next read, so a
-	// split codepoint never lands as U+FFFD in a line.
-	let decoder = new StringDecoder("utf8");
+ let offset = 0;
+ try {
+  offset = fs.statSync(LOG_FILE).size;
+ } catch {
+  // No log file yet — follow from 0 so the first append is reported.
+  offset = 0;
+ }
+ let carry = "";
+ // A read can end in the middle of a multi-byte UTF-8 sequence: the
+ // decoder holds those bytes and completes them with the next read, so a
+ // split codepoint never lands as U+FFFD in a line.
+ let decoder = new StringDecoder("utf8");
 
-	const matches = (line: string): boolean => {
-		if (levelTag && !line.includes(levelTag)) return false;
-		if (reqId && !(line.includes(reqId) || line.includes(`[${reqId}]`))) {
-			return false;
-		}
-		if (text && !line.toLowerCase().includes(text)) return false;
-		return true;
-	};
+ const matches = (line: string): boolean => {
+  if (levelTag && !line.includes(levelTag)) return false;
+  if (reqId && !(line.includes(reqId) || line.includes(`[${reqId}]`))) {
+   return false;
+  }
+  if (text && !line.toLowerCase().includes(text)) return false;
+  return true;
+ };
 
-	/** Read bytes [from, to) from one file; null when it cannot be read. */
-	const readRange = (file: string, from: number, to: number): Buffer | null => {
-		const wanted = to - from;
-		if (wanted <= 0) return Buffer.alloc(0);
-		const buf = Buffer.allocUnsafe(wanted);
-		try {
-			const fd = fs.openSync(file, "r");
-			try {
-				const read = fs.readSync(fd, buf, 0, wanted, from);
-				return buf.subarray(0, read);
-			} finally {
-				fs.closeSync(fd);
-			}
-		} catch {
-			return null;
-		}
-	};
+ /** Read bytes [from, to) from one file; null when it cannot be read. */
+ const readRange = (file: string, from: number, to: number): Buffer | null => {
+  const wanted = to - from;
+  if (wanted <= 0) return Buffer.alloc(0);
+  const buf = Buffer.allocUnsafe(wanted);
+  try {
+   const fd = fs.openSync(file, "r");
+   try {
+    const read = fs.readSync(fd, buf, 0, wanted, from);
+    return buf.subarray(0, read);
+   } finally {
+    fs.closeSync(fd);
+   }
+  } catch {
+   return null;
+  }
+ };
 
-	/** Split one decoded read into complete filtered lines, holding the tail. */
-	const finish = (text: string): string[] => {
-		const parts = (carry + text).split("\n");
-		carry = parts.pop() ?? "";
-		return parts.filter((l) => l.length > 0 && matches(l)).slice(-maxLines);
-	};
+ /** Split one decoded read into complete filtered lines, holding the tail. */
+ const finish = (text: string): string[] => {
+  const parts = (carry + text).split("\n");
+  carry = parts.pop() ?? "";
+  return parts.filter((l) => l.length > 0 && matches(l)).slice(-maxLines);
+ };
 
-	return {
-		next(): string[] {
-			let size: number;
-			try {
-				size = fs.statSync(LOG_FILE).size;
-			} catch {
-				return []; // File missing — nothing to follow.
-			}
+ return {
+  next(): string[] {
+   let size: number;
+   try {
+    size = fs.statSync(LOG_FILE).size;
+   } catch {
+    return []; // File missing — nothing to follow.
+   }
 
-			let chunk = "";
-			if (size < offset) {
-				// Rotation or truncation: the live file no longer holds the bytes we
-				// already reported. A rotation renames the old live file to the first
-				// archive verbatim, so bytes appended after our last read are salvaged
-				// from there before re-anchoring at the live file's start.
-				let archivedSize = -1;
-				try {
-					archivedSize = fs.statSync(`${LOG_FILE}.1`).size;
-				} catch { }
-				if (archivedSize > offset) {
-					const salvaged = readRange(`${LOG_FILE}.1`, offset, archivedSize);
-					if (salvaged) chunk += decoder.write(salvaged);
-				} else {
-					// Plain truncation: the old tail is gone for good — and so is the
-					// decoder's pending partial sequence, which must not prefix the new file.
-					carry = "";
-					decoder = new StringDecoder("utf8");
-				}
-				offset = 0;
-			}
-			if (size > offset) {
-				const bytes = readRange(LOG_FILE, offset, size);
-				if (bytes === null) return chunk.length === 0 ? [] : finish(chunk);
-				offset += bytes.length;
-				chunk += decoder.write(bytes);
-			}
-			if (chunk.length === 0) return [];
-			return finish(chunk);
-		},
-	};
+   let chunk = "";
+   if (size < offset) {
+    // Rotation or truncation: the live file no longer holds the bytes we
+    // already reported. A rotation renames the old live file to the first
+    // archive verbatim, so bytes appended after our last read are salvaged
+    // from there before re-anchoring at the live file's start.
+    let archivedSize = -1;
+    try {
+     archivedSize = fs.statSync(`${LOG_FILE}.1`).size;
+    } catch { }
+    if (archivedSize > offset) {
+     const salvaged = readRange(`${LOG_FILE}.1`, offset, archivedSize);
+     if (salvaged) chunk += decoder.write(salvaged);
+    } else {
+     // Plain truncation: the old tail is gone for good — and so is the
+     // decoder's pending partial sequence, which must not prefix the new file.
+     carry = "";
+     decoder = new StringDecoder("utf8");
+    }
+    offset = 0;
+   }
+   if (size > offset) {
+    const bytes = readRange(LOG_FILE, offset, size);
+    if (bytes === null) return chunk.length === 0 ? [] : finish(chunk);
+    offset += bytes.length;
+    chunk += decoder.write(bytes);
+   }
+   if (chunk.length === 0) return [];
+   return finish(chunk);
+  },
+ };
 }

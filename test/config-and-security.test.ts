@@ -102,8 +102,8 @@ test("sanitizeHeaders never emits duplicate User-Agent headers", () => {
  const fwd = sanitizeHeaders(incoming, "opencode.ai");
  const uaKeys = Object.keys(fwd).filter((k) => k.toLowerCase() === "user-agent");
  assert.equal(uaKeys.length, 1);
- // Live/disk UA may differ from the pinned fallback constant.
- assert.equal(fwd[uaKeys[0]], getOpenCodeUserAgent());
+ // The live lane sends the full CLI UA shape.
+ assert.match(fwd[uaKeys[0]], /^opencode\/\d+\.\d+\.\d+ ai-sdk\/provider-utils\/4\.0\.23 runtime\/bun\/1\.4\.4$/);
 });
 
 test("resolvePort honors the source-derived env override and falls back to default 28180", () => {
@@ -145,12 +145,15 @@ test("OpenCode session and request IDs match required OpenCode schema", () => {
  assert.ok(/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(msg), `request ID shape: ${msg}`);
 
  const headers = opencodeHeaders();
- assert.equal(headers["User-Agent"], getOpenCodeUserAgent());
+ assert.match(headers["User-Agent"], /^opencode\/\d+\.\d+\.\d+ ai-sdk\/provider-utils\/4\.0\.23 runtime\/bun\/1\.4\.4$/);
  assert.equal(headers["x-opencode-client"], "cli");
- assert.ok(typeof headers["x-opencode-project"] === "string" && headers["x-opencode-project"].length > 0);
+ assert.equal(headers["x-opencode-project"], "global");
  assert.ok(headers["x-opencode-session"].startsWith("ses_"));
- // Real OpenCode omits x-opencode-request on /inference/v1; sending it 403s.
- assert.equal(headers["x-opencode-request"], undefined);
+ // Live v1 1.19.4 sends a fresh x-opencode-request (msg_*) per prepare on
+ // the openai-compat lane; affinity headers never ride the opencode lane.
+ assert.match(headers["x-opencode-request"] ?? "", /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+ assert.equal(headers["x-session-affinity"], undefined);
+ assert.equal(headers["x-session-id"], undefined);
 });
 
 test("OpenCode IDs match the upstream identifier algorithm vectors", () => {
@@ -217,40 +220,40 @@ test("OpenCode UA live/fallback/override precedence (offline-safe)", async () =>
   process.env[OPENCODE_VERSION_CACHE_ENV] = cacheFile;
   _resetLiveOpenCodeVersionForTest();
   // No cache on disk: pinned fallback, never throws.
-  assert.equal(getOpenCodeUserAgent(), `opencode/${OPENCODE_VERSION_FALLBACK}`);
+  assert.equal(getOpenCodeUserAgent(), `opencode/${OPENCODE_VERSION_FALLBACK} ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`);
   // Env override wins over everything, bare or fully qualified.
   process.env[OPENCODE_USER_AGENT_ENV] = "9.9.9";
-  assert.equal(getOpenCodeUserAgent(), "opencode/9.9.9");
+  assert.equal(getOpenCodeUserAgent(), "opencode/9.9.9 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4");
   process.env[OPENCODE_USER_AGENT_ENV] = "opencode/8.8.8";
-  assert.equal(getOpenCodeUserAgent(), "opencode/8.8.8");
-  assert.equal(await refreshOpenCodeUserAgent(), "opencode/8.8.8", "override short-circuits refresh");
+  assert.equal(getOpenCodeUserAgent(), "opencode/8.8.8 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4");
+  assert.equal(await refreshOpenCodeUserAgent(), "opencode/8.8.8 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4", "override short-circuits refresh");
   // Below-floor override is ignored.
   process.env[OPENCODE_USER_AGENT_ENV] = "1.0.0";
-  assert.equal(getOpenCodeUserAgent(), `opencode/${OPENCODE_VERSION_FALLBACK}`);
+  assert.equal(getOpenCodeUserAgent(), `opencode/${OPENCODE_VERSION_FALLBACK} ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`);
   delete process.env[OPENCODE_USER_AGENT_ENV];
   // Live refresh success: sync getter serves it, disk cache persists it.
   _resetLiveOpenCodeVersionForTest();
   const stubOk = (async () => new Response(JSON.stringify({ version: "9.9.9" }), { status: 200 })) as typeof fetch;
-  assert.equal(await refreshOpenCodeUserAgent(stubOk), "opencode/9.9.9");
-  assert.equal(getOpenCodeUserAgent(), "opencode/9.9.9");
+  assert.equal(await refreshOpenCodeUserAgent(stubOk), "opencode/9.9.9 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4");
+  assert.equal(getOpenCodeUserAgent(), "opencode/9.9.9 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4");
   const persisted = JSON.parse(fs.readFileSync(cacheFile, "utf8")) as { version: string };
   assert.equal(persisted.version, "9.9.9");
   // Fresh disk cache serves the sync getter after an in-process reset.
   _resetLiveOpenCodeVersionForTest();
-  assert.equal(getOpenCodeUserAgent(), "opencode/9.9.9", "fresh disk cache is live-UA material");
+  assert.equal(getOpenCodeUserAgent(), "opencode/9.9.9 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4", "fresh disk cache is live-UA material");
   // Below-floor fetch never replaces the fallback.
   const stubLow = (async () => new Response(JSON.stringify({ version: "1.0.0" }), { status: 200 })) as typeof fetch;
   _resetLiveOpenCodeVersionForTest();
   fs.rmSync(cacheFile, { force: true });
-  assert.equal(await refreshOpenCodeUserAgent(stubLow), `opencode/${OPENCODE_VERSION_FALLBACK}`);
+  assert.equal(await refreshOpenCodeUserAgent(stubLow), `opencode/${OPENCODE_VERSION_FALLBACK} ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`);
   // Offline failure keeps the pinned fallback.
   const stubDown = (async () => { throw new Error("network down"); }) as typeof fetch;
-  assert.equal(await refreshOpenCodeUserAgent(stubDown), `opencode/${OPENCODE_VERSION_FALLBACK}`);
-  assert.equal(getOpenCodeUserAgent(), `opencode/${OPENCODE_VERSION_FALLBACK}`);
+  assert.equal(await refreshOpenCodeUserAgent(stubDown), `opencode/${OPENCODE_VERSION_FALLBACK} ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`);
+  assert.equal(getOpenCodeUserAgent(), `opencode/${OPENCODE_VERSION_FALLBACK} ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`);
   // Stale disk cache is ignored.
   fs.writeFileSync(cacheFile, JSON.stringify({ version: "7.7.7", checkedAt: Date.now() - 7 * 60 * 60 * 1_000 }), "utf8");
   _resetLiveOpenCodeVersionForTest();
-  assert.equal(getOpenCodeUserAgent(), `opencode/${OPENCODE_VERSION_FALLBACK}`, "stale disk cache ignored");
+  assert.equal(getOpenCodeUserAgent(), `opencode/${OPENCODE_VERSION_FALLBACK} ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`, "stale disk cache ignored");
  } finally {
   if (savedAgent === undefined) delete process.env[OPENCODE_USER_AGENT_ENV];
   else process.env[OPENCODE_USER_AGENT_ENV] = savedAgent;

@@ -44,6 +44,158 @@
 export const OPENCODE_FINGERPRINT_TOOLS = ["bash", "glob", "grep", "read", "edit", "write"] as const;
 export type FingerprintToolName = (typeof OPENCODE_FINGERPRINT_TOOLS)[number];
 
+/**
+ * Live-truth 11-tool roster (v1 1.19.4 MITM, SG): the default lane declares
+ * these verbatim, replacing the OMP/COMPAT placeholder fills. bash/read/edit
+ * carry the verbatim CLI schemas (bash {command, timeout, workdir}, read
+ * {filePath, offset, limit}, edit {filePath, oldString, newString,
+ * replaceAll?}); the rest carry the CLI-declared shapes: glob {pattern,
+ * path?}, grep {pattern, path?, include?}, skill {name}, task {description,
+ * prompt, subagent_type, task_id?, command?, background?}, todowrite {todos},
+ * webfetch {url, format?, timeout?}, websearch {query, numResults?,
+ * livecrawl?, type?, contextMaxCharacters?}, write {content, filePath}.
+ */
+export const FULL11_TOOL_NAMES = [
+ "bash", "edit", "glob", "grep", "read",
+ "skill", "task", "todowrite", "webfetch", "websearch", "write",
+] as const;
+export type Full11ToolName = (typeof FULL11_TOOL_NAMES)[number];
+
+export const FULL11_TOOL_DEFS: Record<Full11ToolName, { description: string; parameters: Record<string, unknown> }> = {
+ bash: {
+  description: "Run a shell command and return its output.",
+  parameters: {
+   type: "object",
+   properties: {
+    command: { type: "string", description: "The command to execute" },
+    timeout: { type: "integer", description: "Optional timeout in milliseconds" },
+    workdir: { type: "string", description: "The working directory to run the command in" },
+   },
+   required: ["command"],
+  },
+ },
+ edit: {
+  description: "Edit a file by replacing oldString with newString.",
+  parameters: {
+   type: "object",
+   properties: {
+    filePath: { type: "string", description: "The absolute path to the file to edit" },
+    oldString: { type: "string", description: "The exact string to replace" },
+    newString: { type: "string", description: "The replacement string" },
+    replaceAll: { type: "boolean", description: "Replace all occurrences of oldString (default false)" },
+   },
+   required: ["filePath", "oldString", "newString"],
+  },
+ },
+ glob: {
+  description: "Find files by glob pattern.",
+  parameters: {
+   type: "object",
+   properties: {
+    pattern: { type: "string", description: "The glob pattern to match" },
+    path: { type: "string", description: "The directory to search in" },
+   },
+   required: ["pattern"],
+  },
+ },
+ grep: {
+  description: "Search file contents for a pattern.",
+  parameters: {
+   type: "object",
+   properties: {
+    pattern: { type: "string", description: "The search pattern" },
+    path: { type: "string", description: "File or directory to search" },
+    include: { type: "string", description: "File pattern to include in the search" },
+   },
+   required: ["pattern"],
+  },
+ },
+ read: {
+  description: "Read the contents of a file or directory.",
+  parameters: {
+   type: "object",
+   properties: {
+    filePath: { type: "string", description: "The absolute path to the file or directory to read" },
+    offset: { type: "integer", description: "The line number to start reading from (1-indexed)" },
+    limit: { type: "integer", description: "The maximum number of lines to read" },
+   },
+   required: ["filePath"],
+  },
+ },
+ skill: {
+  description: "Load an available skill by name.",
+  parameters: {
+   type: "object",
+   properties: {
+    name: { type: "string", description: "The skill name to load" },
+   },
+   required: ["name"],
+  },
+ },
+ task: {
+  description: "Launch a subagent task.",
+  parameters: {
+   type: "object",
+   properties: {
+    description: { type: "string", description: "A short description of the task" },
+    prompt: { type: "string", description: "The task prompt for the subagent" },
+    subagent_type: { type: "string", description: "The type of specialized agent to use for this task" },
+    task_id: { type: "string", description: "Only set to resume a previous task in the same subagent session" },
+    command: { type: "string", description: "The command that triggered this task" },
+    background: { type: "boolean", description: "Run the agent in the background" },
+   },
+   required: ["description", "prompt", "subagent_type"],
+  },
+ },
+ todowrite: {
+  description: "Manage the task todo list.",
+  parameters: {
+   type: "object",
+   properties: {
+    todos: { type: "array", description: "The todo items", items: { type: "object" } },
+   },
+   required: ["todos"],
+  },
+ },
+ webfetch: {
+  description: "Fetch the contents of a URL.",
+  parameters: {
+   type: "object",
+   properties: {
+    url: { type: "string", description: "The URL to fetch" },
+    format: { type: "string", description: "The format to return the content in", enum: ["text", "markdown", "html"] },
+    timeout: { type: "number", description: "Optional timeout in seconds (max 120)" },
+   },
+   required: ["url"],
+  },
+ },
+ websearch: {
+  description: "Search the web for information.",
+  parameters: {
+   type: "object",
+   properties: {
+    query: { type: "string", description: "The search query" },
+    numResults: { type: "number", description: "Number of search results to return" },
+    livecrawl: { type: "string", description: "Live-crawl mode", enum: ["fallback", "preferred"] },
+    type: { type: "string", description: "Search type", enum: ["auto", "fast", "deep"] },
+    contextMaxCharacters: { type: "number", description: "Maximum characters for context string" },
+   },
+   required: ["query"],
+  },
+ },
+ write: {
+  description: "Write a file to disk.",
+  parameters: {
+   type: "object",
+   properties: {
+    filePath: { type: "string", description: "The absolute path to the file to write" },
+    content: { type: "string", description: "The file content" },
+   },
+   required: ["filePath", "content"],
+  },
+ },
+};
+
 /** Pi host tools: ToolName union in reference/pi packages/coding-agent/src/core/tools/index.ts */
 export const PI_TOOL_NAMES = [
  "read",
@@ -132,7 +284,7 @@ export const COMPAT_TOOL_DESCRIPTION =
  * (default hashline `{ input }`, replace `{ path, old_string, new_string }`,
  * patch `{ path, edits[] }`) while Pi wants `{ path, edits[{ oldText,
  * newText }] }`, so no single static def executes on either host. An injected
- * edit is always the cloaked COMPAT placeholder (see fingerprintFill in
+ * edit rides the cloak list (see enforceOpencodeFingerprint in
  * src/opencode-fingerprint.ts); a caller-declared edit still passes through
  * verbatim and executes normally.
  *
@@ -455,10 +607,10 @@ export function upstreamToolNameFor(name: string): string {
  * `glob` (first-seen wins) and no single-name restore applies.
  */
 export interface FindGlobRestore {
-	renamedFindToGlob: boolean;
-	/** Sanitized upstream name (lowercased) -> caller name. Absent when every
-	 * caller name was already upstream-legal, so nothing was rewritten. */
-	renamed?: Record<string, string>;
+ renamedFindToGlob: boolean;
+ /** Sanitized upstream name (lowercased) -> caller name. Absent when every
+  * caller name was already upstream-legal, so nothing was rewritten. */
+ renamed?: Record<string, string>;
 }
 
 /**
@@ -481,61 +633,61 @@ const UPSTREAM_NAME_SHAPE = /^[a-zA-Z0-9_.-]+$/;
  * output, which is what lets the caller name be recovered downstream.
  */
 export function sanitizeUpstreamToolName(name: string, taken: ReadonlySet<string>): string {
-	const trimmed = name.trim();
-	if (UPSTREAM_NAME_SHAPE.test(trimmed)) return trimmed;
-	let folded = trimmed.replace(/[^a-zA-Z0-9_.-]/g, "_");
-	// A name made entirely of invalid characters would sanitize to a leading
-	// run of underscores and collide with every other such name; anchor it.
-	if (folded.length === 0) folded = "tool";
-	let candidate = folded;
-	let n = 2;
-	while (taken.has(candidate.toLowerCase())) {
-		candidate = `${folded}_${n}`;
-		n += 1;
-	}
-	return candidate;
+ const trimmed = name.trim();
+ if (UPSTREAM_NAME_SHAPE.test(trimmed)) return trimmed;
+ let folded = trimmed.replace(/[^a-zA-Z0-9_.-]/g, "_");
+ // A name made entirely of invalid characters would sanitize to a leading
+ // run of underscores and collide with every other such name; anchor it.
+ if (folded.length === 0) folded = "tool";
+ let candidate = folded;
+ let n = 2;
+ while (taken.has(candidate.toLowerCase())) {
+  candidate = `${folded}_${n}`;
+  n += 1;
+ }
+ return candidate;
 }
 /** Inspect the original caller tools (pre-translate) for the rewrite cases. */
 export function buildFindGlobRestore(callerTools: unknown[]): FindGlobRestore {
-	// Same rule as translateToolsForPath: the find->glob rename fires only when
-	// the caller left the `glob` slot empty. OMP declares both real tools, so
-	// there the rename must not happen and `find` must keep its own name.
-	const callerDeclaresGlob = callerTools.some((tool) => {
-		const canon = canonicalizeTool(tool);
-		return canon !== null && canon.name.trim().toLowerCase() === "glob";
-	});
-	const nameFor = (name: string): string => (callerDeclaresGlob ? name.trim() : upstreamToolNameFor(name));
-	const renamed: Record<string, string> = {};
-	// Same first-seen-wins order and case rules as translateToolsForPath, so
-	// the recorded map keys match the names that actually reach upstream.
-	const seen = new Set<string>();
-	for (const tool of callerTools) {
-		const canon = canonicalizeTool(tool);
-		if (!canon) continue;
-		const callerName = canon.name;
-		const upstreamName = nameFor(callerName);
-		// Mirrors translateToolsForPath: dedup on the lowercased
-		// pre-sanitization name (a collapsed duplicate never reaches upstream),
-		// then sanitize with the caller's casing intact.
-		const dedupKey = upstreamName.toLowerCase();
-		if (seen.has(dedupKey)) continue;
-		seen.add(dedupKey);
-		const sanitized = sanitizeUpstreamToolName(upstreamName, seen);
-		if (sanitized.toLowerCase() !== dedupKey) seen.add(sanitized.toLowerCase());
-		// Only character-folding rewrites belong in the sanitized map. The
-		// find->glob rename is a single-name fallback, so a name that came in
-		// as `find` must not be recorded here: upstream `glob` may be the
-		// caller's own glob.
-		if (sanitized !== callerName && !isFindToolName(callerName)) {
-			renamed[sanitized.toLowerCase()] = callerName;
-		}
-	}
-	const sawFind = callerTools.some((tool) => {
-		const canon = canonicalizeTool(tool);
-		return canon !== null && isFindToolName(canon.name);
-	});
-	const restored: FindGlobRestore = { renamedFindToGlob: sawFind && !callerDeclaresGlob, renamed };
-	return restored;
+ // Same rule as translateToolsForPath: the find->glob rename fires only when
+ // the caller left the `glob` slot empty. OMP declares both real tools, so
+ // there the rename must not happen and `find` must keep its own name.
+ const callerDeclaresGlob = callerTools.some((tool) => {
+  const canon = canonicalizeTool(tool);
+  return canon !== null && canon.name.trim().toLowerCase() === "glob";
+ });
+ const nameFor = (name: string): string => (callerDeclaresGlob ? name.trim() : upstreamToolNameFor(name));
+ const renamed: Record<string, string> = {};
+ // Same first-seen-wins order and case rules as translateToolsForPath, so
+ // the recorded map keys match the names that actually reach upstream.
+ const seen = new Set<string>();
+ for (const tool of callerTools) {
+  const canon = canonicalizeTool(tool);
+  if (!canon) continue;
+  const callerName = canon.name;
+  const upstreamName = nameFor(callerName);
+  // Mirrors translateToolsForPath: dedup on the lowercased
+  // pre-sanitization name (a collapsed duplicate never reaches upstream),
+  // then sanitize with the caller's casing intact.
+  const dedupKey = upstreamName.toLowerCase();
+  if (seen.has(dedupKey)) continue;
+  seen.add(dedupKey);
+  const sanitized = sanitizeUpstreamToolName(upstreamName, seen);
+  if (sanitized.toLowerCase() !== dedupKey) seen.add(sanitized.toLowerCase());
+  // Only character-folding rewrites belong in the sanitized map. The
+  // find->glob rename is a single-name fallback, so a name that came in
+  // as `find` must not be recorded here: upstream `glob` may be the
+  // caller's own glob.
+  if (sanitized !== callerName && !isFindToolName(callerName)) {
+   renamed[sanitized.toLowerCase()] = callerName;
+  }
+ }
+ const sawFind = callerTools.some((tool) => {
+  const canon = canonicalizeTool(tool);
+  return canon !== null && isFindToolName(canon.name);
+ });
+ const restored: FindGlobRestore = { renamedFindToGlob: sawFind && !callerDeclaresGlob, renamed };
+ return restored;
 }
 /**
  * Downstream name: undo the upstream rewrites. The sanitized map is checked
@@ -543,10 +695,10 @@ export function buildFindGlobRestore(callerTools: unknown[]): FindGlobRestore {
  * case stays as the single-name fallback.
  */
 export function restoreToolNameForCaller(name: string, restore: FindGlobRestore): string {
-	const sanitized = restore.renamed?.[name.trim().toLowerCase()];
-	if (sanitized !== undefined) return sanitized;
-	if (restore.renamedFindToGlob && name.trim().toLowerCase() === "glob") return "find";
-	return name;
+ const sanitized = restore.renamed?.[name.trim().toLowerCase()];
+ if (sanitized !== undefined) return sanitized;
+ if (restore.renamedFindToGlob && name.trim().toLowerCase() === "glob") return "find";
+ return name;
 }
 /** Extra top-level caller fields survive cross-shape conversion verbatim. */
 function carryExtraFields(

@@ -190,13 +190,16 @@ function toNodeHeaders(headers: HeadersInit | undefined): Record<string, string>
  return out;
 }
 
+/** toNodeBody failure: the request itself is unrepresentable, not a cert problem. */
+class BodyNotSupportedError extends Error {}
+
 function toNodeBody(body: BodyInit | undefined): string | undefined {
  if (body === undefined || body === null) return undefined;
  if (typeof body === "string") return body;
  if (body instanceof URLSearchParams) return body.toString();
  if (body instanceof ArrayBuffer) return Buffer.from(body).toString("utf8");
  if (ArrayBuffer.isView(body)) return Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString("utf8");
- throw new Error("fetchWithSystemCA fallback supports string/form bodies only");
+ throw new BodyNotSupportedError("fetchWithSystemCA fallback supports string/form bodies only");
 }
 
 /**
@@ -263,7 +266,10 @@ export async function fetchWithSystemCA(input: string, init?: RequestInit): Prom
   if (!isCertError(e)) throw e;
   try {
    return await requestViaNodeHttp(input, init);
-  } catch {
+  } catch (fallbackErr) {
+   // An unrepresentable body is a caller bug, not a trust gap: surfacing the
+   // original cert error would send the caller chasing the OS store.
+   if (fallbackErr instanceof BodyNotSupportedError) throw fallbackErr;
    throw e;
   }
  }

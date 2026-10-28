@@ -552,7 +552,7 @@ export function createToolcallRecorder(opts: ToolcallRecorderOptions): ToolcallR
    if (!active || finished) return;
    const tcs = message?.tool_calls;
    if (Array.isArray(tcs)) {
-   for (const raw of tcs) {
+    for (const raw of tcs) {
      const tc = asRecord(raw);
      if (!tc) continue;
      const fn = asRecord(tc["function"]);
@@ -560,7 +560,7 @@ export function createToolcallRecorder(opts: ToolcallRecorderOptions): ToolcallR
      if (!call) break;
      call.name = clip(fn?.["name"], MAX_NAME);
      setArgs(state, call, typeof fn?.["arguments"] === "string" ? (fn["arguments"] as string) : "");
-   }
+    }
    }
    const reason = finishReason !== undefined ? finishReason : state.finishReason;
    complete(reason, reason !== null && reason !== "" ? true : state.terminalSeen);

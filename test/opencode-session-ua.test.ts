@@ -5,13 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import { rmSync } from "node:fs";
 import {
-	OPENCODE_VERSION_CACHE_ENV,
-	OPENCODE_VERSION_FALLBACK,
-	OPENCODE_V2_VERSION_FALLBACK,
-	buildOpenCodeUserAgent,
-	getLiveOpenCodeV2Version,
-	getLiveOpenCodeVersion,
-	refreshOpenCodeUserAgent,
+ OPENCODE_VERSION_CACHE_ENV,
+ OPENCODE_VERSION_FALLBACK,
+ buildOpenCodeUserAgent,
+ getLiveOpenCodeVersion,
+ getOpenCodeUserAgent,
+ probeInstalledOpenCodeVersion,
+ refreshOpenCodeUserAgent,
 	stableOpenCodeSessionId,
 	_resetLiveOpenCodeVersionForTest,
 	_resetStableSessionCacheForTest,
@@ -22,18 +22,23 @@ import {
 const SES_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 
 test("getLiveOpenCodeVersion returns fallback without network", () => {
-	_resetLiveOpenCodeVersionForTest();
-	assert.equal(getLiveOpenCodeVersion(), OPENCODE_VERSION_FALLBACK);
+ _resetLiveOpenCodeVersionForTest();
+ // Hermetic: prime the binary memo with a miss so no real PATH spawn runs
+ // (this box has opencode v2.2.0 installed; CI has none).
+ probeInstalledOpenCodeVersion({ spawnImpl: () => ({ status: 1 }) });
+ assert.equal(getLiveOpenCodeVersion(), OPENCODE_VERSION_FALLBACK);
 });
 
-test("buildOpenCodeUserAgent covers all three shapes exactly", () => {
-	assert.equal(buildOpenCodeUserAgent("v1", "1.19.4"), "opencode/1.19.4");
+test("buildOpenCodeUserAgent emits the verbatim full CLI shape", () => {
 	assert.equal(
-		buildOpenCodeUserAgent("full", "1.19.0"),
-		"opencode/1.19.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
+		buildOpenCodeUserAgent("1.19.0"),
+		"opencode/1.19.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4",
 	);
-	assert.equal(buildOpenCodeUserAgent("v2", "2.0.26"), "opencode/latest/2.0.26/opencode");
-	assert.equal(buildOpenCodeUserAgent("v2", "2.0.26", "latest", "cli"), "opencode/latest/2.0.26/cli");
+	assert.equal(
+		getOpenCodeUserAgent(),
+		`opencode/${OPENCODE_VERSION_FALLBACK} ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`,
+		"single getter serves the full shape off the fallback",
+	);
 });
 
 test("stableOpenCodeSessionId passes valid ses_* through verbatim", () => {
@@ -80,13 +85,7 @@ test("stableOpenCodeSessionId LRU evicts oldest past cap", () => {
 	assert.equal(_stableSessionHasKeyForTest(first), false);
 });
 
-test("getLiveOpenCodeV2Version falls back to the 2.x pin without network", () => {
-	_resetLiveOpenCodeVersionForTest();
-	assert.equal(getLiveOpenCodeV2Version(), OPENCODE_V2_VERSION_FALLBACK);
-	assert.equal(OPENCODE_V2_VERSION_FALLBACK, "2.0.27");
-});
-
-test("getLiveOpenCodeV2Version tracks live 2.x but never a live 1.x", async () => {
+test("refresh populates the live version behind the single full-shape UA", async () => {
 	const cacheEnv = OPENCODE_VERSION_CACHE_ENV;
 	const prevCache = process.env[cacheEnv];
 	const tmpCache = path.join(os.tmpdir(), `pff-v2-version-test-${process.pid}.json`);
@@ -97,17 +96,15 @@ test("getLiveOpenCodeV2Version tracks live 2.x but never a live 1.x", async () =
 			ok: true,
 			json: async () => ({ version: "2.0.99" }),
 		})) as unknown as typeof fetch;
-		assert.equal(await refreshOpenCodeUserAgent(fetch2x), "opencode/2.0.99");
-		assert.equal(getLiveOpenCodeV2Version(), "2.0.99", "live 2.x feeds the v2 shape");
+		assert.equal(await refreshOpenCodeUserAgent(fetch2x), "opencode/2.0.99 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4");
 		assert.equal(getLiveOpenCodeVersion(), "2.0.99");
 
 		const fetch1x = (async () => ({
 			ok: true,
 			json: async () => ({ version: "1.99.0" }),
 		})) as unknown as typeof fetch;
-		assert.equal(await refreshOpenCodeUserAgent(fetch1x), "opencode/1.99.0");
+		assert.equal(await refreshOpenCodeUserAgent(fetch1x), "opencode/1.99.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4");
 		assert.equal(getLiveOpenCodeVersion(), "1.99.0");
-		assert.equal(getLiveOpenCodeV2Version(), OPENCODE_V2_VERSION_FALLBACK, "live 1.x never leaks into a v2 UA");
 	} finally {
 		_resetLiveOpenCodeVersionForTest();
 		if (prevCache === undefined) delete process.env[cacheEnv];

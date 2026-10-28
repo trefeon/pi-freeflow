@@ -17,11 +17,11 @@ import {
  WATCHDOG_SSE_WINDOW,
 } from "./config.ts";
 import {
-	accumulateToolCallName,
-	cloakMessagesContent,
-	looksLikeSse,
-	type CaseRestoreMap,
-	type FindGlobRestore,
+ accumulateToolCallName,
+ cloakMessagesContent,
+ looksLikeSse,
+ type CaseRestoreMap,
+ type FindGlobRestore,
 } from "./opencode-fingerprint.ts";
 import { restoreToolNameForCaller } from "./tool-translation.ts";
 import { repairToolArguments } from "./tool-args.ts";

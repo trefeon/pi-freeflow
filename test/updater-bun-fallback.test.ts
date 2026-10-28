@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isCommandAvailable, selectGlobalUpdatePlan, selectHostUpdateSteps } from "../src/updater.ts";
+import { isCommandAvailable, probeCommandsAvailable, selectGlobalUpdatePlan, selectHostUpdateSteps } from "../src/updater.ts";
 import { runUpdateStep } from "../src/update-core.ts";
 
 // ── 1. Manager preference ────────────────────────────────────────────────
@@ -233,5 +233,46 @@ test("runUpdateStep reports a step it cannot launch as a failure", async () => {
 			warnings.some((message) => message.includes("failed")),
 			`the spawn failure must be reported, got: ${JSON.stringify(warnings)}`,
 		);
+	}
+});
+
+test("probeCommandsAvailable matches the sync probe without blocking", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-freeflow-async-probe-"));
+	const prevPath = process.env["PATH"];
+	const stem = "pfprobe" + process.pid;
+	try {
+		const okName = process.platform === "win32" ? stem + "-ok.cmd" : stem + "-ok";
+		if (process.platform === "win32") {
+			fs.writeFileSync(path.join(dir, okName), "@echo off" + "\r\n" + "exit /b 0" + "\r\n");
+		} else {
+			fs.writeFileSync(path.join(dir, okName), "#!/bin/sh" + "\n" + "exit 0" + "\n", { mode: 0o755 });
+		}
+		process.env["PATH"] = dir + path.delimiter + (prevPath ?? "");
+		let probedSettled = false;
+		const probed = probeCommandsAvailable([stem + "-ok", "definitely-not-a-pi-freeflow-cmd", "not a binary"]).then(
+			(results) => {
+				probedSettled = true;
+				return results;
+			},
+		);
+		let immediateRan = false;
+		const gate = Promise.withResolvers<void>();
+		setImmediate(() => {
+			immediateRan = true;
+			gate.resolve();
+		});
+		await gate.promise;
+		const results = await probed;
+		assert.deepEqual(results, [true, false, false], "shim ok, unknown no, invalid name no");
+		assert.ok(immediateRan, "event loop must keep running while probes are in flight");
+		// The async probe must agree with the sync probe, which stays usable
+		// for the foreground path; checked after the await so no ordering
+		// between the setImmediate callback and probe settlement is assumed.
+		assert.equal(probedSettled, true, "probes must have settled");
+		assert.equal(isCommandAvailable(stem + "-ok"), true, "sync probe still resolves the shim");
+	} finally {
+		if (prevPath === undefined) delete process.env["PATH"];
+		else process.env["PATH"] = prevPath;
+		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });

@@ -49,8 +49,8 @@ export interface RelayState {
  enabled: boolean;
  url: string;
  relays: KnownRelay[];
-	hideWidget?: boolean;
-	autoUpdate?: boolean;
+ hideWidget?: boolean;
+ autoUpdate?: boolean;
 }
 export type LogLevel = "debug" | "info" | "warn" | "error" | "audit";
 
@@ -64,6 +64,8 @@ export interface RawModelItem {
  name?: string;
  context_length?: number;
  max_tokens?: number;
+ /** Wire alias for max_tokens on listings that already use the host spelling. */
+ max_output_tokens?: number;
  contextWindow?: number;
  maxTokens?: number;
  reasoning?: boolean;

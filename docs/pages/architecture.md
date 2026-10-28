@@ -217,7 +217,7 @@ the target path expects. Caller tools are never dropped, and only two rewrites
 ever happen:
 
 - Pi's `find` rides upstream as `glob` **on the free tier alone**, whose gate
-  looks for a sextet with that name in its `glob` slot — and only when the
+  looks for the 11-tool roster with that name in its `glob` slot — and only when the
   caller left the slot empty. OMP declares **both** (`glob` for file patterns,
   `find` for semantic search), and renaming there would collapse two real tools
   into one under the other's schema.

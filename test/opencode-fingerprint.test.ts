@@ -1,12 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-	OPENCODE_FINGERPRINT_TOOLS,
 	convertSseToJson,
 	enforceOpencodeFingerprint,
+	ensureChatFull11Tools,
+	ensureResponsesFull11Tools,
 	normalizeResponsesBody,
-	ensureChatFingerprintTools,
-	ensureResponsesFingerprintTools,
 	isPlaceholderToolName,
 	normalizePlaceholderCase,
 	parseSseEvents,
@@ -15,6 +14,7 @@ import {
 	sseToResponsesJson,
 	toolNameOf,
 } from "../src/opencode-fingerprint.ts";
+import { FULL11_TOOL_NAMES } from "../src/tool-translation.ts";
 
 test("toolNameOf: extracts tool name from both function-wrapped and flat tool objects", () => {
 	assert.equal(toolNameOf({ type: "function", function: { name: "bash" } }), "bash");
@@ -26,28 +26,28 @@ test("toolNameOf: extracts tool name from both function-wrapped and flat tool ob
 	assert.equal(toolNameOf({}), "");
 });
 
-test("ensureChatFingerprintTools: injects full sextet into tool-less bodies", () => {
+test("ensureChatFull11Tools: injects the live 11-tool roster into tool-less bodies", () => {
 	const body: Record<string, unknown> = {};
-	ensureChatFingerprintTools(body);
+	ensureChatFull11Tools(body);
 	assert.ok(Array.isArray(body.tools));
-	assert.equal(body.tools.length, 6);
+	assert.equal(body.tools.length, 11);
 
 	const names = (body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name);
-	for (const tool of OPENCODE_FINGERPRINT_TOOLS) {
-		assert.ok(names.includes(tool), `missing fingerprint tool ${tool}`);
+	for (const tool of FULL11_TOOL_NAMES) {
+		assert.ok(names.includes(tool), `missing roster tool ${tool}`);
 	}
 });
 
-test("ensureChatFingerprintTools: preserves caller tools and only appends missing ones", () => {
+test("ensureChatFull11Tools: preserves caller tools and only appends missing ones", () => {
 	const body: Record<string, unknown> = {
 		tools: [
 			{ type: "function", function: { name: "custom_analyzer", description: "custom" } },
 			{ type: "function", function: { name: "read" } },
 		],
 	};
-	ensureChatFingerprintTools(body);
+	ensureChatFull11Tools(body);
 	assert.ok(Array.isArray(body.tools));
-	assert.equal(body.tools.length, 7); // 1 custom + 1 existing read + 5 added (bash, glob, grep, edit, write)
+	assert.equal(body.tools.length, 12); // 1 custom + 1 existing read + 10 added
 
 	const names = (body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name);
 	assert.ok(names.includes("custom_analyzer"));
@@ -55,15 +55,16 @@ test("ensureChatFingerprintTools: preserves caller tools and only appends missin
 	assert.ok(names.includes("bash"));
 	assert.ok(names.includes("glob"));
 	assert.ok(names.includes("grep"));
+	assert.ok(names.includes("skill"));
 });
 
-test("ensureResponsesFingerprintTools: uses flat responses format and preserves caller tools", () => {
+test("ensureResponsesFull11Tools: uses flat responses format and preserves caller tools", () => {
 	const body: Record<string, unknown> = {
 		tools: [{ type: "function", name: "my_tool", description: "my" }],
 	};
-	ensureResponsesFingerprintTools(body);
+	ensureResponsesFull11Tools(body);
 	assert.ok(Array.isArray(body.tools));
-	assert.equal(body.tools.length, 7);
+	assert.equal(body.tools.length, 12);
 
 	const tools = body.tools as Array<{ name: string; type: string }>;
 	for (const t of tools) {
@@ -85,7 +86,7 @@ test("enforceOpencodeFingerprint: forces stream: true and records callerHadTools
 	assert.equal(r1.callerHadTools, false);
 	assert.equal(r1.addedTools, true);
 	assert.equal(nonStreamBody.stream, true);
-	assert.equal((nonStreamBody.tools as unknown[]).length, 6);
+	assert.equal((nonStreamBody.tools as unknown[]).length, 11, "tool-less body gains the full 11 roster");
 	// tool_choice must NOT be set to "none" because upstream Zen returns 400 (only "auto" supported)
 	assert.equal(nonStreamBody.tool_choice, undefined);
 
@@ -102,27 +103,43 @@ test("enforceOpencodeFingerprint: forces stream: true and records callerHadTools
 	assert.equal(streamBodyWithTools.store, false);
 	assert.equal(streamBodyWithTools.tool_choice, "auto", "caller with tools preserves tool_choice");
 
-	// Injected tools have placeholder description
+	// Injected slots carry the verbatim CLI definitions, not placeholders.
 	const tools = streamBodyWithTools.tools as Array<{ name: string; description?: string }>;
 	const bashTool = tools.find((t) => t.name === "bash");
-	assert.ok(bashTool?.description?.includes("never be invoked"));
+	assert.ok(bashTool?.description && bashTool.description.length > 0);
 });
 
-test("enforceOpencodeFingerprint: tool-less body gains 6 injected tools and stream:true", () => {
+test("enforceOpencodeFingerprint: tool-less body gains 11 injected tools and stream:true", () => {
 	const body: Record<string, unknown> = { model: "m", stream: false };
 	const r = enforceOpencodeFingerprint(body, "/v1/chat/completions");
 	assert.equal(r.callerHadTools, false);
 	assert.equal(r.addedTools, true);
 	assert.equal(body.stream, true);
+	assert.deepEqual(body.stream_options, { include_usage: true }, "compat lane usage accounting");
 	const names = (body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name).sort();
-	assert.deepEqual(names, ["bash", "edit", "glob", "grep", "read", "write"]);
-	for (const tool of body.tools as Array<{ function: { name: string; parameters: { properties: Record<string, unknown> } } }>) {
-		assert.ok(Object.keys(tool.function.parameters.properties).length > 0, `${tool.function.name} must have non-empty properties for inference gate`);
+	assert.deepEqual(names, ["bash", "edit", "glob", "grep", "read", "skill", "task", "todowrite", "webfetch", "websearch", "write"]);
+	const chatTools = body.tools as Array<{ function: { name: string; parameters: unknown } }>;
+	for (const tool of chatTools) {
+		const props = tool.function.parameters;
+		assert.ok(props && typeof props === "object" && "properties" in props, `${tool.function.name} carries properties`);
+		assert.ok(Object.keys(props.properties as Record<string, unknown>).length > 0, `${tool.function.name} must have non-empty properties for inference gate`);
 	}
-	const bashTool = (body.tools as Array<{ function: { name: string; parameters: { properties: Record<string, unknown> } } }>).find((t) => t.function.name === "bash");
-	assert.ok("command" in bashTool!.function.parameters.properties);
-	const readTool = (body.tools as Array<{ function: { name: string; parameters: { properties: Record<string, unknown> } } }>).find((t) => t.function.name === "read");
-	assert.ok("path" in readTool!.function.parameters.properties);
+	const slotRequired = (slot: string): unknown => {
+		const hit = chatTools.find((t) => t.function.name === slot);
+		assert.ok(hit, `${slot} present`);
+		const params = hit.function.parameters;
+		assert.ok(params && typeof params === "object" && "required" in params, `${slot} carries required`);
+		return params.required;
+	};
+	const bashHit = chatTools.find((t) => t.function.name === "bash");
+	assert.ok(bashHit, "bash present");
+	const bashParams = bashHit.function.parameters;
+	assert.ok(bashParams && typeof bashParams === "object" && "properties" in bashParams, "bash carries properties");
+	for (const key of ["command", "timeout", "workdir"]) {
+		assert.ok(bashParams.properties && typeof bashParams.properties === "object" && key in bashParams.properties, `verbatim CLI bash schema carries ${key}`);
+	}
+	assert.deepEqual(slotRequired("read"), ["filePath"], "verbatim CLI read schema uses filePath");
+	assert.deepEqual(slotRequired("edit"), ["filePath", "oldString", "newString"], "verbatim CLI edit schema");
 });
 
 test("enforceOpencodeFingerprint: Bash lowercased without dup, host tools kept", () => {
@@ -149,7 +166,7 @@ test("enforceOpencodeFingerprint: Bash lowercased without dup, host tools kept",
 	assert.ok(names.includes("ls"), "caller ls never dropped");
 	assert.ok(names.includes("powershell"), "caller powershell never dropped");
 	assert.ok(names.includes("glob"), "Pi find rides upstream as glob");
-	assert.deepEqual(r.injected, ["grep", "read", "edit", "write"], "bash+glob declared upstream, rest injected");
+	assert.deepEqual(r.injected, ["edit", "grep", "read", "skill", "task", "todowrite", "webfetch", "websearch", "write"], "bash+glob declared upstream, rest injected");
 	assert.ok(!("tool_choice" in body), "named choice dropped — Zen supports only auto");
 });
 
@@ -169,8 +186,8 @@ test("enforceOpencodeFingerprint: a find declaration still rides upstream as glo
 	assert.ok(names.includes("glob"), "find declaration renamed to glob upstream");
 	assert.ok(!names.some((n) => n.toLowerCase() === "find"), "no dangling find declaration");
 	assert.ok(!("tool_choice" in body), "named choice dropped");
-	for (const t of ["bash", "glob", "grep", "read", "edit", "write"]) {
-		assert.ok(names.includes(t), `sextet complete upstream: ${t}`);
+	for (const t of ["bash", "edit", "glob", "grep", "read", "skill", "task", "todowrite", "webfetch", "websearch", "write"]) {
+		assert.ok(names.includes(t), `11 roster complete upstream: ${t}`);
 	}
 	assert.ok(!r.injected.includes("glob"), "caller-supplied glob is not re-injected");
 
@@ -197,14 +214,14 @@ test("normalizePlaceholderCase: bounded per-request restore", () => {
 	assert.ok(!isPlaceholderToolName("find"));
 });
 
-test("ensureChatFingerprintTools: case-insensitive idempotent, no Bash/bash dup", () => {
+test("ensureChatFull11Tools: case-insensitive idempotent, no Bash/bash dup", () => {
 	const body: Record<string, unknown> = {
 		tools: [{ type: "function", function: { name: "Bash" } }],
 	};
-	ensureChatFingerprintTools(body);
+	ensureChatFull11Tools(body);
 	const names = (body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name);
 	assert.equal(names.filter((n) => n.toLowerCase() === "bash").length, 1);
-	assert.equal(names.length, 6);
+	assert.equal(names.length, 11);
 });
 
 test("enforceOpencodeFingerprint: a chat system prompt without an env block gains one", () => {
@@ -238,7 +255,7 @@ test("enforceOpencodeFingerprint: the env block lands in the last system message
 	enforceOpencodeFingerprint(body, "/v1/chat/completions");
 	const messages = body.messages as Array<{ role: string; content: string }>;
 	assert.equal(messages[0].content, "first", "earlier system prompts stay untouched");
-	assert.match(messages[1].content, /^second\n\n<env>\n  Working directory: [^\n]+\n<\/env>$/);
+	assert.match(messages[1].content, /^second\n\n<env>\n  Working directory: [^\n]+\n  Workspace root: [^\n]+\n  Is git: [^\n]+\n  Platform: [^\n]+\n  Today's date: \d{4}-\d{2}-\d{2}\n<\/env>$/);
 });
 
 test("enforceOpencodeFingerprint: a tool-less chat body gains a system message for the block", () => {
@@ -311,7 +328,7 @@ test("enforceOpencodeFingerprint: the env block reaches the responses and messag
 
 	const messagesString: Record<string, unknown> = { model: "m", system: "You are Claude." };
 	enforceOpencodeFingerprint(messagesString, "/v1/messages");
-	assert.match(messagesString.system as string, /^You are Claude\.\n\n<env>\n  Working directory: [^\n]+\n<\/env>$/);
+	assert.match(messagesString.system as string, /^You are Claude\.\n\n<env>\n  Working directory: [^\n]+\n  Workspace root: [^\n]+\n  Is git: [^\n]+\n  Platform: [^\n]+\n  Today's date: \d{4}-\d{2}-\d{2}\n<\/env>$/);
 
 	const messagesBlocks: Record<string, unknown> = {
 		model: "m",
@@ -939,9 +956,9 @@ test("enforceOpencodeFingerprint: responses path normalizes before fingerprint",
 	assert.ok(Array.isArray(body.input) && !("messages" in body));
 	assert.equal(body.max_output_tokens, 200);
 	assert.ok(!("tool_choice" in body));
-	assert.deepEqual(body.reasoning, { effort: "xhigh" });
+	assert.ok(!("reasoning" in body), "agent turn sends no reasoning effort (title-only turns keep it)");
 	assert.equal(body.store, false);
-	assert.equal((body.tools as unknown[]).length, 7, "caller tool + sextet");
+	assert.equal((body.tools as unknown[]).length, 12, "caller tool + 11 roster");
 	const chat: Record<string, unknown> = {
 		model: "big-pickle",
 		messages: [{ role: "user", content: "hi" }],

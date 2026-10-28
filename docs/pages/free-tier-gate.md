@@ -9,8 +9,8 @@ Unless a line says otherwise, every result below was reproduced against
 `https://opencode.ai/zen/v1` on 2026-10-08. Each row is a controlled
 comparison: one variable changed, same request otherwise.
 
-::: info 2026-10-15 Gateway Migration
-OpenCode migrated keyless free-tier traffic from `/zen/v1` to `/inference/v1` (`/inference/v1/chat/completions` and `/inference/v1/responses`). The new gateway requires `Authorization: Bearer public`, non-empty tool parameter schemas, and omission of `x-opencode-request: msg_*` headers. pi-freeflow handles all of these transparently.
+::: info 2026-10-15 Gateway Migration, updated 2026-10-27 live capture
+OpenCode migrated keyless free-tier traffic from `/zen/v1` to `/inference/v1` (`/inference/v1/chat/completions` and `/inference/v1/responses`), and the official v1 1.19.4 client addresses chat on the openai-compat lane `/inference/openai/v1/chat/completions` (the plain path stays as fallback). The lane requires `Authorization: Bearer public`, the full CLI `User-Agent`, a stable `ses_*` session plus a fresh `msg_*` `x-opencode-request` per prepare, non-empty verbatim tool schemas, `stream: true` with usage accounting, and the 5-line `<env>` block. pi-freeflow handles all of these transparently.
 :::
 
 ## The refusal
@@ -44,14 +44,19 @@ was wrong.
 
 | # | Axis | Accepted | Missing |
 | --- | --- | --- | --- |
-| 1 | `User-Agent` | `opencode/1.19.4` and other `opencode/*` values | `403` |
-| 2 | Session header | `x-opencode-session` **or** `x-session-affinity`, carrying a canonical id | `403` |
-| 3 | Tool declarations | the placeholder sextet `{bash, glob, grep, read, edit, write}` | `403` |
-| 4 | Streaming | `stream: true` | `403` |
+| 1 | `User-Agent` | full CLI shape `opencode/<v> ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4` | `403` |
+| 2 | Session headers | `x-opencode-session` + `x-opencode-session-id` (canonical `ses_*`, stable per conversation) plus a fresh `x-opencode-request` (`msg_*`) per prepare, `x-opencode-client: cli`, cwd-derived `x-opencode-project` (`global` outside a repo). Affinity headers (`x-session-affinity` / `x-session-id`) are NEVER sent on this lane | `403` |
+| 3 | Tool declarations | the 11-tool roster `{bash, edit, glob, grep, read, skill, task, todowrite, webfetch, websearch, write}` with the verbatim CLI schemas | `403` |
+| 4 | Streaming | `stream: true` with `stream_options: { include_usage: true }` on the default `/inference/openai/v1` chat lane | `403` |
 
 Measured 2026-10-13 against `space-bunny-free` and
 `nemotron-3.5-lightning-free`, on both the chat and the responses path, with
-the other axes held correct:
+the other axes held correct. Live re-capture 2026-10-27 (v1 1.19.4 MITM, SG)
+promoted the default chat lane to `/inference/openai/v1/chat/completions`
+(the plain `/inference/v1` path stays as the 404/405 fallback) and showed the
+official client sending the full UA, a fresh `msg_*` request id per prepare,
+and the 11-tool roster — the older rows below that claim `x-opencode-request`
+or affinity are refused describe the pre-migration gateway, kept for history:
 
 | Variation | Result |
 | --- | --- |
@@ -177,10 +182,17 @@ Two details decide whether a block works:
   plausible-looking block keyed `Platform:` or `Shell:` is refused.
 
 pi-freeflow repairs this on the outgoing request for every Zen wire shape —
-chat `messages[]`, Responses `instructions`, the Anthropic `system` field. A
-block the host already sent that satisfies both rules rides through untouched;
-anything else is folded into exactly one block appended to the last system
-prompt. The Kilo, Cline and OVHcloud lanes are not touched.
+chat `messages[]`, Responses `instructions` (including array-content
+system/developer items), the Anthropic `system` field. A host block that
+already satisfies both rules rides through untouched; anything else is folded
+into exactly one live-shaped 5-line block (`Working directory:`,
+`Workspace root:`, `Is git:`, `Platform:`, `Today's date:`) appended to the
+last system prompt. The Kilo, Cline and OVHcloud lanes are not touched.
+
+A bare `FreeUsageLimitError` 429 with none of the quota markers (retry/reset
+language, explicit rate-limit codes) is the shape verdict above, not quota
+exhaustion: no deploy guidance is attached to it, because a relay rotation
+cannot fix our own fingerprint (see `isFreeUsageShapeError`).
 
 This is separate from the relay egress refusal: a request that leaves through a
 Cloudflare/WARP-class egress is refused whatever its body says, so a relay
@@ -193,27 +205,24 @@ Once all four axes are present, these make no difference to the outcome:
 - `User-Agent` version, across `opencode/1.0.0` … `opencode/1.22.0` — the value
   matters, the exact version does not
 - `x-opencode-client: cli` vs `desktop`
-- `x-opencode-project`, whether the SHA-1 of the upstream git remote, the
-  literal `global`, a random hex value, or empty
-- `x-opencode-session-id` and `x-opencode-request` — on the pre-migration
-  gateway both ride every request, and neither is one of the two session
-  headers the gateway reads (the current `/inference/v1` gateway wants
-  `x-opencode-request` omitted entirely)
+- `x-opencode-project`, whether the SHA-1 of the working directory (what the
+  CLI sends inside a repo), the literal `global` (what it sends outside one),
+  or a random hex value
+- `x-opencode-session-id` always rides alongside `x-opencode-session`
 - payload size, from ~100 B to ~640 KB
 - a fresh session id per request vs one session reused across four requests
 - the timestamp encoded in the session id, from 2000 to 2050
 
 An earlier version of this page claimed request identity was not load-bearing at
 all — "good hygiene, not the mechanism" — and was wrong. `User-Agent` and a
-canonical session id are two of the four axes. For the current
-`/inference/v1` gateway, `src/config.ts` sends: `Authorization: Bearer public`,
-a `User-Agent`, `x-opencode-client`, `x-opencode-project`, the canonical `ses_…`
-session on `x-opencode-session`, `x-opencode-session-id`, `x-session-affinity`
-and `x-session-id`. It deliberately omits `x-opencode-request` (`msg_…`): on the
-post-migration gateway that header marks the caller as a non-OpenCode client and
-is refused with `403 FreeTierError`. The identity headers the gateway does not
-read are kept because they cost nothing and matching the real client is the
-safer default.
+canonical session id are two of the four axes. For the current default
+`/inference/openai/v1` lane (live v1 1.19.4 capture 2026-10-27), `src/config.ts`
+sends: `Authorization: Bearer public`, the full CLI `User-Agent`,
+`x-opencode-client: cli`, the cwd-derived `x-opencode-project`, the canonical
+`ses_…` session (stable per conversation) on `x-opencode-session` and
+`x-opencode-session-id`, and a fresh `msg_…` id on `x-opencode-request` per
+prepare. Affinity headers (`x-session-affinity`, `x-session-id`) are deliberately
+never sent on this lane: upstream treats them as a non-OpenCode signal.
 
 ## The popular workaround, revisited
 
@@ -314,27 +323,32 @@ still refused:
 
 ```js
 const session = "ses_" + createOpenCodeId(); // opencode's own generator
+const request = "msg_" + createOpenCodeId(); // fresh per prepare
 
-const res = await fetch("https://opencode.ai/zen/v1/chat/completions", {
+const res = await fetch("https://opencode.ai/inference/openai/v1/chat/completions", {
   method: "POST",
   headers: {
     "content-type": "application/json",
     accept: "text/event-stream",
-    "user-agent": "opencode/1.19.4",      // axis 1
+    "user-agent": "opencode/1.19.4 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4", // axis 1
     "x-opencode-client": "cli",
-    "x-opencode-session": session,        // axis 2
+    "x-opencode-session": session,        // axis 2 (stable per conversation)
+    "x-opencode-session-id": session,
+    "x-opencode-request": request,        // axis 2 (fresh per prepare)
+    "x-opencode-project": "global",
   },
   body: JSON.stringify({
     model: "nemotron-3.5-lightning-free",
     messages: [{ role: "user", content: "hi" }],
     stream: true,                         // axis 4
+    stream_options: { include_usage: true },
     max_tokens: 16,
-    tools: ["bash", "glob", "grep", "read", "edit", "write"].map((name) => ({  // axis 3
+    tools: ["bash", "edit", "glob", "grep", "read", "skill", "task", "todowrite", "webfetch", "websearch", "write"].map((name) => ({  // axis 3
       type: "function",
       function: {
         name,
-        description: "Do not call this tool. It exists only for API compatibility and must never be invoked.",
-        parameters: { type: "object", properties: {} },
+        description: "The official OpenCode definition for " + name + ".",
+        parameters: { type: "object", properties: { command: { type: "string" } } },
       },
     })),
   }),

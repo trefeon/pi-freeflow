@@ -118,7 +118,6 @@ export function _resetClinePoolCacheForTest(): void {
 
 /** Bundled fallback version if dynamic fetch and disk cache are absent. */
 export const BUNDLED_CLINE_VERSION = "4.1.25";
-export const CLINE_CLIENT_VERSION = BUNDLED_CLINE_VERSION;
 
 const CLINE_VERSION_TTL_MS = 24 * 60 * 60 * 1000;
 let liveClineVersion: string | null = null;
@@ -378,6 +377,24 @@ function emptyPool(): ClinePoolState {
 }
 
 /**
+ * Deep clone a pool snapshot so callers can never alias the cache: mutating a
+ * loaded pool must not corrupt the next load, and mutating the argument after
+ * savePool must not rewrite what was cached.
+ */
+function clonePool(pool: ClinePoolState): ClinePoolState {
+ return {
+  accounts: pool.accounts.map((a) => ({ ...a })),
+  ...(pool.activeSlot !== undefined ? { activeSlot: pool.activeSlot } : {}),
+  ...(pool.limits
+   ? { limits: Object.fromEntries(Object.entries(pool.limits).map(([slot, models]) => [slot, { ...models }])) }
+   : {}),
+  ...(pool.usage
+   ? { usage: Object.fromEntries(Object.entries(pool.usage).map(([slot, row]) => [slot, { ...row }])) }
+   : {}),
+ };
+}
+
+/**
  * Read the optional `limits` map out of a pool document, dropping anything
  * malformed and every entry whose reset has already passed. Returns undefined
  * when nothing usable is left, so a pool that never saw a cap keeps its old
@@ -455,8 +472,11 @@ function parsePoolDoc(raw: string): ClinePoolState | null {
   if (typeof entry !== "object" || entry === null) continue;
   const rec: Record<string, unknown> = entry as Record<string, unknown>;
   const slot = typeof rec.slot === "string" ? rec.slot.trim() : "";
-  const token = typeof rec.token === "string" ? rec.token : "";
-  if (!slot || (!token.startsWith("workos:") && !isWorkosJwt(token) && !token.startsWith("clp_"))) continue;
+  const token = typeof rec.token === "string" ? rec.token.trim() : "";
+  if (!slot || (!token.startsWith("workos:") && !isWorkosJwt(token) && !token.startsWith("clp_"))) {
+   logWarn("cline pool entry rejected", { slot: slot || "(unnamed)" });
+   continue;
+  }
   const refreshRaw: unknown = rec.refreshToken;
   const refreshToken = typeof refreshRaw === "string" && refreshRaw.length > 0 ? refreshRaw : undefined;
   const expiresRaw: unknown = rec.expiresAt;
@@ -542,7 +562,7 @@ function diskMtime(): number {
  */
 export function loadPool(): ClinePoolState {
  const before = diskMtime();
- if (cached && before === cachedMtime) return cached;
+ if (cached && before === cachedMtime) return clonePool(cached);
  let loaded = readPoolFile();
  let stamp = diskMtime();
  // The read is only trustworthy when the file did not move across it. Reading
@@ -553,9 +573,9 @@ export function loadPool(): ClinePoolState {
   loaded = readPoolFile();
   stamp = diskMtime();
  }
- cached = loaded;
+ cached = clonePool(loaded);
  cachedMtime = stamp;
- return cached;
+ return clonePool(cached);
 }
 
 /**
@@ -653,7 +673,7 @@ export function savePool(pool: ClinePoolState): boolean {
   }
   // Compare the pool just written too, so growth is never the copy that lags.
   keepLargestBackup(serialized);
-  cached = pool;
+  cached = clonePool(pool);
   cachedMtime = diskMtime();
   return true;
  } catch (e) {
@@ -811,16 +831,17 @@ export function addAccount(
  const cleanSlot = (slot || "").trim();
  if (!cleanSlot) throw new Error("Cline slot name cannot be empty");
  if (cleanSlot.length > 64) throw new Error("Cline slot name is too long (max 64 characters)");
- if (!token.startsWith("workos:") && !isWorkosJwt(token) && !token.startsWith("clp_")) throw new Error("Cline token must be a workos: login grant or a clp_ API key");
+ const cleanToken = (token || "").trim();
+ if (!cleanToken.startsWith("workos:") && !isWorkosJwt(cleanToken) && !cleanToken.startsWith("clp_")) throw new Error("Cline token must be a workos: login grant or a clp_ API key");
  const pool = loadPool();
  const existing = pool.accounts.find((a) => a.slot === cleanSlot);
- const duplicate = findClineAccountSlot(pool, { token, accountId: extras?.accountId, email: extras?.email }, cleanSlot);
+ const duplicate = findClineAccountSlot(pool, { token: cleanToken, accountId: extras?.accountId, email: extras?.email }, cleanSlot);
  if (duplicate) {
   const who = extras?.email?.trim() || existing?.email?.trim() || "this account";
   throw new Error(`That Cline account (${who}) is already saved as [${duplicate}] — log in with a different account, or use /freeflow cline logout ${duplicate} first`);
  }
  if (existing) {
-  existing.token = token;
+  existing.token = cleanToken;
   // A fresh login is proof the grant works again: a quarantine recorded
   // against the credential it replaces must never outlive it.
   delete existing.deadUntil;
@@ -840,7 +861,7 @@ export function addAccount(
  } else {
   pool.accounts.push({
    slot: cleanSlot,
-   token,
+   token: cleanToken,
    addedAt: new Date().toISOString(),
    ...(extras?.refreshToken ? { refreshToken: extras.refreshToken } : {}),
    ...(extras?.expiresAt !== undefined && Number.isFinite(extras.expiresAt) && extras.expiresAt > 0
@@ -858,7 +879,7 @@ export function addAccount(
   // Re-read the way the relay deploy path does before blaming the write.
   let landed = false;
   try {
-   landed = loadPool().accounts.some((a) => a.slot === cleanSlot && a.token === token);
+   landed = loadPool().accounts.some((a) => a.slot === cleanSlot && a.token === cleanToken);
   } catch {
    landed = false;
   }
@@ -868,7 +889,7 @@ export function addAccount(
    );
   }
  }
- return pool;
+ return clonePool(pool);
 }
 
 /** Skew so a token expiring mid-flight counts as stale before it breaks a call. */
@@ -911,7 +932,8 @@ async function refreshAccountInPlace(
   void e;
   return null;
  }
- if (!fresh || typeof fresh.token !== "string" || (!fresh.token.startsWith("workos:") && !isWorkosJwt(fresh.token) && !fresh.token.startsWith("clp_"))) {
+ const freshToken = fresh !== null && typeof fresh.token === "string" ? fresh.token.trim() : "";
+ if (fresh === null || !freshToken || (!freshToken.startsWith("workos:") && !isWorkosJwt(freshToken) && !freshToken.startsWith("clp_"))) {
   // Cline rejected the grant outright: park the slot on disk so the next
   // turns skip it instead of re-paying a refresh that cannot succeed. The
   // credential stays in the pool — a fresh login into the slot clears this —
@@ -924,7 +946,7 @@ async function refreshAccountInPlace(
   patchAccountOnDisk(account.slot, { deadUntil: account.deadUntil });
   return false;
  }
- account.token = fresh.token;
+ account.token = freshToken;
  if (fresh.refreshToken) account.refreshToken = fresh.refreshToken;
  if (typeof fresh.expiresAt === "number" && Number.isFinite(fresh.expiresAt) && fresh.expiresAt > 0) {
   account.expiresAt = fresh.expiresAt;
@@ -1078,17 +1100,19 @@ async function peekStreamForInStreamError(res: Response): Promise<{ res: Respons
    };
   }
   const text = new TextDecoder().decode(value);
-  const isInStream429 = (
-   text.includes('"stream_initialization_failed"') ||
-   text.includes('"error":') ||
-   text.includes('"Rate limit exceeded"') ||
-   text.includes("Daily limit reached")
-  ) && (
-   text.includes("429") ||
-   /status["\s:]+429/i.test(text) ||
+  // Strict: only an in-stream initialization failure carrying a 429 signal
+  // converts. A 200 whose first chunk merely mentions "error" or "429" (model
+  // content, tool output) must pass through untouched.
+  const hasInitFailed = text.includes("stream_initialization_failed");
+  const has429Signal = (
+   /status[^0-9]{0,12}429/i.test(text) ||
+   /"code"\s*:\s*429/.test(text) ||
    /Rate limit exceeded/i.test(text) ||
-   /Daily limit reached/i.test(text)
+   /Daily limit reached/i.test(text) ||
+   /free limit reached/i.test(text) ||
+   /Daily free limit/i.test(text)
   );
+  const isInStream429 = hasInitFailed && has429Signal;
 
   if (isInStream429) {
    try { await reader.cancel(); } catch { }
