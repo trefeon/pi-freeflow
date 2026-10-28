@@ -18,6 +18,8 @@ import {
  _resetFreeTierHintForTest,
  _resetUpstreamHealthForTest,
  isUpstreamGated,
+ isZenFailoverEnabled,
+ ZEN_KILO_FAILOVER_ENV,
  recordUpstreamFailure,
  recordUpstreamSuccess,
  rememberGateRejection,
@@ -95,6 +97,17 @@ function newResponses(text = "hello"): Record<string, unknown> {
  return JSON.parse(responsesBody(RESPONSES_MODEL, text));
 }
 
+function enableFailover(): string | undefined {
+ const prev = process.env[ZEN_KILO_FAILOVER_ENV];
+ process.env[ZEN_KILO_FAILOVER_ENV] = "1";
+ return prev;
+}
+
+function restoreFailover(prev: string | undefined): void {
+ if (prev === undefined) delete process.env[ZEN_KILO_FAILOVER_ENV];
+ else process.env[ZEN_KILO_FAILOVER_ENV] = prev;
+}
+
 // ── Branch decision while ungated ────────────────────────────────────────────
 
 test("degrade: ungated zen chat passes through (kilo/responses/empty too)", () => {
@@ -126,9 +139,40 @@ test("degrade: ungated zen chat passes through (kilo/responses/empty too)", () =
  );
 });
 
+// ── Contract: without the opt-in, Zen model is never rewritten ───────────────
+
+test("degrade contract: gated zen without opt-in never rewrites parsedBody.model", () => {
+ const prev = process.env[ZEN_KILO_FAILOVER_ENV];
+ delete process.env[ZEN_KILO_FAILOVER_ENV];
+ try {
+  assert.equal(isZenFailoverEnabled(), false);
+  _resetUpstreamHealthForTest();
+  recordUpstreamFailure("zen", 403, GATE_BODY);
+  recordUpstreamFailure("zen", 403, GATE_BODY);
+  assert.equal(isUpstreamGated("zen"), true);
+  assert.equal(decideZenRoute(newChat(), "/v1/chat/completions"), "passthrough");
+  const chat = newChat();
+  assert.deepEqual(classifyZenFailover(chat, "/v1/chat/completions"), { action: "passthrough" });
+  assert.equal(chat.model, ZEN_MODEL, "requested model must survive classification untouched");
+  const refused = newChat();
+  rememberGateRejection(refused, "/v1/chat/completions", 403, GATE_BODY);
+  assert.deepEqual(classifyZenFailover(refused, "/v1/chat/completions"), { action: "passthrough" });
+  assert.equal(refused.model, ZEN_MODEL, "refused sessions must not rewrite without opt-in");
+  const resp = newResponses();
+  assert.deepEqual(classifyZenFailover(resp, "/v1/responses"), { action: "passthrough" });
+  assert.equal(resp.model, RESPONSES_MODEL, "responses model must survive untouched");
+ } finally {
+  if (prev === undefined) delete process.env[ZEN_KILO_FAILOVER_ENV];
+  else process.env[ZEN_KILO_FAILOVER_ENV] = prev;
+  _resetUpstreamHealthForTest();
+ }
+});
+
 // ── Gate trips on two qualifying 403s; failover + proven passthrough ─────────
 
 test("degrade: two 403 gates trip zen; new chat fails over, proven passes through", () => {
+ const prevFailover = enableFailover();
+ try {
  _resetUpstreamHealthForTest();
  assert.equal(isUpstreamGated("zen"), false);
 
@@ -183,9 +227,15 @@ test("degrade: two 403 gates trip zen; new chat fails over, proven passes throug
    `responses failover target must be a Kilo model, got ${respDecision.model}`,
   );
  }
+ } finally {
+  restoreFailover(prevFailover);
+  _resetUpstreamHealthForTest();
+ }
 });
 
 test("degrade: first gated fresh session is the canary, crossed bodies pass through", () => {
+ const prevFailover = enableFailover();
+ try {
  _resetUpstreamHealthForTest();
  recordUpstreamFailure("zen", 403, GATE_BODY);
  recordUpstreamFailure("zen", 403, GATE_BODY);
@@ -208,10 +258,15 @@ test("degrade: first gated fresh session is the canary, crossed bodies pass thro
  );
  recordUpstreamSuccess("zen", { canary: true });
  assert.equal(isUpstreamGated("zen"), false, "canary success clears the gate");
- _resetUpstreamHealthForTest();
+ } finally {
+  restoreFailover(prevFailover);
+  _resetUpstreamHealthForTest();
+ }
 });
 
 test("degrade: refused sessions fail over on retry, even proven or multi-turn", () => {
+ const prevFailover = enableFailover();
+ try {
  _resetUpstreamHealthForTest();
  recordUpstreamFailure("zen", 403, GATE_BODY);
  recordUpstreamFailure("zen", 403, GATE_BODY);
@@ -242,7 +297,10 @@ test("degrade: refused sessions fail over on retry, even proven or multi-turn", 
   "failover",
   "proven-but-refused sessions fail over on retry",
  );
- _resetUpstreamHealthForTest();
+ } finally {
+  restoreFailover(prevFailover);
+  _resetUpstreamHealthForTest();
+ }
 });
 
 test("degrade: responses failover bodies drop Zen-bound state and clamp output tokens", () => {
@@ -338,6 +396,8 @@ test("degrade: 403 gate body carries a recovery hint, others pass through", () =
 
 test("degrade e2e: gate x2 then new chat served as Kilo, proven stays on zen", async (t) => {
  await withIsolatedRelayFiles(async () => {
+  const prevFailover = process.env[ZEN_KILO_FAILOVER_ENV];
+  process.env[ZEN_KILO_FAILOVER_ENV] = "1";
   const priorState = getActiveRelayState();
   setActiveRelayState({ enabled: true, url: "", relays: [] }, false);
   resetAllRelayHealth();
@@ -453,6 +513,8 @@ test("degrade e2e: gate x2 then new chat served as Kilo, proven stays on zen", a
 			const healedBody: Record<string, unknown> = await healed.json();
 			assert.equal(healedBody.served_by, "kilo");
   } finally {
+   if (prevFailover === undefined) delete process.env[ZEN_KILO_FAILOVER_ENV];
+   else process.env[ZEN_KILO_FAILOVER_ENV] = prevFailover;
    _resetUpstreamHealthForTest();
    _resetFreeTierHintForTest();
    resetAllRelayHealth();
@@ -465,6 +527,8 @@ test("degrade e2e: gate x2 then new chat served as Kilo, proven stays on zen", a
 
 test("degrade e2e: kilo 400 bad request recovers by clamping tokens and falling back to 1M model", async (t) => {
  await withIsolatedRelayFiles(async () => {
+  const prevFailover = process.env[ZEN_KILO_FAILOVER_ENV];
+  process.env[ZEN_KILO_FAILOVER_ENV] = "1";
   const priorState = getActiveRelayState();
   setActiveRelayState({ enabled: true, url: "", relays: [] }, false);
   resetAllRelayHealth();
@@ -516,6 +580,8 @@ test("degrade e2e: kilo 400 bad request recovers by clamping tokens and falling 
    assert.equal(body.served_by, "kilo");
    assert.equal(kiloAttempts, 2, "must have retried once to recover from 400");
   } finally {
+   if (prevFailover === undefined) delete process.env[ZEN_KILO_FAILOVER_ENV];
+   else process.env[ZEN_KILO_FAILOVER_ENV] = prevFailover;
    _resetUpstreamHealthForTest();
    _resetFreeTierHintForTest();
    resetAllRelayHealth();

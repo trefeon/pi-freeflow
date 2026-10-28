@@ -5,7 +5,6 @@ import {
  opencodeHeaders,
 } from "./config.ts";
 import {
- applyOpenAiCompatVariant,
  enforceOpencodeFingerprint,
 } from "./opencode-fingerprint.ts";
 
@@ -25,7 +24,7 @@ interface RelayProbeOptions {
  /**
   * Probe mode:
   * - "models" (default): GET /v1/models (reachability probe)
- * - "chat": POST /inference/v1/chat/completions (verifies free tier inference & spoofing)
+ * - "chat": POST /inference/openai/v1/chat/completions (verifies free tier inference & spoofing)
   */
  endpoint?: "models" | "chat";
  /** Model to use for chat probe (defaults to "nemotron-3.5-lightning-free") */
@@ -42,10 +41,10 @@ interface RelayProbeOptions {
  /** Optional progress callback before each retry */
  onRetry?: (attempt: number, maxRetries: number, lastResult: RelayProbeResult) => void;
  /**
-  * Opt-in OpenAI-compat lane variant (chat endpoint only, default false):
-  * probe `/inference/openai/v1/chat/completions` with `stream_options`
-  * instead of the default `/inference/v1/chat/completions`. The default
-  * probe path is unchanged; the models endpoint ignores this flag.
+  * Plain-lane opt-out (chat endpoint only, default false): probe the plain
+  * `/inference/v1/chat/completions` fallback instead of the default
+  * `/inference/openai/v1/chat/completions` compat lane. The models endpoint
+  * ignores this flag.
   */
  openaiCompat?: boolean;
 }
@@ -91,7 +90,11 @@ async function probeRelayOnce(
 
   if (isDirectOpenCode) {
    if (isChat) {
-    fetchUrl = opts?.openaiCompat ? OPENCODE_OPENAI_COMPAT_URL : `${OPENCODE_API_URL}/chat/completions`;
+    // Live default: the openai-compat lane; openaiCompat:false forces the
+    // plain /v1 lane (fallback coverage). Usage accounting rides the body on
+    // both via enforceOpencodeFingerprint; the lanes differ by path only.
+    const plain = opts?.openaiCompat === false;
+    fetchUrl = plain ? `${OPENCODE_API_URL}/chat/completions` : OPENCODE_OPENAI_COMPAT_URL;
     method = "POST";
     headers["content-type"] = "application/json";
     const probePayload: Record<string, unknown> = {
@@ -103,19 +106,18 @@ async function probeRelayOnce(
     // The proxy's own enforcement, not a subset of it: a probe that skipped the
     // env block would answer 429 for a lane that actually serves traffic.
     enforceOpencodeFingerprint(probePayload, "/v1/chat/completions");
-    if (opts?.openaiCompat) applyOpenAiCompatVariant(probePayload);
     body = JSON.stringify(probePayload);
     } else {
     fetchUrl = `${OPENCODE_API_URL}/models`;
     }
   } else {
    if (isChat) {
-    const compat = opts?.openaiCompat === true;
-    fetchUrl = compat ? `${cleanUrl}${OPENCODE_OPENAI_COMPAT_PATH}` : `${cleanUrl}/inference/v1/chat/completions`;
+    const plain = opts?.openaiCompat === false;
+    fetchUrl = plain ? `${cleanUrl}/inference/v1/chat/completions` : `${cleanUrl}${OPENCODE_OPENAI_COMPAT_PATH}`;
     method = "POST";
     headers["content-type"] = "application/json";
     headers["x-relay-target"] = "https://opencode.ai";
-    headers["x-relay-path"] = compat ? OPENCODE_OPENAI_COMPAT_PATH : "/inference/v1/chat/completions";
+    headers["x-relay-path"] = plain ? "/inference/v1/chat/completions" : OPENCODE_OPENAI_COMPAT_PATH;
     const probePayload: Record<string, unknown> = {
      model: opts?.model || "nemotron-3.5-lightning-free",
      max_tokens: 1,
@@ -123,7 +125,6 @@ async function probeRelayOnce(
      messages: [{ role: "user", content: "ping" }],
     };
     enforceOpencodeFingerprint(probePayload, "/v1/chat/completions");
-    if (compat) applyOpenAiCompatVariant(probePayload);
     body = JSON.stringify(probePayload);
    } else {
     fetchUrl = `${cleanUrl}/v1/models`;

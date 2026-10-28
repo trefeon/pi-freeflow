@@ -113,16 +113,16 @@ function schemaType(schema: Record<string, unknown>): string {
  * payload the host rejects is exactly the one this module exists to fix.
  */
 function isNullableProperty(prop: unknown): boolean {
-	if (prop === null || typeof prop !== "object" || Array.isArray(prop)) return false;
-	const rec = prop as Record<string, unknown>;
-	if (Array.isArray(rec.type)) return (rec.type as unknown[]).includes("null");
-	const anyOf = rec.anyOf;
-	if (Array.isArray(anyOf)) {
-	for (const branch of anyOf) {
-		if (branch !== null && typeof branch === "object" && !Array.isArray(branch) && (branch as Record<string, unknown>).type === "null") return true;
-	}
-	}
-	return false;
+ if (prop === null || typeof prop !== "object" || Array.isArray(prop)) return false;
+ const rec = prop as Record<string, unknown>;
+ if (Array.isArray(rec.type)) return (rec.type as unknown[]).includes("null");
+ const anyOf = rec.anyOf;
+ if (Array.isArray(anyOf)) {
+ for (const branch of anyOf) {
+  if (branch !== null && typeof branch === "object" && !Array.isArray(branch) && (branch as Record<string, unknown>).type === "null") return true;
+ }
+ }
+ return false;
 }
 
 /**
@@ -189,20 +189,20 @@ function matchesSchema(value: unknown, schema: Record<string, unknown>, depth: n
 const NULL_SENTINELS = new Set(["null", "none", "undefined", "nil", "n/a"]);
 
 function isNullSentinel(text: string): boolean {
-	return NULL_SENTINELS.has(text.trim().toLowerCase());
+ return NULL_SENTINELS.has(text.trim().toLowerCase());
 }
 
 /** The non-null branch of a nullable declaration, or null when it is not one. */
 function nonNullBranch(prop: Record<string, unknown>): Record<string, unknown> | null {
-	const anyOf = prop.anyOf;
-	if (!Array.isArray(anyOf)) return null;
-	for (const branch of anyOf) {
-		if (branch === null || typeof branch !== "object" || Array.isArray(branch)) continue;
-		const rec = branch as Record<string, unknown>;
-		if (rec.type === "null") continue;
-		return rec;
-	}
-	return null;
+ const anyOf = prop.anyOf;
+ if (!Array.isArray(anyOf)) return null;
+ for (const branch of anyOf) {
+  if (branch === null || typeof branch !== "object" || Array.isArray(branch)) continue;
+  const rec = branch as Record<string, unknown>;
+  if (rec.type === "null") continue;
+  return rec;
+ }
+ return null;
 }
 
 /**
@@ -213,9 +213,9 @@ function nonNullBranch(prop: Record<string, unknown>): Record<string, unknown> |
  * beside it is conjunctive, not a wrapper.
  */
 function effectiveSchema(schema: Record<string, unknown>): Record<string, unknown> {
-	if (schema.type !== undefined || schema.anyOf === undefined) return schema;
-	const branch = nonNullBranch(schema);
-	return branch === null ? schema : effectiveSchema(branch);
+ if (schema.type !== undefined || schema.anyOf === undefined) return schema;
+ const branch = nonNullBranch(schema);
+ return branch === null ? schema : effectiveSchema(branch);
 }
 
 /**
@@ -225,9 +225,9 @@ function effectiveSchema(schema: Record<string, unknown>): Record<string, unknow
  * applies, so callers can gate re-serialization on `changed`.
  */
 function repairValue(
-  value: unknown,
-  schema: Record<string, unknown>,
-  depth: number,
+ value: unknown,
+ schema: Record<string, unknown>,
+ depth: number,
 ): { value: unknown; changed: boolean } {
   if (depth > MAX_DEPTH) return { value, changed: false };
   const resolved = effectiveSchema(schema);

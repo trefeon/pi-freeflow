@@ -70,7 +70,7 @@ test("attach + heartbeat kicks fetch exactly once (storm-guard)", async () => {
 		maybeRefreshOpenCodeUserAgent();
 		await flush();
 		assert.equal(counter.calls, 1, "overlapping kicks must stampede npm only once");
-		assert.equal(getOpenCodeUserAgent(), "opencode/9.9.9", "live version populates when online");
+		assert.equal(getOpenCodeUserAgent(), "opencode/9.9.9 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4", "live version populates when online");
 	});
 });
 
@@ -105,7 +105,7 @@ test("refresh rejection never surfaces; pinned fallback carries traffic", async 
 		await flush();
 		assert.equal(
 			getOpenCodeUserAgent(),
-			`opencode/${OPENCODE_VERSION_FALLBACK}`,
+			`opencode/${OPENCODE_VERSION_FALLBACK} ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`,
 			"offline refresh keeps the pinned fallback",
 		);
 	});

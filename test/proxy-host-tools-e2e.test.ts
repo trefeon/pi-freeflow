@@ -10,7 +10,7 @@ import {
 import http from "node:http";
 import { startProxy } from "../src/proxy.ts";
 import { authHeaders } from "./_auth.ts";
-import { OPENCODE_FINGERPRINT_TOOLS } from "../src/opencode-fingerprint.ts";
+import { FULL11_TOOL_NAMES } from "../src/tool-translation.ts";
 import {
 	_resetFreeTierHintForTest,
 	_resetUpstreamHealthForTest,
@@ -59,11 +59,11 @@ function byUpstreamName(tools: unknown[], name: string): Record<string, unknown>
 	return hit as Record<string, unknown>;
 }
 
-/** Fingerprint sextet present exactly once each (case-insensitive), no dups. */
+/** Fingerprint 11 roster present exactly once each (case-insensitive), no dups. */
 function assertFingerprintOnce(tools: unknown[], label: string): void {
 	const names = (tools as Array<unknown>).map(upstreamToolName);
 	assert.equal(names.length, new Set(names.map((n) => n.toLowerCase())).size, `${label}: duplicate upstream tool names`);
-	for (const fp of OPENCODE_FINGERPRINT_TOOLS) {
+	for (const fp of FULL11_TOOL_NAMES) {
 		const hits = names.filter((n) => n.toLowerCase() === fp);
 		assert.equal(hits.length, 1, `${label}: fingerprint tool ${fp} must appear exactly once upstream`);
 	}
@@ -150,7 +150,8 @@ function chatToolDelta(index: number, id: string, name: string, args: string): u
  * Frozen accepted answer for the chat `rawSse` below: the exact aggregated body
  * a non-streaming caller must receive — upstream ids/arguments verbatim, the
  * upstream `glob` restored to the caller's `find`, the caller's `Bash` casing
- * back, one choice with finish_reason "tool_calls".
+ * back, one choice with finish_reason "tool_calls". The injected `read` call
+ * is cloaked (not the caller's tool), so it never reaches the client.
  *
  * This is a literal on purpose. Deriving the expectation by re-running the
  * aggregator (`convertSseToJson`) over the same bytes lets both sides of the
@@ -174,7 +175,6 @@ const FROZEN_CHAT_AGGREGATE: Record<string, unknown> = {
 					{ id: "call_find_1", type: "function", function: { name: "find", arguments: '{"pattern":"*.ts"}' } },
 					{ id: "call_bash_1", type: "function", function: { name: "Bash", arguments: '{"command":"ls"}' } },
 					{ id: "call_ask_1", type: "function", function: { name: "ask", arguments: '{"question":"q?"}' } },
-					{ id: "call_read_1", type: "function", function: { name: "read", arguments: '{"path":"x"}' } },
 				],
 			},
 			finish_reason: "tool_calls",
@@ -218,23 +218,27 @@ test("proxy e2e: chat non-stream carries mixed host tools upstream and restores 
 	assert.ok(!("tool_choice" in upstream), "an unsupported tool_choice never reaches upstream");
 	assert.ok(Array.isArray(upstream.tools));
 	const tools = upstream.tools as Array<unknown>;
-	assert.equal(tools.length, 12, "8 caller tools translated + 4 injected (3 real defs + cloaked edit, OMP-like caller)");
+	assert.equal(tools.length, 17, "8 caller tools translated + 9 injected verbatim roster slots");
 	assertFingerprintOnce(tools, "chat");
-	// OMP-like caller (ask present): injected grep/read/write carry executable real
-	// schemas, never COMPAT text. Injected edit is always the cloaked placeholder:
-	// no static edit schema executes on either host.
-	for (const n of ["grep", "read", "write"]) {
+	// Every injected slot carries the verbatim CLI definition (never a COMPAT
+	// placeholder): bash {command, timeout, workdir}, read {filePath, offset,
+	// limit}, edit {filePath, oldString, newString}. All of them stay in the
+	// cloak list, so model calls to non-caller tools never execute downstream.
+	for (const n of ["bash", "edit", "grep", "read", "write", "skill", "task", "todowrite", "webfetch", "websearch"]) {
 		const t = byUpstreamName(tools, n) as Record<string, unknown>;
-		const fn = t.function as Record<string, unknown>;
-		assert.ok(!String(fn.description).includes("never be invoked"), `injected ${n} is a real definition`);
-		const params = fn.parameters as { properties?: Record<string, unknown> };
-		assert.ok(params.properties && Object.keys(params.properties).length > 0, `injected ${n} has executable params`);
+		assert.ok(t.function && typeof t.function === "object", `injected ${n} has a function wrapper`);
+		const fn = t.function as { description?: unknown; parameters?: unknown };
+		assert.ok(!String(fn.description).includes("never be invoked"), `injected ${n} is a verbatim definition`);
+		const params = fn.parameters;
+		assert.ok(params && typeof params === "object" && "properties" in params, `injected ${n} has executable params`);
+		assert.ok(Object.keys(params.properties as Record<string, unknown>).length > 0, `injected ${n} has non-empty properties`);
 	}
 	const injectedEdit = byUpstreamName(tools, "edit") as Record<string, unknown>;
-	assert.ok(
-		String((injectedEdit.function as Record<string, unknown>).description).includes("never be invoked"),
-		"injected edit stays the cloaked placeholder",
-	);
+	const editFn = injectedEdit.function;
+	assert.ok(editFn && typeof editFn === "object" && "parameters" in editFn, "edit carries parameters");
+	const editParams = editFn.parameters;
+	assert.ok(editParams && typeof editParams === "object", "edit parameters are an object");
+	assert.deepEqual(editParams, { type: "object", properties: { filePath: { type: "string", description: "The absolute path to the file to edit" }, oldString: { type: "string", description: "The exact string to replace" }, newString: { type: "string", description: "The replacement string" }, replaceAll: { type: "boolean", description: "Replace all occurrences of oldString (default false)" } }, required: ["filePath", "oldString", "newString"] }, "injected edit rides real-or-drop: the real schema");
 	// Caller find arrives as glob with params/description verbatim; no raw find upstream.
 	assert.ok(!tools.some((t) => upstreamToolName(t).toLowerCase() === "find"), "caller find must be renamed to glob upstream");
 	const glob = byUpstreamName(tools, "glob");
@@ -265,13 +269,14 @@ test("proxy e2e: chat non-stream carries mixed host tools upstream and restores 
 	assert.deepEqual({ ...actual, created: 0 }, { ...FROZEN_CHAT_AGGREGATE, created: 0 });
 	const msg = (JSON.parse(clientBody) as { choices: Array<{ message: { tool_calls?: Array<{ function: { name: string } }> } }> }).choices[0].message;
 	const names = (msg.tool_calls ?? []).map((tc) => tc.function.name);
-	assert.deepEqual(names, ["find", "Bash", "ask", "read"], "upstream glob restores to caller find, bash restores to caller Bash, injected read executes (real def, not cloaked)");
+	assert.deepEqual(names, ["find", "Bash", "ask"], "upstream glob restores to caller find, bash restores to caller Bash, injected read is cloaked like every other injected slot");
 });
 
 /**
  * Frozen accepted answer for the responses `rawSse` below: the
  * `response.completed` payload, with upstream `glob`/`bash` restored to the
  * caller's `find`/`Bash` and every id/argument/other output item verbatim.
+ * The injected `read` call is cloaked (not the caller's tool).
  * Literal on purpose; see FROZEN_CHAT_AGGREGATE.
  */
 const FROZEN_RESPONSES_AGGREGATE: Record<string, unknown> = {
@@ -282,7 +287,6 @@ const FROZEN_RESPONSES_AGGREGATE: Record<string, unknown> = {
 		{ type: "function_call", id: "fc_find", name: "find", arguments: '{"pattern":"*.ts"}' },
 		{ type: "function_call", id: "fc_bash", name: "Bash", arguments: '{"command":"ls"}' },
 		{ type: "function_call", id: "fc_ask", name: "ask", arguments: '{"question":"q?"}' },
-		{ type: "function_call", id: "fc_read", name: "read", arguments: '{"path":"x"}' },
 		{ type: "message", id: "msg_done", role: "assistant", status: "completed", content: [{ type: "output_text", text: "done" }] },
 	],
 };
@@ -325,7 +329,7 @@ test("proxy e2e: responses non-stream stores false, flat tools, function_call re
 	assert.equal(upstream.tool_choice, "auto", "tool_choice must be carried, not imposed");
 	assert.ok(Array.isArray(upstream.tools));
 	const tools = upstream.tools as Array<Record<string, unknown>>;
-	assert.equal(tools.length, 12, "8 caller tools translated + 4 injected real definitions (OMP-like caller)");
+	assert.equal(tools.length, 17, "8 caller tools translated + 9 injected verbatim roster slots");
 	assertFingerprintOnce(tools, "responses");
 	for (const t of tools) {
 		assert.equal(t.type, "function", "responses tools use the flat shape");
@@ -352,14 +356,14 @@ test("proxy e2e: responses non-stream stores false, flat tools, function_call re
 	const calls = ((JSON.parse(clientBody) as { output: Array<Record<string, unknown>> }).output ?? [])
 		.filter((item) => item.type === "function_call")
 		.map((item) => String(item.name));
-	assert.deepEqual(calls, ["find", "Bash", "ask", "read"], "upstream glob restores to caller find, injected read executes (real def, not cloaked)");
+	assert.deepEqual(calls, ["find", "Bash", "ask"], "upstream glob restores to caller find, injected read is cloaked like every other injected slot");
 });
 
 /**
  * Frozen accepted answer for the messages `rawSse` below: the aggregated
- * Anthropic message — one tool_use block per streamed call, upstream `glob`
- * restored to the caller's `find` and `bash` to the caller's `Bash`, the
- * injected `grep` call surfaced as itself, stop_reason from message_delta,
+ * Anthropic message — one tool_use block per streamed caller call, upstream
+ * `glob` restored to the caller's `find` and `bash` to the caller's `Bash`,
+ * the injected `grep` call cloaked, stop_reason from message_delta,
  * no usage (the stream carried none). Literal on purpose; see
  * FROZEN_CHAT_AGGREGATE.
  */
@@ -372,7 +376,6 @@ const FROZEN_MESSAGES_AGGREGATE: Record<string, unknown> = {
 		{ type: "tool_use", id: "tu_find", name: "find", input: { pattern: "*.ts" } },
 		{ type: "tool_use", id: "tu_bash", name: "Bash", input: { command: "ls" } },
 		{ type: "tool_use", id: "tu_ask", name: "ask", input: { question: "q?" } },
-		{ type: "tool_use", id: "tu_grep", name: "grep", input: { pat: "x" } },
 	],
 	stop_reason: "tool_use",
 };
@@ -415,7 +418,7 @@ test("proxy e2e: messages non-stream uses anthropic shape and restores tool_use 
 	assert.ok(!("tool_choice" in upstream), "tool_choice must not be imposed when the caller sends none");
 	assert.ok(Array.isArray(upstream.tools));
 	const tools = upstream.tools as Array<Record<string, unknown>>;
-	assert.equal(tools.length, 12, "8 caller tools translated + 4 injected real definitions (OMP-like caller)");
+	assert.equal(tools.length, 17, "8 caller tools translated + 9 injected verbatim roster slots");
 	assertFingerprintOnce(tools, "messages");
 	for (const t of tools) {
 		assert.ok(typeof t.name === "string", "anthropic tools carry a flat name");
@@ -432,7 +435,7 @@ test("proxy e2e: messages non-stream uses anthropic shape and restores tool_use 
 	const blocks = ((JSON.parse(clientBody) as { content: Array<Record<string, unknown>> }).content ?? [])
 		.filter((b) => b.type === "tool_use")
 		.map((b) => String(b.name));
-	assert.deepEqual(blocks, ["find", "Bash", "ask", "grep"], "upstream glob restores to caller find, injected grep executes (real def, not cloaked)");
+	assert.deepEqual(blocks, ["find", "Bash", "ask"], "upstream glob restores to caller find, injected grep is cloaked like every other injected slot");
 });
 
 test("proxy e2e: chat stream:true still fingerprints upstream and streams to the client", async () => {
@@ -460,7 +463,7 @@ test("proxy e2e: chat stream:true still fingerprints upstream and streams to the
 	assert.equal(upstream.tool_choice, "auto");
 	assert.ok(Array.isArray(upstream.tools));
 	const tools = upstream.tools as Array<unknown>;
-	assert.equal(tools.length, 12);
+	assert.equal(tools.length, 17, "8 caller tools translated + 9 injected verbatim roster slots");
 	assertFingerprintOnce(tools, "chat-stream");
 	assert.ok(!tools.some((t) => upstreamToolName(t).toLowerCase() === "find"), "caller find must be renamed to glob upstream");
 	assert.ok(clientHeaders["content-type"]?.includes("text/event-stream"), "streaming caller receives the SSE stream");

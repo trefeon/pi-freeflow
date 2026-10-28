@@ -333,8 +333,12 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
   idLower.includes("glm") ||
   idLower.includes("solar");
 
+ // Declared fields win over wire aliases: a listing that already names
+ // contextWindow/maxTokens/reasoning keeps its values; the snake_case
+ // upstream aliases and the id heuristics only fill gaps.
  let contextWindow =
-  typeof raw.context_length === "number" ? raw.context_length : 262_144;
+  typeof raw.contextWindow === "number" ? raw.contextWindow
+  : typeof raw.context_length === "number" ? raw.context_length : 262_144;
  if (
   idLower.includes("1m") ||
   idLower.includes("ultra") ||
@@ -346,7 +350,8 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
  }
 
  let maxTokens =
-  typeof raw.max_output_tokens === "number"
+  typeof raw.maxTokens === "number" ? raw.maxTokens
+  : typeof raw.max_output_tokens === "number"
    ? raw.max_output_tokens
    : 65_536;
  if (idLower.includes("ultra") || idLower.includes("lightning")) {
@@ -364,7 +369,7 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
   id: raw.id,
   name: formatCleanDisplayName(raw.id),
   source,
-  reasoning: hasReasoning,
+  reasoning: typeof raw.reasoning === "boolean" ? raw.reasoning : hasReasoning,
   contextWindow,
   maxTokens,
   api: isResponses ? "openai-responses" : undefined,

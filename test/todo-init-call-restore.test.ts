@@ -61,13 +61,14 @@ function todoCall(id: string, args: unknown): Record<string, unknown> {
 	return { type: "function_call", id, name: "todo", arguments: JSON.stringify(args) };
 }
 
-test("todo caller is OMP-like: canonical name survives, only edit cloaked", () => {
+test("todo caller keeps its name; the 10 missing roster slots cloak", () => {
 	const body = todoCallerBody();
 	const r = enforceOpencodeFingerprint(body, "/v1/responses");
 	assert.equal(r.clientRequestedStream, false);
 	assert.equal(r.callerHadTools, true);
-	assert.deepEqual(r.injected, ["edit"]);
-	assert.ok(!r.injected.includes("todo"), "todo is a caller tool, never an injected placeholder");
+	assert.deepEqual(r.injected, ["bash", "edit", "grep", "read", "skill", "task", "todowrite", "webfetch", "websearch", "write"]);
+	assert.ok(!r.injected.includes("todo"), "todo is a caller tool, never an injected slot");
+	assert.ok(!r.injected.includes("glob"), "caller glob satisfies the roster slot");
 	const tools = body.tools as Array<Record<string, unknown>>;
 	assert.ok(tools.some((t) => t.name === "todo"), "todo definition served verbatim");
 	assert.equal(tools.find((t) => t.name === "todo")?.description, "Manage tasks");

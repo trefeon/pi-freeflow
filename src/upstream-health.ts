@@ -8,10 +8,10 @@
  * keep their upstream and a periodic canary probes for recovery.
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { renameWithRetry } from "./atomic-write.ts";
+import { writeFileAtomic } from "./atomic-write.ts";
 import { getAliveCatalog } from "./catalog.ts";
 import { resolveUpstreamHealthPath } from "./config.ts";
 import { log } from "./logger.ts";
@@ -233,16 +233,7 @@ function persist(force: boolean): void {
    null,
    2,
   );
-  const tmp = `${file}.${randomUUID()}.tmp`;
-  fs.writeFileSync(tmp, body, "utf8");
-  try {
-   renameWithRetry(tmp, file);
-  } catch {
-   try {
-    fs.rmSync(tmp, { force: true });
-   } catch { }
-   fs.writeFileSync(file, body, "utf8");
-  }
+  writeFileAtomic(file, body);
   lastSaveAt = Date.now();
   // Our own write wins: adopt its mtime so the next ensureLoaded does not
   // re-read (and clear) the state this process just produced.
@@ -271,13 +262,52 @@ function notifyGateTransition(upstream: UpstreamName, gated?: boolean): void {
 
 /** True when a status/body pair is the free-tier gate (fresh sessions refused). */
 export function isFreeTierGate(status: number, bodyText: unknown): boolean {
-	if (status !== 403 || typeof bodyText !== "string") return false;
-	if (!bodyText.includes(GATE_CODE_MARKER)) return false;
-	return (
-		bodyText.includes(GATE_MESSAGE_MARKER) ||
-		bodyText.includes(GATE_ABUSIVE_MARKER) ||
-		bodyText.includes(GATE_NETWORK_MARKER)
-	);
+ if (status !== 403 || typeof bodyText !== "string") return false;
+ if (!bodyText.includes(GATE_CODE_MARKER)) return false;
+ return (
+  bodyText.includes(GATE_MESSAGE_MARKER) ||
+  bodyText.includes(GATE_ABUSIVE_MARKER) ||
+  bodyText.includes(GATE_NETWORK_MARKER)
+ );
+}
+
+/** Free-usage shape marker: the fingerprint (env block) was missing or wrong. */
+const SHAPE_CODE_MARKER = "FreeUsageLimitError";
+/**
+ * Quota markers: when the 429 body carries any of these alongside the usage
+ * code, the pool — not the fingerprint — is exhausted (explicit quota or
+ * rate-limit codes and window language). Only explicit markers qualify:
+ * generic words like "retry", "reset", "capacity", and "overload" also show
+ * up in shape-verdict bodies (retry-after countdowns, capacity language on
+ * the fingerprint refusal), so keying on them misclassifies a fingerprint
+ * fault as quota and points at deploys that cannot help. A bare
+ * FreeUsageLimitError with none of these is the shape verdict measured in
+ * issues #117/#118 (missing env block on the same machine, same minute,
+ * while the retry-after countdown still read hours to 00:00 UTC).
+ */
+const QUOTA_MARKERS = [
+ "quota",
+ "rate_limit",
+ "ratelimit",
+ "rate limit",
+ "too many",
+ "tpm",
+ "rpm",
+];
+
+/**
+ * True when a 429 is a SHAPE verdict (missing/wrong env block or fingerprint),
+ * not quota exhaustion. Shape 429s must never be treated as quota: no deploy
+ * hint, no relay no-roll assumption violated — a rotation cannot fix our own
+ * fingerprint, and the retry-after countdown is a generic error body rather
+ * than a quota window (issues #117/#118). Callers use this to log the right
+ * cause and keep quota hints for genuine quota 429s.
+ */
+export function isFreeUsageShapeError(status: number, bodyText: unknown): boolean {
+ if (status !== 429 || typeof bodyText !== "string") return false;
+ if (!bodyText.includes(SHAPE_CODE_MARKER)) return false;
+ const lowered = bodyText.toLowerCase();
+ return !QUOTA_MARKERS.some((marker) => lowered.includes(marker));
 }
 /** Stable conversation key carried by request bodies, if the caller sent one. */
 export function sessionKeyOf(parsedBody: unknown): string | null {
@@ -375,13 +405,21 @@ export function isUnprovenSession(parsedBody: unknown, pathname: string): boolea
  return true;
 }
 
+/** Opt-in for Zen→Kilo model failover: unset/off passes the requested model through untouched. */
+export const ZEN_KILO_FAILOVER_ENV = "PI_FREEFLOW_ZEN_KILO_FAILOVER";
+export function isZenFailoverEnabled(): boolean {
+ return process.env[ZEN_KILO_FAILOVER_ENV] === "1";
+}
+
 /**
  * Session routing while degraded: proven sessions and ungated traffic pass
  * through; gated fresh sessions get one canary per window, else failover.
+ * Failover routing requires the explicit opt-in flag; otherwise passthrough.
  */
 export function decideZenRoute(parsedBody: unknown, pathname: string): ZenRoute {
  ensureLoaded();
  if (!gateOf("zen").gated) return "passthrough";
+ if (!isZenFailoverEnabled()) return "passthrough";
  if (!isUnprovenSession(parsedBody, pathname)) return "passthrough";
  const g = gateOf("zen");
  const now = Date.now();
@@ -393,8 +431,10 @@ export function decideZenRoute(parsedBody: unknown, pathname: string): ZenRoute 
  return "failover";
 }
 
-/** First healthy Kilo model id, preferring 1M context models, else the built-in Kilo fallback. */
+/** First healthy Kilo model id when the failover opt-in is set, else "" (no substitution). */
 export function pickFailoverModel(requestedModel?: unknown): string {
+ if (!isZenFailoverEnabled()) return "";
+ void requestedModel;
  try {
   const alive = getAliveCatalog();
   const lightning = alive.find(

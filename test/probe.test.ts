@@ -48,7 +48,7 @@ test("probeRelay reports ok + latency for a 200 and sends the expected request",
   assert.equal(headers["x-relay-path"], "/inference/v1/models");
   assert.ok(headers["User-Agent"]?.startsWith("opencode/"), "must include opencode User-Agent");
   assert.ok(headers["x-opencode-session"]?.startsWith("ses_"), "must include ses_ OpenCode session");
-  assert.equal(headers["x-opencode-request"], undefined, "must omit x-opencode-request (gate rejects msg_*)");
+  assert.match(headers["x-opencode-request"] ?? "", /^msg_[0-9A-Za-z]{26}$/, "must send a fresh msg_* request id (live lane)");
   assert.equal(headers["x-opencode-client"], "cli");
   assert.ok(typeof headers["x-opencode-project"] === "string" && headers["x-opencode-project"].length > 0);
  } finally {
@@ -169,11 +169,11 @@ test("probeRelay supports chat endpoint mode with ping payload and spoofing", as
   });
 
   assert.equal(result.ok, true);
-  assert.equal(calledUrl, "https://relay.example.com/inference/v1/chat/completions");
+  assert.equal(calledUrl, "https://relay.example.com/inference/openai/v1/chat/completions", "relay probe rides the default compat lane");
   assert.equal(calledInit?.method, "POST");
   const headers = (calledInit?.headers ?? {}) as Record<string, string>;
   assert.equal(headers["x-relay-target"], "https://opencode.ai");
-  assert.equal(headers["x-relay-path"], "/inference/v1/chat/completions");
+  assert.equal(headers["x-relay-path"], "/inference/openai/v1/chat/completions", "relay path follows the compat lane");
   assert.equal(headers["x-relay-auth"], "my-secret");
   assert.equal(headers["content-type"], "application/json");
   assert.ok(headers["x-opencode-session"]?.startsWith("ses_"));
@@ -208,7 +208,7 @@ test("probeRelay supports direct opencode in chat endpoint mode", async () => {
   });
 
   assert.equal(result.ok, true);
-  assert.equal(calledUrl, "https://opencode.ai/inference/v1/chat/completions");
+  assert.equal(calledUrl, "https://opencode.ai/inference/openai/v1/chat/completions", "direct probe rides the default compat lane");
   assert.equal(calledInit?.method, "POST");
   const headers = (calledInit?.headers ?? {}) as Record<string, string>;
   assert.equal(headers["x-relay-target"], undefined);
@@ -279,7 +279,7 @@ test("probeRelay exhausts retries and returns the last failure if all attempts f
  }
 });
 
-test("probeRelay default chat probe stays on the /v1 lane without stream_options", async () => {
+test("probeRelay default chat probe rides the compat lane with stream_options", async () => {
  const realFetch = globalThis.fetch;
  try {
   let calledUrl = "";
@@ -293,9 +293,33 @@ test("probeRelay default chat probe stays on the /v1 lane without stream_options
   const result = await probeRelay("https://relay.example.com", undefined, { endpoint: "chat" });
 
   assert.equal(result.ok, true);
+  assert.equal(calledUrl, "https://relay.example.com/inference/openai/v1/chat/completions");
+  const parsedBody = JSON.parse(String(calledInit?.body));
+  assert.deepEqual(parsedBody.stream_options, { include_usage: true }, "default probe sends the compat marker");
+ } finally {
+  globalThis.fetch = realFetch;
+ }
+});
+
+test("probeRelay openaiCompat:false chat probe covers the plain /v1 fallback lane", async () => {
+ const realFetch = globalThis.fetch;
+ try {
+  let calledUrl = "";
+  let calledInit: RequestInit | undefined;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+   calledUrl = requestUrl(input);
+   calledInit = init;
+   return fakeResponse(true, 200);
+  }) as typeof fetch;
+
+  const result = await probeRelay("https://relay.example.com", undefined, { endpoint: "chat", openaiCompat: false });
+
+  assert.equal(result.ok, true);
   assert.equal(calledUrl, "https://relay.example.com/inference/v1/chat/completions");
   const parsedBody = JSON.parse(String(calledInit?.body));
-  assert.equal(parsedBody.stream_options, undefined, "default probe never sends the compat marker");
+  assert.deepEqual(parsedBody.stream_options, { include_usage: true }, "usage accounting rides both lanes");
+  const systemText = String(parsedBody.messages[0].content);
+  assert.equal(systemText.match(/<env>[\s\S]*?<\/env>/g)?.length, 1, "plain-lane probe still carries the env block");
  } finally {
   globalThis.fetch = realFetch;
  }

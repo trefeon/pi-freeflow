@@ -4,7 +4,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { startProxy, isProxyAlive, sanitizeHeaders } from "../src/proxy.ts";
+import { startProxy, isProxyAlive, sanitizeHeaders, validatePath } from "../src/proxy.ts";
+import { OPENCODE_ORIGIN, zenUpstreamPathFor, zenUpstreamUrlFor } from "../src/config.ts";
 import { ALL_MODELS } from "../src/models.ts";
 import { authHeaders } from "./_auth.ts";
 
@@ -141,4 +142,41 @@ test("sanitizeHeaders forwards only allowlisted headers", () => {
 	assert.equal(fwd["x-forwarded-for"], undefined, "x-forwarded-for must be dropped");
 	assert.equal(fwd.cookie, undefined, "cookie must be dropped");
 	assert.equal(fwd.host, "opencode.ai", "host must be replaced with target");
+});
+
+test("default Zen lane: validatePath output maps to the compat URL exactly once", () => {
+	// Production validatePath resolves local /v1/... against the /inference
+	// base, so target.pathname arrives upstream-rooted — never bare /v1/....
+	// The lane maps that to the compat path with the origin joined once.
+	const target = validatePath("/v1/chat/completions");
+	assert.ok(target, "chat path validates");
+	assert.equal(target.pathname, "/inference/v1/chat/completions", "validatePath roots against the /inference base");
+	assert.equal(
+		zenUpstreamPathFor(target.pathname),
+		"/inference/openai/v1/chat/completions",
+		"upstream-rooted chat maps to the compat lane (no /inferenceference/…)",
+	);
+	assert.equal(
+		`${OPENCODE_ORIGIN}${zenUpstreamPathFor(target.pathname)}`,
+		"https://opencode.ai/inference/openai/v1/chat/completions",
+		"origin joined exactly once (no /inference/inference/…)",
+	);
+	assert.equal(
+		zenUpstreamUrlFor("/v1/chat/completions"),
+		"https://opencode.ai/inference/openai/v1/chat/completions",
+	);
+	// Non-chat paths keep their plain mapping; the helper is idempotent.
+	assert.equal(zenUpstreamPathFor(target.pathname.replace("chat/completions", "responses")), "/inference/v1/responses");
+	assert.equal(zenUpstreamPathFor(validatePath("/v1/models")!.pathname), "/inference/v1/models");
+	assert.equal(zenUpstreamPathFor(validatePath("/v1/messages")!.pathname), "/inference/v1/messages");
+	for (const local of ["/v1/chat/completions", "/v1/responses", "/v1/models", "/v1/messages"]) {
+		const full = zenUpstreamUrlFor(validatePath(local)!.pathname);
+		assert.ok(!full.includes("/inference/inference"), `${local} must not double the base: ${full}`);
+		assert.ok(!full.includes("inferenceference"), `${local} must not fuse the base: ${full}`);
+	}
+	assert.equal(
+		zenUpstreamPathFor("/inference/openai/v1/chat/completions"),
+		"/inference/openai/v1/chat/completions",
+		"already-compat output passes through unchanged",
+	);
 });

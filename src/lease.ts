@@ -12,16 +12,16 @@
  */
 
 interface LeaseOptions {
-	/** Lease lifetime (ms); a client that misses ~3 beats is dropped. */
-	ttlMs: number;
-	/** GC sweep interval (ms). */
-	gcMs: number;
-	/** Zero-lease persistence window (ms): how long leases must stay empty before a lease-less daemon exits. */
-	graceMs: number;
-	/** Current in-flight proxied requests — daemon never exits mid-stream. */
-	getActiveRequests: () => number;
-	/** Called once when the daemon should retire (close server + exit). */
-	onIdle: () => void;
+ /** Lease lifetime (ms); a client that misses ~3 beats is dropped. */
+ ttlMs: number;
+ /** GC sweep interval (ms). */
+ gcMs: number;
+ /** Zero-lease persistence window (ms): how long leases must stay empty before a lease-less daemon exits. */
+ graceMs: number;
+ /** Current in-flight proxied requests — daemon never exits mid-stream. */
+ getActiveRequests: () => number;
+ /** Called once when the daemon should retire (close server + exit). */
+ onIdle: () => void;
 }
 
 const leases = new Map<string, number>();
@@ -45,46 +45,50 @@ type RegisterClientResult = "ok" | "invalid" | "full";
  * Register or refresh a client lease. Refreshing a known id never hits the
  * cap; a new id does, and the caller answers 429 instead of growing the map.
  * Rejected ids are not stored, so expiry/GC behavior is unchanged.
+ * Surrounding whitespace is trimmed so " abc " and "abc" share one lease and
+ * a blank id can never occupy a slot toward MAX_CLIENTS.
  */
 export function registerClient(clientId: string): RegisterClientResult {
-	if (clientId.length === 0 || clientId.length > MAX_CLIENT_ID_LENGTH) return "invalid";
-	if (!leases.has(clientId) && leases.size >= MAX_CLIENTS) return "full";
-	leases.set(clientId, Date.now());
-	return "ok";
+ if (typeof clientId !== "string") return "invalid";
+ const id = clientId.trim();
+ if (id.length === 0 || id.length > MAX_CLIENT_ID_LENGTH) return "invalid";
+ if (!leases.has(id) && leases.size >= MAX_CLIENTS) return "full";
+ leases.set(id, Date.now());
+ return "ok";
 }
 
 /** Renew an existing client lease. Returns false when the id is unknown (daemon restarted). */
 export function renewClient(clientId: string): boolean {
-	if (leases.has(clientId)) {
-		leases.set(clientId, Date.now());
-		return true;
-	}
-	return false;
+ if (leases.has(clientId)) {
+  leases.set(clientId, Date.now());
+  return true;
+ }
+ return false;
 }
 
 /** Remove a client lease (graceful detach on session end). */
 export function unregisterClient(clientId: string): void {
-	leases.delete(clientId);
+ leases.delete(clientId);
 }
 
 /** Number of clients holding a live lease. */
 export function getLeaseCount(): number {
-	return leases.size;
+ return leases.size;
 }
 
 /** Snapshot of live client leases (id -> lastSeenAt) for health/debugging. */
 export function getLeaseSnapshot(): Record<string, number> {
-	return Object.fromEntries(leases);
+ return Object.fromEntries(leases);
 }
 
 /** Record proxy activity — any proxied request counts as a live user. */
 export function touchActivity(): void {
-	lastActivityAt = Date.now();
+ lastActivityAt = Date.now();
 }
 
 /** Timestamp of the last proxied request (0 = never; daemon inits at bind). */
 export function getLastActivityAt(): number {
-	return lastActivityAt;
+ return lastActivityAt;
 }
 
 /**
@@ -94,41 +98,41 @@ export function getLastActivityAt(): number {
  * call is a no-op.
  */
 export function startLeaseGC(opts: LeaseOptions): void {
-	if (gcTimer !== null) return;
-	gcTimer = setInterval(() => {
-		const now = Date.now();
-		for (const [id, seenAt] of leases) {
-			if (now - seenAt > opts.ttlMs) {
-				leases.delete(id);
-			}
-		}
-		if (leases.size > 0) {
-			emptySince = null;
-			return;
-		}
-		if (emptySince === null) {
-			emptySince = now;
-			return;
-		}
-		if (opts.getActiveRequests() === 0 && now - emptySince >= opts.graceMs) {
-			stopLeaseGC();
-			opts.onIdle();
-		}
-	}, opts.gcMs);
+ if (gcTimer !== null) return;
+ gcTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [id, seenAt] of leases) {
+   if (now - seenAt > opts.ttlMs) {
+    leases.delete(id);
+   }
+  }
+  if (leases.size > 0) {
+   emptySince = null;
+   return;
+  }
+  if (emptySince === null) {
+   emptySince = now;
+   return;
+  }
+  if (opts.getActiveRequests() === 0 && now - emptySince >= opts.graceMs) {
+   stopLeaseGC();
+   opts.onIdle();
+  }
+ }, opts.gcMs);
 }
 
 /** Stop the GC sweep (test teardown / daemon shutdown). */
 export function stopLeaseGC(): void {
-	if (gcTimer !== null) {
-		clearInterval(gcTimer);
-		gcTimer = null;
-	}
+ if (gcTimer !== null) {
+  clearInterval(gcTimer);
+  gcTimer = null;
+ }
 }
 
 /** Test-only: reset all lease state. */
 export function _resetLeaseStateForTest(): void {
-	leases.clear();
-	lastActivityAt = 0;
-	emptySince = null;
-	stopLeaseGC();
+ leases.clear();
+ lastActivityAt = 0;
+ emptySince = null;
+ stopLeaseGC();
 }

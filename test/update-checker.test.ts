@@ -55,6 +55,16 @@ test("compareVersions accurately compares semver strings", () => {
 	assert.equal(compareVersions("", ""), 0);
 });
 
+test("compareVersions orders prereleases below their release, build metadata ignored", () => {
+	assert.ok(compareVersions("1.4.2-beta", "1.4.2") < 0, "prerelease must sort below its own release");
+	assert.ok(compareVersions("1.4.2", "1.4.2-beta") > 0, "release must sort above its prerelease");
+	assert.ok(compareVersions("1.4.2-beta", "1.4.0") > 0, "core still dominates: 1.4.2-beta beats 1.4.0");
+	assert.ok(compareVersions("1.4.2-alpha", "1.4.2-beta") < 0, "alpha before beta");
+	assert.ok(compareVersions("1.4.2-beta.2", "1.4.2-beta.11") < 0, "numeric prerelease ids compare numerically");
+	assert.equal(compareVersions("1.4.2+build.5", "1.4.2"), 0, "build metadata never orders");
+	assert.equal(compareVersions("1.4.2-beta", "1.4.2-beta"), 0, "identical prereleases are equal");
+});
+
 // ── 2. Update Cache Lifecycle & Error Edge Matrix ─────────────────────────────
 
 test("getCachedUpdate & setCachedUpdate edge matrix with disk isolation", () => {

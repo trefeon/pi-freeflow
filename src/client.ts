@@ -206,8 +206,8 @@ export function resolveDaemonRuntime(opts?: {
 }
 
 function daemonScriptPath(): string {
-	const p = path.join(path.dirname(fileURLToPath(import.meta.url)), "daemon.ts");
-	return process.platform === "win32" ? p.replace(/\\/g, "/") : p;
+ const p = path.join(path.dirname(fileURLToPath(import.meta.url)), "daemon.ts");
+ return process.platform === "win32" ? p.replace(/\\/g, "/") : p;
 }
 
 function getHeartbeatMs(): number {
@@ -601,18 +601,18 @@ async function killStaleDaemon(
   remoteVer,
   expected: PKG_VERSION,
  });
-	await killPortHolder(port);
-	for (let i = 0; i < 15; i++) {
-		await new Promise<void>((r) => setTimeout(r, 100));
-		if (!(await isProxyAlive(port))) {
-			lastSpawnAt = 0;
-			return true;
-		}
-	}
-	logInfo(
-		`Reusing existing pi-freeflow proxy daemon on http://${HOST}:${port} (stale kill did not free port)`,
-	);
-	return false;
+ await killPortHolder(port);
+ for (let i = 0; i < 15; i++) {
+  await new Promise<void>((r) => setTimeout(r, 100));
+  if (!(await isProxyAlive(port))) {
+   lastSpawnAt = 0;
+   return true;
+  }
+ }
+ logInfo(
+  `Reusing existing pi-freeflow proxy daemon on http://${HOST}:${port} (stale kill did not free port)`,
+ );
+ return false;
 }
 /**
  * Open the shared log file for the detached daemon's stdout/stderr so a
@@ -1009,40 +1009,40 @@ function spawnDaemonProcess(): DaemonChild | null {
 }
 
 export async function waitForReady(
-	port: number,
-	timeoutMs: number,
-	child?: DaemonChild | null,
+ port: number,
+ timeoutMs: number,
+ child?: DaemonChild | null,
 ): Promise<boolean> {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (await isProxyAlive(port, 150)) return true;
-		if (child && (hasChildExited(child) || failedDaemonSpawns.has(child))) {
-			logWarn("daemon child exited before becoming ready", {
-				port,
-				exitCode: child.exitCode,
-				signalCode: child.signalCode,
-			});
-			return false;
-		}
-		await new Promise<void>((r) => setTimeout(r, 80));
-	}
-	return false;
+ const deadline = Date.now() + timeoutMs;
+ while (Date.now() < deadline) {
+  if (await isProxyAlive(port, 150)) return true;
+  if (child && (hasChildExited(child) || failedDaemonSpawns.has(child))) {
+   logWarn("daemon child exited before becoming ready", {
+    port,
+    exitCode: child.exitCode,
+    signalCode: child.signalCode,
+   });
+   return false;
+  }
+  await new Promise<void>((r) => setTimeout(r, 80));
+ }
+ return false;
 }
 
 async function probeAndMaybeReplace(
-	port: number,
-	label: string,
-	probeTimeoutMs = 150,
+ port: number,
+ label: string,
+ probeTimeoutMs = 150,
 ): Promise<number | null> {
-	if (!(await isProxyAlive(port, probeTimeoutMs))) return null;
-	const ver = await getDaemonVersion(port);
-	if (ver !== null && ver !== PKG_VERSION) {
-		logWarn(`detected proxy daemon version mismatch: running v${ver}, required v${PKG_VERSION} — auto-restarting`);
-		await killStaleDaemon(port, ver, label);
-		lastSpawnAt = 0;
-		return null;
-	}
-	return port;
+ if (!(await isProxyAlive(port, probeTimeoutMs))) return null;
+ const ver = await getDaemonVersion(port);
+ if (ver !== null && ver !== PKG_VERSION) {
+  logWarn(`detected proxy daemon version mismatch: running v${ver}, required v${PKG_VERSION} — auto-restarting`);
+  await killStaleDaemon(port, ver, label);
+  lastSpawnAt = 0;
+  return null;
+ }
+ return port;
 }
 
 /**
@@ -1078,8 +1078,8 @@ async function ensureDaemonAttempt(): Promise<number> {
   }
 
 
-		if (isSpawnEnabled()) {
-			const child = spawnDaemonProcess();
+  if (isSpawnEnabled()) {
+   const child = spawnDaemonProcess();
    if (child) {
     const ready = await waitForReady(PORT, DAEMON_READY_TIMEOUT_MS, child);
     if (ready) {

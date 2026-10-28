@@ -34,17 +34,19 @@ import {
  OVH_CHAT_URL,
  UPSTREAM_HEADER_TIMEOUT_MS,
  UPSTREAM_OPENCODE,
+ OPENCODE_ORIGIN,
  opencodeHeaders,
+ zenUpstreamPathFor,
 } from "./config.ts";
 
 import {
-	convertSseToJson,
-	enforceOpencodeFingerprint,
-	looksLikeSse,
-	repairJsonToolArguments,
-	sseToChatCompletionJson,
-	type CaseRestoreMap,
-	type FindGlobRestore,
+ convertSseToJson,
+ enforceOpencodeFingerprint,
+ looksLikeSse,
+ repairJsonToolArguments,
+ sseToChatCompletionJson,
+ type CaseRestoreMap,
+ type FindGlobRestore,
 } from "./opencode-fingerprint.ts";
 import { isDebugEnabled, log } from "./logger.ts";
 import { getModelUpstream, isClineModel, isOvhModel, KILO_MODEL_IDS, MODEL_MAP, ovhUpstreamModelId, resolveCanonicalModelId } from "./models.ts";
@@ -52,12 +54,12 @@ import { ClineAuthError, refreshClineToken, toApiKey } from "./cline-device-auth
 import { rollChat, clineUpstreamModelId, keepClineTokensAlive, refreshClineVersion } from "./cline-accounts.ts";
 import { fetchWithSystemCA } from "./system-ca-fetch.ts";
 import {
-	buildFindGlobRestore,
-	chatBodyFromResponsesBody,
-	chatResponsesJsonFromChatCompletion,
-	chatResponsesSseFromChatCompletion,
-	restoreToolNameForCaller,
-	translateToolsForPath,
+ buildFindGlobRestore,
+ chatBodyFromResponsesBody,
+ chatResponsesJsonFromChatCompletion,
+ chatResponsesSseFromChatCompletion,
+ restoreToolNameForCaller,
+ translateToolsForPath,
 } from "./tool-translation.ts";
 import { buildArgRepairSchemas } from "./tool-args.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
@@ -86,8 +88,10 @@ import { createToolcallRecorder, type ToolcallRecorder, type ToolcallWire } from
 import {
  decideZenRoute,
  isFreeTierGate,
+ isFreeUsageShapeError,
  isUnprovenSession,
  isUpstreamGated,
+ isZenFailoverEnabled,
  pickFailoverModel,
  recordUpstreamFailure,
  recordUpstreamSuccess,
@@ -131,6 +135,9 @@ const RATE_LIMIT_HINT =
  */
 function withRateLimitHint(status: number, data: string): string {
  if (status !== 429) return data;
+ // Shape 429 (FreeUsageLimitError without quota burn) is our fingerprint's
+ // fault, not the pool's: the deploy hint would mislead, so it stays off.
+ if (isFreeUsageShapeError(status, data)) return data;
  try {
   const parsed: unknown = JSON.parse(data);
   if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && shouldShow429Hint()) {
@@ -730,12 +737,12 @@ async function handleOvhRequest(opts: {
  // no host version can leak them upstream.
  delete chatBody.chat_template_kwargs;
  delete chatBody.enable_thinking;
-delete chatBody.preserve_thinking;
-// OVH's OpenAI-compatible surface rejects Responses-native caps (`400 feature
-// 'extra arguments: {"max_output_tokens":…}' is not currently supported`)
-// when a responses-path request was translated via chatBodyFromResponsesBody.
-// Strip defensively so the cap is not passed as an unknown extra argument.
-delete chatBody.max_output_tokens;
+ delete chatBody.preserve_thinking;
+ // OVH's OpenAI-compatible surface rejects Responses-native caps (`400 feature
+ // 'extra arguments: {"max_output_tokens":…}' is not currently supported`)
+ // when a responses-path request was translated via chatBodyFromResponsesBody.
+ // Strip defensively so the cap is not passed as an unknown extra argument.
+ delete chatBody.max_output_tokens;
  const modelDef = MODEL_MAP.get(canonicalModelId) ?? MODEL_MAP.get(requestedModel);
  if (canonicalModelId === OVH_NO_EFFORT_MODEL || (modelDef && !modelDef.reasoning)) {
   // Qwen3.8-27B on OVH starves when reasoning_effort is present.
@@ -1082,7 +1089,9 @@ export function isRelayEligibleModel(model: unknown): boolean {
 }
 
 /**
- * Failing-over decision for a canonicalized request body. Returns failover
+ * Failing-over decision for a canonicalized request body. Only active when
+ * the PI_FREEFLOW_ZEN_KILO_FAILOVER opt-in is set; otherwise passthrough.
+ * Returns failover
  * with a Kilo model id when a healthy Kilo model is available and either the
  * session already ate a gate 403 (retried/resumed refusals fail over at once,
  * even ungated — replaying a known refusal can never succeed), or every gate
@@ -1101,6 +1110,7 @@ export function classifyZenFailover(
  parsedBody: Record<string, unknown> | null,
  pathname: string,
 ): ZenFailoverDecision {
+ if (!isZenFailoverEnabled()) return { action: "passthrough" };
  if (!parsedBody || typeof parsedBody.model !== "string") return { action: "passthrough" };
  if (getModelUpstream(parsedBody.model) !== "opencode") return { action: "passthrough" };
  const isChatPath = pathname.endsWith("/chat/completions");
@@ -1159,10 +1169,15 @@ export function validatePath(rawUrl: string): URL | null {
 
 /**
  * Sanitize and inject standard headers before forwarding request to upstream.
+ * Affinity headers (x-session-affinity / x-session-id) are NEVER forwarded on
+ * the opencode lane — opencodeHeaders() no longer emits them, and any client
+ * copy is stripped here. Non-opencode lanes that need affinity set it
+ * themselves after calling this helper.
  */
 export function sanitizeHeaders(
  incoming: http.IncomingHttpHeaders,
  targetHost: string,
+ sessionKey?: string,
 ): Record<string, string> {
  // authorization is deliberately NOT forwarded: the host provider registers
  // with a dummy key (placeholder), and every free upstream here is keyless —
@@ -1186,7 +1201,15 @@ export function sanitizeHeaders(
  // duplicate (case-differing) User-Agent pair — upstream resets connections
  // that send two conflicting User-Agent headers.
  delete sanitized["user-agent"];
- Object.assign(sanitized, opencodeHeaders());
+ // A client copy of the affinity pair must never ride the opencode lane
+ // (upstream treats it as a non-OpenCode signal); non-opencode lanes set
+ // their own affinity downstream of this helper.
+ delete sanitized["x-session-affinity"];
+ delete sanitized["x-session-id"];
+ // The client's working-directory header is PII that must never leave the
+ // loopback listener; the project header carries only its sha1/global form.
+ delete sanitized["x-opencode-directory"];
+ Object.assign(sanitized, opencodeHeaders(sessionKey));
  sanitized["accept-encoding"] = "identity";
  sanitized.connection = "keep-alive";
  return sanitized;
@@ -1411,43 +1434,43 @@ export async function killPortHolder(port: number): Promise<boolean> {
   return false;
  }
  const auth = tokenAuthHeaders();
-	try {
-		try {
-			await fetch(`http://${HOST}:${port}/_shutdown`, {
-				method: "POST",
-				headers: auth,
-				signal: AbortSignal.timeout(300),
-			});
-			for (let i = 0; i < 6; i++) {
-				await new Promise<void>((r) => setTimeout(r, 50));
-				if (!(await isProxyAlive(port))) return true;
-			}
-		} catch { }
-		if (process.platform === "win32") {
-			try {
-				const out = execSync(`netstat -ano | findstr :${port}`, {
-					encoding: "utf8",
-					timeout: 3000,
-					windowsHide: true,
-				}) as string;
-				let killed = false;
-				for (const line of out.split("\n")) {
-					if (!line.includes("LISTENING")) continue;
-					const parts = line.trim().split(/\s+/);
-					if (!parts[1] || !parts[1].endsWith(`:${port}`)) continue;
-					const pid = parts[parts.length - 1];
-					if (!pid || !/^\d+$/.test(pid)) continue;
-					if (Number(pid) === process.pid) continue; // never self-kill
-					try {
-						execSync(`taskkill /F /T /PID ${pid}`, { timeout: 3000, stdio: "ignore", windowsHide: true });
-						killed = true;
-					} catch { }
-				}
-				if (killed) return true;
-			} catch { }
-			return false;
-		}
-		try {
+ try {
+  try {
+   await fetch(`http://${HOST}:${port}/_shutdown`, {
+    method: "POST",
+    headers: auth,
+    signal: AbortSignal.timeout(300),
+   });
+   for (let i = 0; i < 6; i++) {
+    await new Promise<void>((r) => setTimeout(r, 50));
+    if (!(await isProxyAlive(port))) return true;
+   }
+  } catch { }
+  if (process.platform === "win32") {
+   try {
+    const out = execSync(`netstat -ano | findstr :${port}`, {
+     encoding: "utf8",
+     timeout: 3000,
+     windowsHide: true,
+    }) as string;
+    let killed = false;
+    for (const line of out.split("\n")) {
+     if (!line.includes("LISTENING")) continue;
+     const parts = line.trim().split(/\s+/);
+     if (!parts[1] || !parts[1].endsWith(`:${port}`)) continue;
+     const pid = parts[parts.length - 1];
+     if (!pid || !/^\d+$/.test(pid)) continue;
+     if (Number(pid) === process.pid) continue; // never self-kill
+     try {
+      execSync(`taskkill /F /T /PID ${pid}`, { timeout: 3000, stdio: "ignore", windowsHide: true });
+      killed = true;
+     } catch { }
+    }
+    if (killed) return true;
+   } catch { }
+   return false;
+  }
+  try {
    const out = execSync(`lsof -ti tcp:${port} 2>/dev/null || fuser -n tcp ${port} 2>/dev/null`, {
     encoding: "utf8",
     timeout: 3000,
@@ -1513,7 +1536,9 @@ export function handleControlRequest(
    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
    if (parsed && typeof parsed === "object" && "id" in parsed) {
     const candidate = parsed.id;
-    if (typeof candidate === "string" && candidate) clientId = candidate;
+    // Trim once here so attach/heartbeat/detach agree on the lease key;
+    // registerClient trims again as defense in depth.
+    if (typeof candidate === "string" && candidate.trim()) clientId = candidate.trim();
    }
   } catch { }
   if (!clientId) {
@@ -1909,14 +1934,14 @@ export function startProxy(
    });
 
    // OpenCode Zen free-tier fingerprint: upstream mandates stream: true and the
-   // placeholder sextet {bash, glob, grep, read, edit, write}. Missing tools (such as on
+   // live 11-tool roster. Missing tools (such as on
    // subagent or advisor watchdog turns) trigger 403 FreeTierError.
    let bodyModified = false;
    let callerHadTools = true;
    let callerCaseRestore: CaseRestoreMap | undefined;
    let callerFindGlob: FindGlobRestore | undefined;
-  let callerInjected: string[] | undefined;
-  let callerArgSchemas: Map<string, Record<string, unknown>> | undefined;
+   let callerInjected: string[] | undefined;
+   let callerArgSchemas: Map<string, Record<string, unknown>> | undefined;
    if (!isKilo && !isCline && !isOvh && parsedBody) {
     const fp = enforceOpencodeFingerprint(parsedBody, target.pathname);
     callerHadTools = fp.callerHadTools;
@@ -1995,11 +2020,11 @@ export function startProxy(
       const markRelayClientGone = () => { relayClientGone = true; };
       res.once("close", markRelayClientGone);
       req.once("error", markRelayClientGone);
-      const fullUrl = `${UPSTREAM_OPENCODE}${req.url ?? "/"}`;
+      const fullUrl = `${OPENCODE_ORIGIN}${zenUpstreamPathFor(target.pathname)}`;
       const activeHost = relayState.url
        ? new URL(relayState.url).host
        : "opencode.ai";
-      const relayHeaders = sanitizeHeaders(req.headers, activeHost);
+      const relayHeaders = sanitizeHeaders(req.headers, activeHost, sessionKey ?? undefined);
 
       try {
        if (parsedBody) {
@@ -2345,10 +2370,19 @@ export function startProxy(
       );
      }
 
-     const fwd = sanitizeHeaders(req.headers, target.hostname);
+     const fwd = sanitizeHeaders(req.headers, target.hostname, sessionKey ?? undefined);
      fwd["connection"] = "keep-alive";
 
-     const sendDirect = async (payload: Buffer): Promise<Response> => {
+     // Default Zen chat lane: the openai-compat path (live CLI truth). The
+     // plain /v1 path stays as the fallback when the compat lane answers
+     // 404/405 (unknown to that gateway shape).
+     const compatPath = zenUpstreamPathFor(target.pathname);
+     const compatHref = `${OPENCODE_ORIGIN}${compatPath}`;
+     const plainHref = target.href;
+     const directHref = compatHref !== plainHref ? compatHref : plainHref;
+     const directFallbackHref = compatHref !== plainHref ? plainHref : null;
+
+     const sendDirect = async (payload: Buffer, href = directHref): Promise<Response> => {
       const headers = { ...fwd };
       if (payload.length > 0) {
        headers["content-length"] = String(payload.byteLength);
@@ -2362,7 +2396,7 @@ export function startProxy(
       res.on("close", onClientClose);
       req.on("error", onReqError);
       try {
-       return await fetch(target.href, {
+       return await fetch(href, {
         method: req.method,
         headers,
         body: payload.length > 0 ? payload : undefined,
@@ -2377,6 +2411,16 @@ export function startProxy(
 
      try {
       let upstreamRes = await sendDirect(directBodyForUpstream);
+      // Plain-path fallback: the compat lane is the default, but when the
+      // gateway answers 404/405 there the plain lane may still serve.
+      if (
+       directFallbackHref !== null &&
+       (upstreamRes.status === 404 || upstreamRes.status === 405)
+      ) {
+       try { await upstreamRes.body?.cancel(); } catch { }
+       log("info", `compat lane ${upstreamRes.status} — falling back to plain ${target.pathname}`, { status: upstreamRes.status, model: parsedBody?.model, path: target.pathname }, reqId);
+       upstreamRes = await sendDirect(directBodyForUpstream, directFallbackHref);
+      }
       if (directResponsesRequest) {
        upstreamRes = await retryWithoutReasoningEncryption(
         upstreamRes,
@@ -2409,9 +2453,15 @@ export function startProxy(
 
       // Natural 429: every relay plus direct is rate-limited — buffer the
       // JSON error and attach the deploy hint instead of piping it
-      // through as a stream body.
+      // through as a stream body. A FreeUsage shape 429 is our fingerprint's
+      // fault (missing/wrong env block), not quota: it keeps the raw body
+      // and a shape log instead of the quota hint.
       if (upstreamRes.status === 429) {
-       const data = withRateLimitHint(429, await upstreamRes.text());
+       const raw429 = await upstreamRes.text();
+       if (isFreeUsageShapeError(429, raw429)) {
+        log("warn", `direct upstream 429 FreeUsage shape verdict for model ${String(parsedBody?.model ?? "?")} — fingerprint/env fault, not quota`, { status: 429, model: parsedBody?.model, path: target.pathname }, reqId);
+       }
+       const data = withRateLimitHint(429, raw429);
        const ct429 = upstreamRes.headers.get("content-type") || "application/json";
        res.writeHead(429, { "content-type": ct429 });
        res.end(data);

@@ -5,6 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
  _resetClinePoolCacheForTest,
@@ -28,6 +29,7 @@ import {
  _resetLiveClineVersionForTest,
 } from "../src/cline-accounts.ts";
 import { CLINE_BROWSER_SIGNOUT_URL } from "../src/cline-device-auth.ts";
+import { readToken, _resetTokenCacheForTest } from "../src/token.ts";
 import { createCommandSpec } from "../src/commands.ts";
 import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "../src/types.ts";
 
@@ -1109,4 +1111,111 @@ test("clineUpstreamModelId: strips cline/ and cline-free/ prefixes", () => {
 	assert.equal(clineUpstreamModelId("cline/recursive/flint-v1.0:free"), "recursive/flint-v1.0:free");
 	assert.equal(clineUpstreamModelId("cline/dots-studio/dots-3-note-preview:free"), "dots-studio/dots-3-note-preview:free");
 	assert.equal(clineUpstreamModelId("openrouter/free"), "openrouter/free");
+});
+
+test("cline pool: mutating a loaded snapshot does not corrupt the cache", async () => {
+	await withIsolatedPool(() => {
+		addAccount("main", SLOT_A);
+		const first = loadPool();
+		first.accounts[0].token = "workos:tampered";
+		first.accounts.push({ slot: "phantom", token: "workos:phantom", addedAt: new Date().toISOString() });
+		const second = loadPool();
+		assert.equal(second.accounts.length, 1, "a caller mutation must not plant a phantom slot");
+		assert.equal(second.accounts[0].token, SLOT_A, "a caller mutation must not rewrite the cached bearer");
+		_resetClinePoolCacheForTest();
+		const fromDisk = loadPool();
+		assert.equal(fromDisk.accounts.length, 1, "unsaved caller edits must never reach the disk");
+		assert.equal(fromDisk.accounts[0].token, SLOT_A);
+	});
+});
+
+test("cline pool: mutating the argument after savePool does not corrupt the cache", async () => {
+	await withIsolatedPool(() => {
+		const pool = loadPool();
+		pool.accounts.push({ slot: "main", token: SLOT_A, addedAt: new Date().toISOString() });
+		savePool(pool);
+		pool.accounts[0].token = "workos:tampered";
+		pool.accounts.push({ slot: "phantom", token: "workos:phantom", addedAt: new Date().toISOString() });
+		const reloaded = loadPool();
+		assert.equal(reloaded.accounts.length, 1, "a post-save caller mutation must not plant a phantom slot");
+		assert.equal(reloaded.accounts[0].token, SLOT_A, "a post-save caller mutation must not rewrite the cached bearer");
+	});
+});
+
+test("cline pool: padded tokens are trimmed on save and load", async () => {
+	await withIsolatedPool(() => {
+		addAccount("main", `  ${SLOT_A}  `);
+		_resetClinePoolCacheForTest();
+		const pool = loadPool();
+		assert.equal(pool.accounts.length, 1);
+		assert.equal(pool.accounts[0].token, SLOT_A, "surrounding whitespace must not become part of the bearer");
+	});
+});
+
+test("cline pool: whitespace-only tokens load as rejects without a phantom slot", async () => {
+	await withIsolatedPool(() => {
+		fs.writeFileSync(
+			CLINE_POOL_FILE,
+			JSON.stringify({ accounts: [{ slot: "blank", token: "   " }, { slot: "main", token: SLOT_A }] }),
+			"utf8",
+		);
+		_resetClinePoolCacheForTest();
+		const pool = loadPool();
+		assert.deepEqual(pool.accounts.map((a) => a.slot), ["main"]);
+	});
+});
+
+test("rollChat: a 200 SSE stream that merely mentions error/429 passes through untouched", async () => {
+	await withIsolatedPool(async () => {
+		addAccount("a", SLOT_A);
+		addAccount("b", SLOT_B);
+		const seen: string[] = [];
+		// Mentions the limit phrase plus a bare 429 with no initialization
+		// failure: the old `"error":`-or-phrase sniff converted this 200 into
+		// a 429 roll. The tightened sniff passes it through untouched.
+		const benign = 'data: {"choices":[{"delta":{"content":"note: Daily limit reached counters reset after 429 requests"}}]}\n\n';
+		const res = await rollChat({
+			body: JSON.stringify({ model: "thinkingmachines/inkling:free", stream: true }),
+			chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+			fetchImpl: (async (_url: unknown, init: unknown) => {
+				seen.push(new Headers((init as RequestInit).headers).get("authorization") ?? "");
+				return new Response(benign, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}) as unknown as typeof fetch,
+		});
+		assert.equal(res.slot, "a", "a benign error mention must not roll past the first slot");
+		assert.equal(res.exhausted, false);
+		assert.equal(res.res.status, 200);
+		assert.equal(seen.length, 1, "only the first slot may be tried when the stream is healthy");
+		const text = await res.res.text();
+		assert.ok(text.includes("429"), "the passthrough stream must preserve its content");
+		_resetClinePoolCacheForTest();
+		const pool = loadPool();
+		assert.equal(pool.limits?.["a"], undefined, "no free-limit may be recorded for a healthy stream");
+	});
+});
+
+test("installation token: rotation and deletion on disk invalidate the read cache", async () => {
+	_resetTokenCacheForTest();
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-freeflow-token-"));
+	try {
+		const file = path.join(dir, "token");
+		fs.writeFileSync(file, "a".repeat(64), "utf8");
+		assert.equal(readToken(dir), "a".repeat(64));
+		// Same-length rewrite: force the mtime forward so the cache must miss
+		// on the stamp even though the size is unchanged (utimes instead of a
+		// wall-clock sleep: the stamp comes from the platform clock, which
+		// fake timers cannot advance).
+		fs.writeFileSync(file, "b".repeat(64), "utf8");
+		const later = new Date(Date.now() + 10_000);
+		fs.utimesSync(file, later, later);
+		assert.equal(readToken(dir), "b".repeat(64), "a rotated token file must not serve the stale cached value");
+		fs.rmSync(file);
+		assert.equal(readToken(dir), null, "a deleted token file must not serve the stale cached value");
+	} finally {
+		_resetTokenCacheForTest();
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });

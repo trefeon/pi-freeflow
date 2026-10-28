@@ -746,16 +746,16 @@ export const MODEL_ALIASES: Record<string, string> = {
  "laguna-xs-2.1:free": "poolside/laguna-xs-2.1:free",
  "kilo-auto": "kilo-auto/free",
  "openrouter": "openrouter/free",
-// OVHcloud AI Endpoints — slash-free spellings of the `ovh-free/` ids.
-"gpt-oss-120b": "ovh-free/gpt-oss-120b",
-"gpt-oss-20b": "ovh-free/gpt-oss-20b",
-"qwen3.5-397b": "ovh-free/Qwen3.5-397B-A17B",
-"qwen3.5-9b": "ovh-free/Qwen3.5-9B",
-"qwen3.6-27b": "ovh-free/Qwen3.6-27B",
-"qwen3.8-27b": "ovh-free/Qwen3.8-27B",
-"mistral-small-3.2": "ovh-free/Mistral-Small-3.2-24B-Instruct-2506",
-"llama-3.3-70b": "ovh-free/Meta-Llama-3_3-70B-Instruct",
-"cline-super-vl": "cline/nemotron-3.5-super-vl",
+ // OVHcloud AI Endpoints — slash-free spellings of the `ovh-free/` ids.
+ "gpt-oss-120b": "ovh-free/gpt-oss-120b",
+ "gpt-oss-20b": "ovh-free/gpt-oss-20b",
+ "qwen3.5-397b": "ovh-free/Qwen3.5-397B-A17B",
+ "qwen3.5-9b": "ovh-free/Qwen3.5-9B",
+ "qwen3.6-27b": "ovh-free/Qwen3.6-27B",
+ "qwen3.8-27b": "ovh-free/Qwen3.8-27B",
+ "mistral-small-3.2": "ovh-free/Mistral-Small-3.2-24B-Instruct-2506",
+ "llama-3.3-70b": "ovh-free/Meta-Llama-3_3-70B-Instruct",
+ "cline-super-vl": "cline/nemotron-3.5-super-vl",
 };
 
 /**

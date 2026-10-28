@@ -230,7 +230,7 @@ test("command spec: /freeflow test opencode --chat performs a chat probe", async
 
   await spec.handler("test opencode --chat", ctx);
 
-		assert.equal(calledUrl, "https://opencode.ai/inference/v1/chat/completions");
+		assert.equal(calledUrl, "https://opencode.ai/inference/openai/v1/chat/completions");
   assert.equal(calledInit?.method, "POST");
   assert.ok(
    notifications.some((n) => n.message.includes("OpenCode endpoint ok (HTTP 200")),
@@ -524,7 +524,7 @@ test("command spec: /freeflow deploy vercel picker + confirm deploys and probes 
     if (url.endsWith("/v1/models")) {
      return { status: 200, body: {} }; // post-deploy reachability probe
     }
-    if (url.endsWith("/inference/v1/chat/completions") && init?.method === "POST") {
+    if (url.endsWith("/inference/openai/v1/chat/completions") && init?.method === "POST") {
      return { status: 200, body: {} }; // post-deploy free-tier inference probe
     }
     if (url.includes("/v13/deployments/")) {
@@ -570,7 +570,7 @@ test("command spec: /freeflow deploy probes models (GET) then chat (POST) throug
   const liveUrl = "https://relay-probe-order.vercel.app";
   const probed: Array<{ url: string; method: string }> = [];
   t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
-   if (url.includes("/v1/models") || url.includes("/inference/v1/chat/completions")) {
+   if (url.includes("/v1/models") || url.includes("/inference/openai/v1/chat/completions")) {
     probed.push({ url, method: init?.method ?? "GET" });
     return { status: 200, body: {} };
    }
@@ -590,7 +590,7 @@ test("command spec: /freeflow deploy probes models (GET) then chat (POST) throug
   assert.equal(probed.length, 2, `expected exactly two post-deploy probes, got: ${JSON.stringify(probed)}`);
   assert.equal(probed[0].url, `${liveUrl}/v1/models`, "reachability probe must GET the relay's models endpoint");
   assert.equal(probed[0].method, "GET");
-  assert.equal(probed[1].url, `${liveUrl}/inference/v1/chat/completions`, "inference probe must POST the free-tier chat endpoint through the relay");
+  assert.equal(probed[1].url, `${liveUrl}/inference/openai/v1/chat/completions`, "inference probe must POST the free-tier chat endpoint through the relay");
   assert.equal(probed[1].method, "POST");
   const done = notifications.find((n) => n.message.includes("Deployed & active"));
   assert.ok(done, `deploy must report success, got: ${JSON.stringify(notifications)}`);
@@ -943,7 +943,7 @@ test("command spec: /freeflow deploy warns when the relay answers /v1/models but
   let chatProbes = 0;
   t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
    if (url.endsWith("/v1/models")) return { status: 200, body: {} };
-   if (url.endsWith("/inference/v1/chat/completions") && init?.method === "POST") {
+   if (url.endsWith("/inference/openai/v1/chat/completions") && init?.method === "POST") {
     chatProbes++;
     return { status: 403, body: { error: { type: "FreeTierError", message: "free tier requires the official client fingerprint" } } };
    }
@@ -981,7 +981,7 @@ test("command spec: /freeflow deploy deno warns up front and blames the User-Age
   t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
    fetchCalls++;
    if (url.endsWith("/v1/models")) return { status: 200, body: {} };
-   if (url.endsWith("/inference/v1/chat/completions") && init?.method === "POST") {
+   if (url.endsWith("/inference/openai/v1/chat/completions") && init?.method === "POST") {
     return { status: 403, body: { error: { type: "FreeTierError", message: "unsupported client fingerprint" } } };
    }
    if (url.endsWith("/v2/revisions/rev-1")) {
@@ -1036,7 +1036,7 @@ test("command spec: /freeflow deploy deno reports the observed failure, not the 
   const liveUrl = "https://relay-deno-5xx.my-org.deno.net";
   t.mock.method(globalThis, "fetch", scriptedFetch((url, init) => {
    if (url.endsWith("/v1/models")) return { status: 200, body: {} };
-   if (url.endsWith("/inference/v1/chat/completions") && init?.method === "POST") return { status: 500, body: {} };
+   if (url.endsWith("/inference/openai/v1/chat/completions") && init?.method === "POST") return { status: 500, body: {} };
    if (url.endsWith("/v2/revisions/rev-1")) {
     return { body: { id: "rev-1", status: "succeeded", timelines: [{ name: "Production", context: "Production", hostnames: ["relay-deno-5xx.my-org.deno.net"] }] } };
    }

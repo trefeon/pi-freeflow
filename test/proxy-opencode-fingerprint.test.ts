@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { startProxy } from "../src/proxy.ts";
 import { authHeaders } from "./_auth.ts";
-import { OPENCODE_FINGERPRINT_TOOLS, toolNameOf } from "../src/opencode-fingerprint.ts";
+import { FULL11_TOOL_NAMES } from "../src/tool-translation.ts";
+import { toolNameOf } from "../src/opencode-fingerprint.ts";
 import { _resetUpstreamHealthForTest } from "../src/upstream-health.ts";
 import { _resetFreeTierHintForTest } from "../src/upstream-health.ts";
 
@@ -84,7 +85,7 @@ test("proxy: OpenCode chat request without tools receives injected fingerprint a
 		assert.equal(clientRes.status, 200);
 		assert.ok(clientRes.headers["content-type"]?.includes("application/json"));
 
-		// 1. Upstream received fingerprinted body: stream: true and full tool sextet
+		// 1. Upstream received fingerprinted body: stream: true and the live 11-roster
 		assert.ok(upstreamReceivedBody);
 		const body1 = upstreamReceivedBody as Record<string, unknown>;
 		assert.equal(body1.stream, true, "upstream must receive stream: true");
@@ -92,8 +93,8 @@ test("proxy: OpenCode chat request without tools receives injected fingerprint a
 		const receivedTools = (body1.tools as Array<{ function: { name: string } }>).map(
 			(t) => t.function.name,
 		);
-		for (const tool of OPENCODE_FINGERPRINT_TOOLS) {
-			assert.ok(receivedTools.includes(tool), `missing fingerprint tool ${tool}`);
+		for (const tool of FULL11_TOOL_NAMES) {
+			assert.ok(receivedTools.includes(tool), `missing roster tool ${tool}`);
 		}
 		// Body-side axis: the system prompt must carry the env block, or upstream
 		// answers 429 FreeUsageLimitError as if the quota were exhausted.
@@ -206,15 +207,15 @@ test("proxy: OpenCode Responses request without tools (like advisor watchdog) re
 		assert.equal(clientRes.status, 200);
 		assert.ok(clientRes.headers["content-type"]?.includes("application/json"));
 
-		// 1. Upstream received fingerprinted body: stream: true, store: false, flat tools sextet
+		// 1. Upstream received fingerprinted body: stream: true, store: false, flat 11-roster
 		assert.ok(upstreamReceivedBody);
 		const body2 = upstreamReceivedBody as Record<string, unknown>;
 		assert.equal(body2.stream, true);
 		assert.equal(body2.store, false);
 		assert.ok(Array.isArray(body2.tools));
 		const receivedToolNames = (body2.tools as Array<{ name: string }>).map((t) => t.name);
-		for (const tool of OPENCODE_FINGERPRINT_TOOLS) {
-			assert.ok(receivedToolNames.includes(tool), `missing fingerprint tool ${tool}`);
+		for (const tool of FULL11_TOOL_NAMES) {
+			assert.ok(receivedToolNames.includes(tool), `missing roster tool ${tool}`);
 		}
 		// Body-side axis on the responses wire: hosts that send no `instructions`
 		// (the advisor watchdog) get one carrying the env block.
@@ -234,7 +235,7 @@ test("proxy: OpenCode Responses request without tools (like advisor watchdog) re
 	}
 });
 
-test("proxy: upstream receives live UA + ses_ headers with stream:true and the full sextet", async () => {
+test("proxy: upstream receives live UA + ses_ headers with stream:true and the full 11 roster", async () => {
 	_resetUpstreamHealthForTest();
 	_resetFreeTierHintForTest();
 
@@ -301,24 +302,29 @@ test("proxy: upstream receives live UA + ses_ headers with stream:true and the f
 		assert.equal(clientRes.status, 200);
 		assert.ok(clientRes.headers["content-type"]?.includes("application/json"), "SSE converted back for non-streaming client");
 
-		// Gate axes on the wire: UA, session ID, tools, stream (no x-opencode-request).
-		assert.ok(/^opencode\/\d+\.\d+\.\d+$/.test(upstreamHeaders["user-agent"] ?? ""), `live UA header: ${upstreamHeaders["user-agent"]}`);
+		// Gate axes on the wire: full UA, session ID, fresh request id, no
+		// affinity, 11 tools, stream with usage accounting.
+		assert.ok(/^opencode\/\d+\.\d+\.\d+ ai-sdk\/provider-utils\/4\.0\.23 runtime\/bun\/1\.4\.4$/.test(upstreamHeaders["user-agent"] ?? ""), `live UA header: ${upstreamHeaders["user-agent"]}`);
 		assert.ok(
 			/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(upstreamHeaders["x-opencode-session"] ?? ""),
 			`ses_ header shape: ${upstreamHeaders["x-opencode-session"]}`,
 		);
-		assert.equal(
-			upstreamHeaders["x-opencode-request"],
-			undefined,
-			"real OpenCode omits x-opencode-request; emitting it FreeTier-403s",
+		assert.match(
+			upstreamHeaders["x-opencode-request"] ?? "",
+			/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/,
+			"live v1 sends a fresh msg_* request id per prepare",
 		);
+		assert.equal(upstreamHeaders["x-session-affinity"], undefined, "no affinity on the opencode lane");
+		assert.equal(upstreamHeaders["x-session-id"], undefined, "no affinity on the opencode lane");
+		assert.equal(upstreamHeaders["x-opencode-project"], "global", "global outside a repo");
 		assert.equal(upstreamHeaders["x-opencode-client"], "cli");
 		const received: unknown = upstreamReceivedBody;
 		assert.ok(received && typeof received === "object" && "stream" in received && "tools" in received);
 		assert.equal(received.stream, true);
+		assert.deepEqual((received as Record<string, unknown>).stream_options, { include_usage: true }, "compat lane usage accounting");
 		assert.ok(Array.isArray(received.tools), "tools must be present");
 		const names = received.tools.map((t) => toolNameOf(t));
-		assert.deepEqual([...names].sort(), ["bash", "edit", "glob", "grep", "read", "write"]);
+		assert.deepEqual([...names].sort(), ["bash", "edit", "glob", "grep", "read", "skill", "task", "todowrite", "webfetch", "websearch", "write"]);
 	} finally {
 		globalThis.fetch = realFetch;
 		if (server) await new Promise<void>((resolve) => server.close(() => resolve()));

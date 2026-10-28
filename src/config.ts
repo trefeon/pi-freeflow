@@ -26,15 +26,54 @@ export const KILO_CHAT_URL = "https://api.kilo.ai/api/gateway/chat/completions";
 export const KILO_RESPONSES_URL = "https://api.kilo.ai/api/gateway/responses";
 export const OPENCODE_API_URL = `${UPSTREAM_OPENCODE}/v1`;
 /**
- * OpenAI-compat Zen lane (opt-in A/B only — the default lane stays /v1).
- * The official CLI addresses the free tier here rather than on the plain
- * /v1 chat path; same gateway, same Bearer public credential, but the path
- * carries the extra `/openai` segment and the body carries `stream_options`.
- * Relay probes address it via OPENCODE_OPENAI_COMPAT_PATH (the x-relay-path
- * the workers forward as target + path).
+ * OpenAI-compat Zen lane — the DEFAULT lane for chat completions.
+ * Live truth (v1 1.19.4 MITM, SG): the official CLI addresses the free tier
+ * here (`POST https://opencode.ai/inference/openai/v1/chat/completions`),
+ * not on the plain /v1 chat path. Same gateway, same Bearer public
+ * credential, but the path carries the extra `/openai` segment and the body
+ * carries `stream_options: { include_usage: true }`.
+ * The plain `/inference/v1/chat/completions` path stays as the fallback when
+ * the compat lane answers 404/405. Relay probes address the compat lane via
+ * OPENCODE_OPENAI_COMPAT_PATH (the x-relay-path the workers forward as
+ * target + path).
  */
 export const OPENCODE_OPENAI_COMPAT_URL = `${UPSTREAM_OPENCODE}/openai/v1/chat/completions`;
 export const OPENCODE_OPENAI_COMPAT_PATH = "/inference/openai/v1/chat/completions";
+
+/**
+ * Origin (scheme + host) of the OpenCode gateway. UPSTREAM_OPENCODE above is
+ * the origin plus the `/inference` base path; joining a `/inference/...`
+ * upstream path onto it would double the base (`/inference/inference/...`),
+ * so callers that already hold an upstream-rooted path join it here instead.
+ */
+export const OPENCODE_ORIGIN = "https://opencode.ai";
+
+/**
+ * Default-lane upstream path for a request path. Chat completions ride
+ * the openai-compat lane (live CLI truth); every other path (responses,
+ * messages, models) keeps its plain mapping. The plain chat path stays as
+ * the fallback when the compat lane answers 404/405.
+ *
+ * Accepts EITHER form because production `validatePath` resolves the local
+ * `/v1/...` path against the `/inference` base, so `target.pathname` already
+ * arrives upstream-rooted (`/inference/v1/chat/completions`): a leading
+ * `/inference` base is normalized off before mapping, and an already-compat
+ * or unknown path passes through untouched instead of being sliced blindly.
+ * Idempotent: feeding its own output back returns it unchanged.
+ */
+export function zenUpstreamPathFor(localOrUpstreamPathname: string): string {
+ const local = localOrUpstreamPathname.startsWith("/inference/")
+  ? localOrUpstreamPathname.slice("/inference".length)
+  : localOrUpstreamPathname;
+ if (local === "/v1/chat/completions") return OPENCODE_OPENAI_COMPAT_PATH;
+ if (local.startsWith("/v1/")) return `/inference${local}`;
+ return localOrUpstreamPathname;
+}
+
+/** Full upstream URL for a local request path on the default Zen lane. */
+export function zenUpstreamUrlFor(localPathname: string): string {
+ return `${OPENCODE_ORIGIN}${zenUpstreamPathFor(localPathname)}`;
+}
 // Cline serves chat completions only — responses-path requests are translated
 // to chat upstream and back (see tool-translation.ts). Direct-only: Cline
 // traffic never rides the relay pool and carries a per-user bearer token
@@ -93,8 +132,6 @@ export const OPENCODE_USER_AGENT_ENV = "PI_FREEFLOW_OPENCODE_USER_AGENT";
 /** Owned UA probe cache file (sibling of the update-check cache). */
 export const OPENCODE_VERSION_CACHE_ENV = "PI_FREEFLOW_OPENCODE_VERSION_CACHE";
 
-export const OPENCODE_VERSION = OPENCODE_VERSION_FALLBACK;
-export const OPENCODE_USER_AGENT = `opencode/${OPENCODE_VERSION}`;
 export const OPENCODE_CLIENT = "cli";
 
 function compareVersionParts(a: string, b: string): number {
@@ -177,19 +214,25 @@ function memoizedDiskVersion(): string | null {
 export function _resetLiveOpenCodeVersionForTest(): void { liveOpenCodeVersion = null; diskMemo = null; }
 
 /**
- * Synchronous UA getter — offline-safe by construction. Precedence:
+ * Current OpenCode version for the wire UA — the single precedence chain:
  * env override > in-process live version > fresh disk cache > pinned fallback.
  * Never throws, never touches the network (disk re-read at most once a minute).
  */
-export function getOpenCodeUserAgent(): string {
+function currentOpenCodeVersion(): string {
  const override = toOpenCodeUserAgent(process.env[OPENCODE_USER_AGENT_ENV]);
- if (override) return override;
- if (liveOpenCodeVersion && isSupportedOpenCodeVersion(liveOpenCodeVersion)) {
-  return `opencode/${liveOpenCodeVersion}`;
- }
+ if (override) return override.slice("opencode/".length);
+ if (liveOpenCodeVersion && isSupportedOpenCodeVersion(liveOpenCodeVersion)) return liveOpenCodeVersion;
  const disk = memoizedDiskVersion();
- if (disk) return `opencode/${disk}`;
- return OPENCODE_USER_AGENT;
+ if (disk) return disk;
+ return OPENCODE_VERSION_FALLBACK;
+}
+
+/**
+ * Synchronous UA getter — the single User-Agent implementation every lane
+ * sends (offline-safe by construction). Always the verbatim CLI full shape.
+ */
+export function getOpenCodeUserAgent(): string {
+ return buildOpenCodeUserAgent(currentOpenCodeVersion());
 }
 
 /**
@@ -200,7 +243,7 @@ export function getOpenCodeUserAgent(): string {
  */
 export async function refreshOpenCodeUserAgent(fetchImpl: typeof fetch = fetch): Promise<string> {
  const override = toOpenCodeUserAgent(process.env[OPENCODE_USER_AGENT_ENV]);
- if (override) return override;
+ if (override) return getOpenCodeUserAgent();
  try {
   const res = await fetchImpl("https://registry.npmjs.org/opencode-ai/latest", {
    signal: AbortSignal.timeout(10_000),
@@ -212,42 +255,19 @@ export async function refreshOpenCodeUserAgent(fetchImpl: typeof fetch = fetch):
   liveOpenCodeVersion = version as string;
   writeOpenCodeVersionCache(version as string);
   diskMemo = null;
-  return `opencode/${version}`;
+  return getOpenCodeUserAgent();
  } catch { return getOpenCodeUserAgent(); }
 }
 /** Live version already fetched in-process, else the pinned fallback. No network, no side effect. */
 export function getLiveOpenCodeVersion(): string { return liveOpenCodeVersion ?? OPENCODE_VERSION_FALLBACK; }
 
 /**
- * Pinned fallback for the v2 (channel/version/client) User-Agent shape.
- * The free-tier CLI that passes the gate today reports the 2.x line, while
- * the v1 fallback above pins the 1.x line the default lane sends — the two
- * shapes need separate pins so a v2 A/B never emits `opencode/latest/1.x/...`.
+ * Build the OpenCode User-Agent string: always the verbatim CLI full shape
+ * (`opencode/<version> ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`).
+ * The legacy bare and channel shapes are gone with the A/B profiles.
  */
-export const OPENCODE_V2_VERSION_FALLBACK = "2.0.27";
-
-/**
- * Live 2.x version for the v2 UA shape, else the v2 pinned fallback.
- * A live 1.x lookup never leaks into a v2 UA: only a major-2 version is used.
- * No network, no side effect.
- */
-export function getLiveOpenCodeV2Version(): string {
- if (typeof liveOpenCodeVersion === "string" && /^2\.\d+\.\d+$/.test(liveOpenCodeVersion)) {
-  return liveOpenCodeVersion;
- }
- return OPENCODE_V2_VERSION_FALLBACK;
-}
-
-/**
- * Build an OpenCode User-Agent string.
- * v1: `opencode/<version>` (legacy shape); full: verbatim CLI 1.19.0 capture
- * (`opencode/<version> ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14`);
- * v2: `opencode/<channel>/<version>/<client>` (CLI shape).
- */
-export function buildOpenCodeUserAgent(shape: "v1" | "full" | "v2", version: string, channel = "latest", client = "opencode"): string {
- if (shape === "full") return `opencode/${version} ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14`;
- if (shape === "v2") return `opencode/${channel}/${version}/${client}`;
- return `opencode/${version}`;
+export function buildOpenCodeUserAgent(version: string): string {
+ return `opencode/${version} ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`;
 }
 
 const STABLE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
@@ -295,32 +315,11 @@ export function _stableSessionCacheSizeForTest(): number { return stableSessionC
 
 /** Test-only: whether a key is currently memoized (proves LRU eviction). */
 export function _stableSessionHasKeyForTest(key: string): boolean { return stableSessionCache.has(key); }
-// OpenCode project ID: 40-character sha1 hex hash
-export const OPENCODE_PROJECT = createHash("sha1")
- .update("git-remote:github.com/anomalyco/opencode")
- .digest("hex");
-
-/**
- * Project-header variants for the x-opencode-project A/B (opt-in only —
- * the default lane keeps OPENCODE_PROJECT above).
- * - "fixed": the pinned sha1 above (what the default lane sends today).
- * - "global": the literal `global` project the CLI sends outside a repo.
- * - "cwd": sha1 hex of the working directory, matching the CLI inside a repo.
- */
+/** The literal `global` project the CLI sends outside a repo. */
 export const OPENCODE_PROJECT_GLOBAL = "global";
-export type OpenCodeProjectVariant = "fixed" | "global" | "cwd";
 /** sha1 hex digest of a working directory (what the CLI sends as the project). */
 export function openCodeProjectForCwd(cwd: string): string {
  return createHash("sha1").update(cwd).digest("hex");
-}
-/**
- * Resolve one project-header variant. "cwd" without a usable cwd falls back
- * to the fixed pin rather than emitting an empty or garbage header.
- */
-export function resolveOpenCodeProject(variant: OpenCodeProjectVariant, cwd?: string): string {
- if (variant === "global") return OPENCODE_PROJECT_GLOBAL;
- if (variant === "cwd" && typeof cwd === "string" && cwd.length > 0) return openCodeProjectForCwd(cwd);
- return OPENCODE_PROJECT;
 }
 
 const ID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -364,23 +363,41 @@ export function createOpenCodeRequestId(): string {
  return `msg_${createOpenCodeId(false)}`;
 }
 
-export const OPENCODE_SESSION = createOpenCodeSessionId();
+/**
+ * Live project header: the CLI sends `global` outside a repo and the sha1 of
+ * the working directory inside one. Without a cwd to hash, `global` is the
+ * truthful value — never the fixed pin above.
+ */
+export function resolveOpenCodeProjectLive(cwd?: string): string {
+ if (typeof cwd === "string" && cwd.length > 0) return openCodeProjectForCwd(cwd);
+ return OPENCODE_PROJECT_GLOBAL;
+}
 
-export function opencodeHeaders(): Record<string, string> {
- const sessionId = OPENCODE_SESSION;
- // Real OpenCode CLI (captured 2.0.28) does NOT send x-opencode-request on
- // /inference/v1. Emitting msg_* there is treated as a non-OpenCode client and
- // returns 403 FreeTierError — keep the helper for ID-shape tests, but omit
- // the header on the wire.
+/**
+ * Live-truth OpenCode headers (v1 1.19.4 MITM, SG): full UA, Bearer public,
+ * client cli, per-conversation ses_* session, fresh msg_* request id per
+ * prepare, and the cwd-derived project. Affinity headers are NEVER sent on
+ * the opencode lane (upstream treats them as a non-OpenCode signal); they
+ * are gated to non-opencode lanes only (see sanitizeHeaders callers).
+ *
+ * @param sessionKey conversation-scoped key reused within a run
+ *   (stableOpenCodeSessionId maps it deterministically; a valid ses_* passes
+ *   through verbatim). Omitted/empty allocates a fresh id for this call.
+ * @param cwd working directory for the project header; omitted → `global`.
+ */
+export function opencodeHeaders(sessionKey?: string, cwd?: string): Record<string, string> {
+ const sessionId =
+  typeof sessionKey === "string" && sessionKey.length > 0
+   ? stableOpenCodeSessionId(sessionKey)
+   : createOpenCodeSessionId();
  return {
   Authorization: "Bearer public",
   "User-Agent": getOpenCodeUserAgent(),
   "x-opencode-client": OPENCODE_CLIENT,
-  "x-opencode-project": OPENCODE_PROJECT,
+  "x-opencode-project": resolveOpenCodeProjectLive(cwd),
   "x-opencode-session": sessionId,
   "x-opencode-session-id": sessionId,
-  "x-session-affinity": sessionId,
-  "x-session-id": sessionId,
+  "x-opencode-request": createOpenCodeRequestId(),
  };
 }
 

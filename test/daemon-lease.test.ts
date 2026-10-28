@@ -88,6 +88,20 @@ test("lease registry: register → renew → unregister", () => {
 	_resetLeaseStateForTest();
 });
 
+test("lease registry: blank ids rejected, surrounding whitespace trimmed", () => {
+	_resetLeaseStateForTest();
+	assert.equal(registerClient(""), "invalid");
+	assert.equal(registerClient("   "), "invalid");
+	assert.equal(getLeaseCount(), 0, "blank ids never occupy a slot");
+	assert.equal(registerClient("  padded  "), "ok");
+	assert.ok("padded" in getLeaseSnapshot(), "stored trimmed");
+	assert.ok(!("  padded  " in getLeaseSnapshot()));
+	assert.equal(registerClient("padded"), "ok", "refresh of the trimmed id never hits the cap");
+	assert.equal(getLeaseCount(), 1);
+	assert.equal(registerClient("x".repeat(257)), "invalid", "overlong ids rejected");
+	_resetLeaseStateForTest();
+});
+
 test("lease GC: expires stale leases, retires after the zero-lease grace", async () => {
 	_resetLeaseStateForTest();
 

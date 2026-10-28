@@ -1228,7 +1228,7 @@ export function createCommandSpec(
      if (cached && typeof cached.latest === "string") {
       latest = cached.latest;
      }
-     if (latest && compareVersions(latest, local) > 0) {
+     if (latest && local && compareVersions(latest, local) > 0) {
       ctx.ui.notify(
        `Update available: ${local} -> ${latest} - run /freeflow update`,
        "info",
@@ -1325,11 +1325,12 @@ export function createCommandSpec(
        ctx.ui.notify("Could not check latest version (offline?)", "warning");
       } else {
        const local = getLocalVersion();
-       const cmp = compareVersions(latest, local);
+       // Null local (unreadable package.json) can never prove up-to-date: run.
+       const cmp = local === null ? 1 : compareVersions(latest, local);
        if (cmp <= 0) {
         ctx.ui.notify(`Already on latest (v${local})`, "info");
        } else {
-        ctx.ui.notify(`Update available: v${local} → v${latest} — updating…`, "info");
+        ctx.ui.notify(`Update available: v${local ?? "unknown"} → v${latest} — updating…`, "info");
         // Host plugin managers first (neither host has an `update` action for
         // registry plugins: omp updates by reinstall, pi updates the named
         // package). Global npm/bun is the last resort, not the default.

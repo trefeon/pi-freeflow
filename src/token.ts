@@ -14,7 +14,7 @@
  */
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { resolveTokenPath } from "./config.ts";
 
@@ -23,23 +23,50 @@ const TOKEN_BYTES = 32;
 /** File mode: owner read/write only. */
 const TOKEN_MODE = 0o600;
 
-let cache: { path: string; token: string } | null = null;
+let cache: { path: string; token: string; mtimeMs: number; size: number } | null = null;
+
+/** Test-only: drop the readToken cache. */
+export function _resetTokenCacheForTest(): void {
+ cache = null;
+}
+
+function statTokenFile(file: string): { mtimeMs: number; size: number } | null {
+ try {
+  const st = statSync(file);
+  return { mtimeMs: st.mtimeMs, size: st.size };
+ } catch {
+  return null;
+ }
+}
 
 /** Read the installation token; null while the file is missing or empty.
  * `dataDir` overrides the resolved data directory — harnesses that boot their
  * own daemon under a temp dir must read that daemon's token, not this
  * process's. */
 export function readToken(dataDir?: string): string | null {
-	const file = dataDir === undefined ? resolveTokenPath() : path.join(dataDir, "token");
-	if (cache !== null && cache.path === file) return cache.token;
-	try {
-		const token = readFileSync(file, "utf8").trim();
-		if (!token) return null;
-		cache = { path: file, token };
-		return token;
-	} catch {
-		return null;
-	}
+ const file = dataDir === undefined ? resolveTokenPath() : path.join(dataDir, "token");
+ const before = statTokenFile(file);
+ if (before === null) {
+  if (cache !== null && cache.path === file) cache = null;
+  return null;
+ }
+ if (cache !== null && cache.path === file && cache.mtimeMs === before.mtimeMs && cache.size === before.size) return cache.token;
+ try {
+  const token = readFileSync(file, "utf8").trim();
+  if (!token) {
+   cache = null;
+   return null;
+  }
+  // Stamp after the read: a rotation that lands between the read and this
+  // stat leaves a mismatched stamp, so the next call re-reads instead of
+  // serving the torn value from the cache.
+  const after = statTokenFile(file) ?? before;
+  cache = { path: file, token, mtimeMs: after.mtimeMs, size: after.size };
+  return token;
+ } catch {
+  if (cache !== null && cache.path === file) cache = null;
+  return null;
+ }
 }
 
 /**
@@ -49,8 +76,8 @@ export function readToken(dataDir?: string): string | null {
  * probes, the `/freeflow` control verbs and the scripts under scripts/.
  */
 export function tokenAuthHeaders(dataDir?: string): Record<string, string> {
-	const token = readToken(dataDir);
-	return token ? { authorization: `Bearer ${token}` } : {};
+ const token = readToken(dataDir);
+ return token ? { authorization: `Bearer ${token}` } : {};
 }
 
 /**
@@ -61,23 +88,24 @@ export function tokenAuthHeaders(dataDir?: string): Record<string, string> {
  * accepting unauthenticated traffic.
  */
 export function ensureToken(): string {
-	const existing = readToken();
-	if (existing) return existing;
-	const file = resolveTokenPath();
-	const token = randomBytes(TOKEN_BYTES).toString("hex");
-	try {
-		mkdirSync(path.dirname(file), { recursive: true });
-		// `wx` never truncates a token another process just wrote.
-		writeFileSync(file, token, { encoding: "utf8", mode: TOKEN_MODE, flag: "wx" });
-		chmodSync(file, TOKEN_MODE);
-		cache = { path: file, token };
-		return token;
-	} catch {
-		// Lost a creation race (EEXIST) or the data dir is not writable:
-		// prefer whatever is on disk now, else report the failure as "".
-		cache = null;
-		return readToken() ?? "";
-	}
+ const existing = readToken();
+ if (existing) return existing;
+ const file = resolveTokenPath();
+ const token = randomBytes(TOKEN_BYTES).toString("hex");
+ try {
+  mkdirSync(path.dirname(file), { recursive: true });
+  // `wx` never truncates a token another process just wrote.
+  writeFileSync(file, token, { encoding: "utf8", mode: TOKEN_MODE, flag: "wx" });
+  chmodSync(file, TOKEN_MODE);
+  const stamp = statTokenFile(file) ?? { mtimeMs: Date.now(), size: token.length };
+  cache = { path: file, token, mtimeMs: stamp.mtimeMs, size: stamp.size };
+  return token;
+ } catch {
+  // Lost a creation race (EEXIST) or the data dir is not writable:
+  // prefer whatever is on disk now, else report the failure as "".
+  cache = null;
+  return readToken() ?? "";
+ }
 }
 
 /**
@@ -86,11 +114,11 @@ export function ensureToken(): string {
  * different length, or an empty expected token (fail closed).
  */
 export function isAuthorizedBearer(header: string | undefined, expected: string): boolean {
-	if (!expected || typeof header !== "string") return false;
-	const match = /^Bearer[ ]+(\S+)$/i.exec(header.trim());
-	if (!match) return false;
-	const candidate = Buffer.from(match[1], "utf8");
-	const wanted = Buffer.from(expected, "utf8");
-	if (candidate.length !== wanted.length) return false;
-	return timingSafeEqual(candidate, wanted);
+ if (!expected || typeof header !== "string") return false;
+ const match = /^Bearer[ ]+(\S+)$/i.exec(header.trim());
+ if (!match) return false;
+ const candidate = Buffer.from(match[1], "utf8");
+ const wanted = Buffer.from(expected, "utf8");
+ if (candidate.length !== wanted.length) return false;
+ return timingSafeEqual(candidate, wanted);
 }

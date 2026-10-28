@@ -1,9 +1,8 @@
 /**
  * Cline WorkOS device-flow auth (extension login, no paste).
- * Mirrors C:/tmp/cline-login-proto/src/cline-auth.ts + reference/cline
- * sdk/packages/core/src/auth/cline.ts (device authorize / poll /
- * register / refresh) and provider-auth-registry.ts (expiry derive,
- * workos: prefix). All network goes through injectable fetchImpl;
+ * Mirrors the Cline device authorize / poll / register / refresh flow
+ * (sdk device-auth plus provider-auth-registry expiry derive, workos:
+ * prefix). All network goes through injectable fetchImpl;
  * mocked tests only, no live calls here.
  */
 

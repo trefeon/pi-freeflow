@@ -18,6 +18,7 @@ import {
  isFreeTierGate,
  isUnprovenSession,
  isUpstreamGated,
+ ZEN_KILO_FAILOVER_ENV,
  pickFailoverModel,
  recordUpstreamFailure,
  recordUpstreamSuccess,
@@ -248,6 +249,9 @@ test("chat routing passes proven sessions through while gated", () => {
 
 test("chat routing fails fresh sessions over while gated", () => {
  withIsolatedHealthFiles(() => {
+  const prev = process.env[ZEN_KILO_FAILOVER_ENV];
+  process.env[ZEN_KILO_FAILOVER_ENV] = "1";
+  try {
   recordUpstreamFailure("zen", 403, GATE_BODY);
   recordUpstreamFailure("zen", 403, GATE_BODY);
   const route = decideZenRoute(
@@ -260,6 +264,10 @@ test("chat routing fails fresh sessions over while gated", () => {
    "/v1/chat/completions",
   );
   assert.equal(second, "failover");
+  } finally {
+   if (prev === undefined) delete process.env[ZEN_KILO_FAILOVER_ENV];
+   else process.env[ZEN_KILO_FAILOVER_ENV] = prev;
+  }
  });
 });
 
@@ -279,10 +287,18 @@ test("chat routing passes everything through while ungated", () => {
 
 test("failover model choice is a Kilo model", () => {
  withIsolatedHealthFiles(() => {
+  assert.equal(pickFailoverModel(), "", "no opt-in means no substitution target");
+  const prev = process.env[ZEN_KILO_FAILOVER_ENV];
+  process.env[ZEN_KILO_FAILOVER_ENV] = "1";
+  try {
   const id = pickFailoverModel();
   assert.equal(typeof id, "string");
   assert.ok(id.length > 0);
   assert.equal(isKiloModel(id), true);
+  } finally {
+   if (prev === undefined) delete process.env[ZEN_KILO_FAILOVER_ENV];
+   else process.env[ZEN_KILO_FAILOVER_ENV] = prev;
+  }
  });
 });
 
