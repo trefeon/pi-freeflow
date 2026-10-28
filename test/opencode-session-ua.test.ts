@@ -5,12 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import { rmSync } from "node:fs";
 import {
-	OPENCODE_VERSION_CACHE_ENV,
-	OPENCODE_VERSION_FALLBACK,
-	buildOpenCodeUserAgent,
-	getLiveOpenCodeVersion,
-	getOpenCodeUserAgent,
-	refreshOpenCodeUserAgent,
+ OPENCODE_VERSION_CACHE_ENV,
+ OPENCODE_VERSION_FALLBACK,
+ buildOpenCodeUserAgent,
+ getLiveOpenCodeVersion,
+ getOpenCodeUserAgent,
+ probeInstalledOpenCodeVersion,
+ refreshOpenCodeUserAgent,
 	stableOpenCodeSessionId,
 	_resetLiveOpenCodeVersionForTest,
 	_resetStableSessionCacheForTest,
@@ -21,8 +22,11 @@ import {
 const SES_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 
 test("getLiveOpenCodeVersion returns fallback without network", () => {
-	_resetLiveOpenCodeVersionForTest();
-	assert.equal(getLiveOpenCodeVersion(), OPENCODE_VERSION_FALLBACK);
+ _resetLiveOpenCodeVersionForTest();
+ // Hermetic: prime the binary memo with a miss so no real PATH spawn runs
+ // (this box has opencode v2.2.0 installed; CI has none).
+ probeInstalledOpenCodeVersion({ spawnImpl: () => ({ status: 1 }) });
+ assert.equal(getLiveOpenCodeVersion(), OPENCODE_VERSION_FALLBACK);
 });
 
 test("buildOpenCodeUserAgent emits the verbatim full CLI shape", () => {

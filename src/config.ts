@@ -2,6 +2,7 @@
  * Configuration and path resolution for pi-freeflow
  */
 
+import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -162,6 +163,92 @@ export function toOpenCodeUserAgent(version: unknown): string | null {
  return `opencode/${bare}`;
 }
 
+/** Memo TTL for the installed-binary probe: at most one spawn per minute. */
+export const OPENCODE_BINARY_VERSION_TTL_MS = 60_000;
+/** Where an observed live OpenCode version came from. */
+export type OpenCodeVersionSource = "registry" | "binary";
+
+/**
+ * Parse `opencode --version` output into a bare semver, else null.
+ * Accepts the shapes the CLIs print (`2.2.0`, `v2.2.0`, `opencode-ai 1.19.4`)
+ * and floors through isSupportedOpenCodeVersion, so anything below 1.17.0
+ * (or unparseable) never drives the wire UA.
+ */
+export function parseOpenCodeBinaryVersion(output: unknown): string | null {
+ if (typeof output !== "string") return null;
+ const match = output.match(/(\d+\.\d+\.\d+)/);
+ if (!match) return null;
+ const version: string | undefined = match[1];
+ if (version === undefined || !isSupportedOpenCodeVersion(version)) return null;
+ return version;
+}
+
+/** Minimal spawnSync result surface the binary probe reads. */
+export interface OpenCodeSpawnResult {
+ status: number | null;
+ stdout?: unknown;
+ stderr?: unknown;
+ error?: unknown;
+}
+/** spawnSync-compatible injector for the binary probe (tests stub this). */
+export type OpenCodeSpawnSync = (
+ command: string,
+ args: readonly string[],
+ options: { encoding: "utf8"; timeout: number; windowsHide: boolean; shell?: boolean },
+) => OpenCodeSpawnResult;
+
+function defaultOpenCodeSpawn(
+ command: string,
+ args: readonly string[],
+ options: { encoding: "utf8"; timeout: number; windowsHide: boolean; shell?: boolean },
+): OpenCodeSpawnResult {
+ // Single-string form under a Windows shell: resolves *.cmd shims the same
+ // way isCommandAvailable does; direct exec elsewhere.
+ if (process.platform === "win32") {
+  return spawnSync(`${command} ${args.join(" ")}`, {
+   encoding: options.encoding,
+   timeout: options.timeout,
+   windowsHide: options.windowsHide,
+   shell: true,
+  }) as unknown as OpenCodeSpawnResult;
+ }
+ return spawnSync(command, [...args], options) as unknown as OpenCodeSpawnResult;
+}
+
+let binaryMemo: { key: string; version: string | null; probedAt: number } | null = null;
+
+/**
+ * Probe the locally installed `opencode` binary (`--version`, 10s timeout).
+ * Offline-safe by construction: no network, try/catch, null when the binary
+ * is missing, fails, times out, or prints an unsupported version. Results
+ * (including misses) are memoized ~60s so the request path never spawns
+ * more than once a minute. Pass `spawnImpl` to stub the spawn in tests —
+ * never rely on a real PATH binary there (CI has none).
+ */
+export function probeInstalledOpenCodeVersion(opts: {
+ execPath?: string;
+ timeoutMs?: number;
+ spawnImpl?: OpenCodeSpawnSync;
+} = {}): string | null {
+ const execPath = opts.execPath ?? "opencode";
+ const timeoutMs = opts.timeoutMs ?? 10_000;
+ const now = Date.now();
+ if (binaryMemo && binaryMemo.key === execPath && now - binaryMemo.probedAt < OPENCODE_BINARY_VERSION_TTL_MS) {
+  return binaryMemo.version;
+ }
+ let version: string | null = null;
+ try {
+  const spawn = opts.spawnImpl ?? defaultOpenCodeSpawn;
+  const res = spawn(execPath, ["--version"], { encoding: "utf8", timeout: timeoutMs, windowsHide: true });
+  if (res && res.error === undefined && res.status === 0) {
+   const text = [res.stdout, res.stderr].filter((part): part is string => typeof part === "string").join("\n");
+   version = parseOpenCodeBinaryVersion(text);
+  }
+ } catch { version = null; }
+ binaryMemo = { key: execPath, version, probedAt: now };
+ return version;
+}
+
 function openCodeVersionCachePath(): string {
  const override = process.env[OPENCODE_VERSION_CACHE_ENV];
  if (typeof override === "string" && override.trim() !== "") return override;
@@ -196,6 +283,7 @@ function writeOpenCodeVersionCache(version: string): void {
 }
 
 let liveOpenCodeVersion: string | null = null;
+let liveOpenCodeVersionSource: OpenCodeVersionSource | null = null;
 /** Memoized disk read: path -> { version, fileCheckedAt } so opencodeHeaders() stays sync and cheap. */
 let diskMemo: { path: string; version: string | null; readAt: number } | null = null;
 const DISK_MEMO_TTL_MS = 60_000;
@@ -211,16 +299,26 @@ function memoizedDiskVersion(): string | null {
 }
 
 /** Test-only: reset the in-process live version (cache file untouched). */
-export function _resetLiveOpenCodeVersionForTest(): void { liveOpenCodeVersion = null; diskMemo = null; }
+export function _resetLiveOpenCodeVersionForTest(): void {
+ liveOpenCodeVersion = null;
+ liveOpenCodeVersionSource = null;
+ diskMemo = null;
+ binaryMemo = null;
+}
 
 /**
  * Current OpenCode version for the wire UA — the single precedence chain:
- * env override > in-process live version > fresh disk cache > pinned fallback.
- * Never throws, never touches the network (disk re-read at most once a minute).
+ * env override > installed binary (1.x line) > in-process live version >
+ * fresh disk cache > pinned fallback. Never throws, never touches the
+ * network (disk re-read at most once a minute, binary probe at most once a
+ * minute). An installed 2.x binary never drives the compat-lane UA — it is
+ * skipped here and surfaces via getLiveOpenCodeVersion for logs only.
  */
 function currentOpenCodeVersion(): string {
  const override = toOpenCodeUserAgent(process.env[OPENCODE_USER_AGENT_ENV]);
  if (override) return override.slice("opencode/".length);
+ const installed = probeInstalledOpenCodeVersion();
+ if (installed && installed.split(".")[0] === "1") return installed;
  if (liveOpenCodeVersion && isSupportedOpenCodeVersion(liveOpenCodeVersion)) return liveOpenCodeVersion;
  const disk = memoizedDiskVersion();
  if (disk) return disk;
@@ -253,13 +351,31 @@ export async function refreshOpenCodeUserAgent(fetchImpl: typeof fetch = fetch):
   const version = (body as Record<string, unknown>)?.version;
   if (!isSupportedOpenCodeVersion(version)) return getOpenCodeUserAgent();
   liveOpenCodeVersion = version as string;
+  liveOpenCodeVersionSource = "registry";
   writeOpenCodeVersionCache(version as string);
   diskMemo = null;
   return getOpenCodeUserAgent();
  } catch { return getOpenCodeUserAgent(); }
 }
-/** Live version already fetched in-process, else the pinned fallback. No network, no side effect. */
-export function getLiveOpenCodeVersion(): string { return liveOpenCodeVersion ?? OPENCODE_VERSION_FALLBACK; }
+/**
+ * Live version already fetched in-process, else the installed binary, else
+ * the pinned fallback. The installed 2.x line surfaces here (and in logs)
+ * while the compat-lane UA keeps the 1.x line — major-2 never auto-switches
+ * the wire shape. No network; the binary probe is memoized ~60s.
+ */
+export function getLiveOpenCodeVersion(): string {
+ if (liveOpenCodeVersion) return liveOpenCodeVersion;
+ return probeInstalledOpenCodeVersion() ?? OPENCODE_VERSION_FALLBACK;
+}
+/**
+ * Where the live version came from: `registry` when refresh populated it,
+ * `binary` when it reflects the installed binary, null on the pure fallback.
+ */
+export function getOpenCodeVersionSource(): OpenCodeVersionSource | null {
+ if (liveOpenCodeVersion) return liveOpenCodeVersionSource;
+ if (probeInstalledOpenCodeVersion() !== null) return "binary";
+ return null;
+}
 
 /**
  * Build the OpenCode User-Agent string: always the verbatim CLI full shape

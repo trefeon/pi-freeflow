@@ -36,6 +36,7 @@ import {
  UPSTREAM_OPENCODE,
  OPENCODE_ORIGIN,
  opencodeHeaders,
+ refreshOpenCodeUserAgent,
  zenUpstreamPathFor,
 } from "./config.ts";
 
@@ -1192,7 +1193,11 @@ export function sanitizeHeaders(
  for (const [key, value] of Object.entries(incoming)) {
   const lower = key.toLowerCase();
   if (lower.startsWith(":")) continue;
-  if (!allowed[lower] && !lower.startsWith("x-opencode-")) continue;
+  // No caller x-opencode-* ever rides: stale pins (version/channel), stale
+  // request/session/project stamps, and affinity-shaped keys would all read
+  // as a non-OpenCode signal upstream. The live roster is assigned below.
+  if (lower.startsWith("x-opencode-")) continue;
+  if (!allowed[lower]) continue;
   if (typeof value === "string") sanitized[lower] = value;
   else if (Array.isArray(value)) sanitized[lower] = value.join(", ");
  }
@@ -1213,6 +1218,20 @@ export function sanitizeHeaders(
  sanitized["accept-encoding"] = "identity";
  sanitized.connection = "keep-alive";
  return sanitized;
+}
+/**
+ * True when an opencode-lane upstream verdict names the client version as the
+ * refusal reason — a stale pinned UA that a refresh may repair. 426 always
+ * qualifies; 400/403 qualify only on explicit version/upgrade language, and a
+ * FreeTierError gate body never qualifies (that is the fingerprint gate, not
+ * version drift, and retrying it with a fresh UA would replay the refusal).
+ */
+export function isStaleOpenCodeVersionError(status: number, bodyText: unknown): boolean {
+ if (typeof bodyText !== "string" || bodyText.length === 0) return status === 426;
+ if (bodyText.includes("FreeTierError")) return false;
+ if (status === 426) return true;
+ if (status !== 400 && status !== 403) return false;
+ return /opencode\/\d|user-agent|outdated|update (the|your) (cli|client)|upgrade (the|your) (cli|client)|version (too old|no longer supported|not supported|unsupported|deprecated)|minimum.+version|newer version/i.test(bodyText);
 }
 /**
  * Host header allowlist: only names that resolve to this loopback listener.
@@ -2420,6 +2439,26 @@ export function startProxy(
        try { await upstreamRes.body?.cancel(); } catch { }
        log("info", `compat lane ${upstreamRes.status} — falling back to plain ${target.pathname}`, { status: upstreamRes.status, model: parsedBody?.model, path: target.pathname }, reqId);
        upstreamRes = await sendDirect(directBodyForUpstream, directFallbackHref);
+      }
+      // Version-drift auto-repair: a stale pinned UA can age out server-side
+      // (426, or a 400/403 naming the client version — never the FreeTier
+      // gate). Refresh once and resend once with rebuilt headers; when the
+      // refresh is offline or changes nothing, the original verdict stands
+      // with no extra upstream traffic. Single retry, direct lane only.
+      if (upstreamRes.status !== 404 && upstreamRes.status !== 405) {
+       let staleText = "";
+       try { staleText = await upstreamRes.clone().text(); } catch { }
+       if (isStaleOpenCodeVersionError(upstreamRes.status, staleText)) {
+        const beforeUa = fwd["User-Agent"];
+        const freshUa = await refreshOpenCodeUserAgent();
+        if (typeof freshUa === "string" && freshUa !== beforeUa) {
+         log("warn", `stale opencode UA refused (${upstreamRes.status}) — repaired UA, retrying once`, { status: upstreamRes.status, model: parsedBody?.model, path: target.pathname }, reqId);
+         try { await upstreamRes.body?.cancel(); } catch { }
+         Object.assign(fwd, sanitizeHeaders(req.headers, target.hostname, sessionKey ?? undefined));
+         fwd["connection"] = "keep-alive";
+         upstreamRes = await sendDirect(directBodyForUpstream);
+        }
+       }
       }
       if (directResponsesRequest) {
        upstreamRes = await retryWithoutReasoningEncryption(

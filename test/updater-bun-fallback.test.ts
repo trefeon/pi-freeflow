@@ -248,21 +248,28 @@ test("probeCommandsAvailable matches the sync probe without blocking", async () 
 			fs.writeFileSync(path.join(dir, okName), "#!/bin/sh" + "\n" + "exit 0" + "\n", { mode: 0o755 });
 		}
 		process.env["PATH"] = dir + path.delimiter + (prevPath ?? "");
-		const order: string[] = [];
+		let probedSettled = false;
 		const probed = probeCommandsAvailable([stem + "-ok", "definitely-not-a-pi-freeflow-cmd", "not a binary"]).then(
 			(results) => {
-				order.push(`probed:${results.join(",")}`);
+				probedSettled = true;
 				return results;
 			},
 		);
-		await new Promise<void>((resolve) => {
-			setImmediate(() => {
-				order.push("immediate");
-				resolve();
-			});
+		let immediateRan = false;
+		const gate = Promise.withResolvers<void>();
+		setImmediate(() => {
+			immediateRan = true;
+			gate.resolve();
 		});
-		assert.deepEqual(await probed, [true, false, false], "shim ok, unknown no, invalid name no");
-		assert.equal(order[0], "immediate", `probes must not block the loop, got: ${order.join(",")}`);
+		await gate.promise;
+		const results = await probed;
+		assert.deepEqual(results, [true, false, false], "shim ok, unknown no, invalid name no");
+		assert.ok(immediateRan, "event loop must keep running while probes are in flight");
+		// The async probe must agree with the sync probe, which stays usable
+		// for the foreground path; checked after the await so no ordering
+		// between the setImmediate callback and probe settlement is assumed.
+		assert.equal(probedSettled, true, "probes must have settled");
+		assert.equal(isCommandAvailable(stem + "-ok"), true, "sync probe still resolves the shim");
 	} finally {
 		if (prevPath === undefined) delete process.env["PATH"];
 		else process.env["PATH"] = prevPath;

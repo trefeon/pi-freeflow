@@ -7,6 +7,7 @@ import { Buffer } from "node:buffer";
 import { Agent } from "undici";
 import { UPSTREAM_HEADER_TIMEOUT_MS } from "./config.ts";
 import { isDebugEnabled, log } from "./logger.ts";
+import { isFreeUsageShapeError } from "./upstream-health.ts";
 import {
  getActiveRelayState,
  isRelayHealthy,
@@ -101,6 +102,17 @@ export function isRetriableStatus(status: number): boolean {
   status === 504 ||
   (status >= 520 && status <= 530)
  );
+}
+
+/**
+ * True when a 429 is a FreeUsage shape verdict (our fingerprint's fault, not
+ * quota). Clone-peeked so the caller's body copy survives; fail-open to roll
+ * when the peek itself fails.
+ */
+async function isShapeVerdict429(res: Response): Promise<boolean> {
+ try {
+  return isFreeUsageShapeError(res.status, await res.clone().text());
+ } catch { return false; }
 }
 
 /**
@@ -565,6 +577,25 @@ export async function relayFetch(
     }
    }
    if (isRetriableStatus(res.status)) {
+    // Shape-429 terminal: a FreeUsageLimitError without quota burn is our own
+    // fingerprint's fault, not the relay's — every candidate would answer it
+    // identically. Rolling only cools healthy relays and trips the pool-wide
+    // 429 burst alert, so surface it terminally with no health mark either
+    // way (never success: it must not reset the relay's cooldown, record an
+    // EWMA sample, or rewrite the sticky primary).
+    if (res.status === 429 && (await isShapeVerdict429(res))) {
+     lastResponse?.body?.cancel().catch(() => {});
+     lastResponse = res;
+     lastResponseRelay = targetUrl;
+     log(
+      "warn",
+      `relay ${targetUrl} returned shape 429 (fingerprint fault, not quota) in ${elapsed}s — surfacing without roll`,
+      { upstream: url, status: 429 },
+      rid,
+     );
+     affinity.onServed?.(targetUrl);
+     return res;
+    }
     markRelayFailure(targetUrl, res.status);
     lastResponse?.body?.cancel().catch(() => {});
     lastResponse = res;
