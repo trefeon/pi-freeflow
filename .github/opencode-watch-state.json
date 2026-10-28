@@ -1,9 +1,9 @@
 {
-  "lastRelease": "v1.19.4",
+  "lastRelease": "v1.19.5",
   "fileShas": {
     "identifier.ts": "77fc45a0401f03877521a6219e9691377e882a628826cc1489d51bc389c2f2fc",
     "session-id.ts": "cb946d9746d1a83ded98d673c68f1cd27e967035a0708fcd10fa764e61976571",
-    "zen.mdx": "5010c4d24a5e435574f1dd3c5a243a8e2cc7bab429477d17de855122fa11dcb8"
+    "zen.mdx": "296c1e7a79c66fe3ba7a6ac544d6dc93cf5cf212db35f23778a1078e8b148e98"
   },
   "freeModels": [
     "beam-free",
@@ -16,5 +16,5 @@
     "nemotron-3.5-lightning-free",
     "nemotron-3.5-super-vl-free"
   ],
-  "lastChecked": "2026-10-27T09:42:20.156Z"
+  "lastChecked": "2026-10-28T10:27:07.329Z"
 }
