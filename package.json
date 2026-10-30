@@ -24,7 +24,8 @@
   },
   "homepage": "https://github.com/trefeon/pi-freeflow#readme",
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.19.0",
+    "bun": ">=1.2.0"
   },
   "omp": {
     "extensions": [
@@ -45,20 +46,25 @@
   ],
   "scripts": {
     "test": "node --experimental-strip-types --import ./test/setup.mjs --test --test-concurrency=1 test/**/*.test.ts",
+    "test:bun": "bun --test --test-concurrency=1 test/**/*.test.ts",
     "typecheck": "tsc --noEmit",
     "smoke": "node --experimental-strip-types -e \"import('./extensions/index.ts').then(() => console.log('✓ Smoke test passed: extensions/index.ts loaded successfully')).catch(err => { console.error(err); process.exit(1); })\"",
+    "smoke:bun": "bun -e \"import('./extensions/index.ts').then(() => console.log('✓ Smoke test passed: extensions/index.ts loaded successfully')).catch(err => { console.error(err); process.exit(1); })\"",
+    "start": "node --experimental-strip-types extensions/index.ts",
+    "start:bun": "bun extensions/index.ts",
     "changeset": "changeset",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",
+    "@types/bun": "^1.4.4",
     "@types/node": "^22.13.9",
     "js-yaml": "^5.5.0",
     "typescript": "^7.0.2",
     "vitepress": "^1.6.4"
   },
-  "dependencies": {
+  "optionalDependencies": {
     "undici": "7.30.1"
   }
 }
