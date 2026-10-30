@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { Agent } from "undici";
 import { UPSTREAM_HEADER_TIMEOUT_MS } from "./config.ts";
+import { getFetchImpl } from "./fetch-adapter.ts";
 import { isDebugEnabled, log } from "./logger.ts";
 import {
 	getActiveRelayState,
@@ -186,7 +187,7 @@ export async function relayFetch(
 	if (!relayState.enabled) {
 		log("debug", `relayFetch: direct (relay disabled) -> ${url}`, undefined, rid);
 		affinity.onServed?.(null);
-		return fetch(url, opts as unknown as RequestInit);
+		return getFetchImpl()(url, opts as unknown as RequestInit);
 	}
 	const candidates = orderedRelayCandidates(affinity.preferred, affinity.spreadKey, affinity.roundRobin);
 
@@ -195,7 +196,7 @@ export async function relayFetch(
 		// "relays bypassed/exhausted" WARN on every request.
 		log("debug", `relayFetch: direct (empty relay pool) -> ${url}`, undefined, rid);
 		affinity.onServed?.(null);
-		return fetch(url, opts as unknown as RequestInit);
+		return getFetchImpl()(url, opts as unknown as RequestInit);
 	}
 
 	let lastResponse: Response | null = null;
@@ -344,7 +345,7 @@ export async function relayFetch(
 				const soloCtl = new AbortController();
 				const solo = buildAttempt(targetUrl, soloCtl);
 				try {
-					res = await fetch(targetUrl, { ...opts, headers: solo.headers, signal: solo.signal, ...relayLegInit() } as unknown as RequestInit);
+					res = await getFetchImpl()(targetUrl, { ...opts, headers: solo.headers, signal: solo.signal, ...relayLegInit() } as unknown as RequestInit);
 				} finally {
 					solo.disarmHeaderTimeout();
 				}
@@ -359,7 +360,7 @@ export async function relayFetch(
 				// so a streaming body is never killed past the fixed ceiling.
 				// Wrapping here covers both the staged promise reader and the
 				// hedge race below.
-				const fetchA = fetch(primaryUrl, { ...opts, headers: first.headers, signal: first.signal, ...relayLegInit() } as unknown as RequestInit).then(
+				const fetchA = getFetchImpl()(primaryUrl, { ...opts, headers: first.headers, signal: first.signal, ...relayLegInit() } as unknown as RequestInit).then(
 					(r: Response) => { first.disarmHeaderTimeout(); return r; },
 					(e: unknown) => { first.disarmHeaderTimeout(); throw e; },
 				);
@@ -377,7 +378,7 @@ export async function relayFetch(
 					const hedgeCtlB = new AbortController();
 					const second = buildAttempt(nextUrl, hedgeCtlB);
 					const hedgeStart = Date.now();
-					const fetchB = fetch(nextUrl, { ...opts, headers: second.headers, signal: second.signal, ...relayLegInit() } as unknown as RequestInit).then(
+					const fetchB = getFetchImpl()(nextUrl, { ...opts, headers: second.headers, signal: second.signal, ...relayLegInit() } as unknown as RequestInit).then(
 						(r: Response) => { second.disarmHeaderTimeout(); return r; },
 						(e: unknown) => { second.disarmHeaderTimeout(); throw e; },
 					);
@@ -793,7 +794,7 @@ export async function relayFetch(
 		directHeaders.set("host", u.host);
 		directHeaders.set("x-request-id", rid);
 
-		const directRes = await fetch(url, { ...opts, headers: directHeaders } as unknown as RequestInit);
+		const directRes = await getFetchImpl()(url, { ...opts, headers: directHeaders } as unknown as RequestInit);
 		if (
 			directRes.status === 403 &&
 			lastResponse &&
