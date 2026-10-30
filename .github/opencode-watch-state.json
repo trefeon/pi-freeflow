@@ -3,7 +3,7 @@
   "fileShas": {
     "identifier.ts": "77fc45a0401f03877521a6219e9691377e882a628826cc1489d51bc389c2f2fc",
     "session-id.ts": "cb946d9746d1a83ded98d673c68f1cd27e967035a0708fcd10fa764e61976571",
-    "zen.mdx": "296c1e7a79c66fe3ba7a6ac544d6dc93cf5cf212db35f23778a1078e8b148e98"
+    "zen.mdx": "30d45b0bbe79d802bffa56935c1978a1aaf8b9d0a53738d398aaff8b2338f76b"
   },
   "freeModels": [
     "beam-free",
@@ -11,10 +11,9 @@
     "deepseek-v4.1-flash-free",
     "flint-40b-free",
     "glm-5.3-flash-free",
-    "jev-1.13-free",
     "mimo-v2.6-flash-free",
     "nemotron-3.5-lightning-free",
     "nemotron-3.5-super-vl-free"
   ],
-  "lastChecked": "2026-10-28T10:27:07.329Z"
+  "lastChecked": "2026-10-30T10:46:10.308Z"
 }
