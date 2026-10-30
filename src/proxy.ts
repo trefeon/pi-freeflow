@@ -59,7 +59,8 @@ import {
 	restoreToolNameForCaller,
 	translateToolsForPath,
 } from "./tool-translation.ts";
-import { buildArgRepairSchemas } from "./tool-args.ts";
+import { getFetchImpl } from "./fetch-adapter.ts";
+ import { buildArgRepairSchemas } from "./tool-args.ts";
 // normalize removed — host pi-ai already normalizes thinking/reasoning before proxy
 import { relayFetch } from "./relay.ts";
 import { getActiveRelayState, markRelayFailure, orderedRelayCandidates } from "./relay-state.ts";
@@ -795,7 +796,7 @@ delete chatBody.max_output_tokens;
     (failure) => audit?.attemptFailure({ attempt: failure.attempt, status: failure.status, reason: failure.reason }),
    );
   } else {
-   upstreamRes = await fetch(OVH_CHAT_URL, {
+  upstreamRes = await getFetchImpl()(OVH_CHAT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(chatBody),
@@ -1213,10 +1214,10 @@ export function isAllowedHostHeader(host: string | undefined): boolean {
  * cannot claim those fields, and this probe runs before the client has a token
  * to prove ownership with.
  */
-export async function isProxyAlive(port: number, timeoutMs = 600): Promise<boolean> {
+ export async function isProxyAlive(port: number, timeoutMs = 600): Promise<boolean> {
  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
  try {
-  const res = await fetch(`http://${HOST}:${port}/health`, {
+  const res = await getFetchImpl()(`http://${HOST}:${port}/health`, {
    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) return false;
@@ -1270,7 +1271,7 @@ export async function getDaemonHealth(
 ): Promise<DaemonHealthSnapshot> {
  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
  try {
-  const res = await fetch(`http://${HOST}:${port}/_health`, {
+  const res = await getFetchImpl()(`http://${HOST}:${port}/_health`, {
    signal: AbortSignal.timeout(2500),
    headers: tokenAuthHeaders(),
   });
@@ -1384,7 +1385,7 @@ function isRefusedConnect(err: unknown): boolean {
  */
 export async function probePortHolder(port: number, timeoutMs = 600): Promise<PortHolderVerdict> {
  try {
-  const res = await fetch(`http://${HOST}:${port}/health`, {
+  const res = await getFetchImpl()(`http://${HOST}:${port}/health`, {
    signal: AbortSignal.timeout(timeoutMs),
   });
   const body: unknown = await res.json().catch(() => null);
@@ -1413,7 +1414,7 @@ export async function killPortHolder(port: number): Promise<boolean> {
  const auth = tokenAuthHeaders();
 	try {
 		try {
-			await fetch(`http://${HOST}:${port}/_shutdown`, {
+			await getFetchImpl()(`http://${HOST}:${port}/_shutdown`, {
 				method: "POST",
 				headers: auth,
 				signal: AbortSignal.timeout(300),
@@ -2362,7 +2363,7 @@ export function startProxy(
       res.on("close", onClientClose);
       req.on("error", onReqError);
       try {
-       return await fetch(target.href, {
+      return await getFetchImpl()(target.href, {
         method: req.method,
         headers,
         body: payload.length > 0 ? payload : undefined,
