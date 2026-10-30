@@ -10,6 +10,8 @@ import { ALL_MODELS } from "./models.ts";
 import { getActiveRelayState, getRelayHealth, isRelayHealthy } from "./relay-state.ts";
 import { getLastActivityAt, getLeaseCount, getLeaseSnapshot } from "./lease.ts";
 import { PKG_VERSION, PORT } from "./config.ts";
+import { resolveZenTransport } from "./zen-transport.ts";
+import type { ZenTransportMode } from "./zen-transport.ts";
 import { getLastForwardedByteAt, getMidStreamFaultStats, getSseStats } from "./stream-pipe.ts";
 
 interface HealthRelayInfo {
@@ -28,6 +30,8 @@ interface HealthData {
  relays: HealthRelayInfo[];
  catalog: number;
  version: string;
+ /** Zen direct-leg transport: node default, bun-sidecar when opted in. */
+ zenTransport: { mode: ZenTransportMode; bunVersion: string | null; reason: string };
  /** In-flight proxied requests right now (stale-daemon replacement guard). */
  activeRequests: number;
  /** Clients holding a live lease (detached-daemon GC). */
@@ -97,6 +101,10 @@ export function getHealthData(portOverride?: number, activeRequests = 0): Health
   relays,
   catalog: ALL_MODELS.length,
   version: PKG_VERSION,
+  zenTransport: (() => {
+   const t = resolveZenTransport();
+   return { mode: t.mode, bunVersion: t.bunVersion, reason: t.reason };
+  })(),
   activeRequests,
   clients: getLeaseCount(),
   leases: getLeaseSnapshot(),

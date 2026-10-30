@@ -130,8 +130,17 @@ Runtime knobs, all read in `src/config.ts`. "Unset" means the default applies.
 | `PI_FREEFLOW_DAEMON_WATCHDOG_MS` | `5000` | How often the client polls `/_health` for version + failed-SSE rate. |
 | `PI_FREEFLOW_OPENCODE_USER_AGENT` | live npm lookup | Pin the exact `opencode/<version>` UA (or bare version) sent upstream. |
 | `PI_FREEFLOW_OPENCODE_VERSION_CACHE` | beside the update cache | Override the UA-probe cache file location. |
+| `PI_FREEFLOW_OPENCODE_UA_V2` | unset | When `1`, send the four-part `opencode/latest/<version>/cli` client identifier; a `channel/client` pair selects other four-part values. Unset keeps the default three-part identifier. |
+| `PI_FREEFLOW_OPENCODE_PROJECT` | `global` | Project header value. `cwd` hashes a working directory into a stable digest; `global` forces the global value. Any other value (including unset) keeps the legacy behavior: a threaded working directory hashes, otherwise `global` — the proxy never threads one, so the wire default stays `global`. |
+| `PI_FREEFLOW_OPENCODE_CWD` | unset | Working directory used for the project digest, and only when `PI_FREEFLOW_OPENCODE_PROJECT=cwd`. |
+| `PI_FREEFLOW_OPENCODE_EXTRA_HEADERS` | unset | Comma-separated caller headers to forward in addition to the built-in allowlist. Credentials, cookies, and hop-by-hop headers are always refused. |
+| `PI_FREEFLOW_ZEN_EMPTY_TOOLS` | unset | When `1`, tool-less Zen turns are sent with zero tools instead of the injected client roster. |
+| `PI_FREEFLOW_ZEN_KILO_FAILOVER` | unset | When `1`, a refused Zen turn silently fails over to a healthy Kilo model. |
+| `PI_FREEFLOW_ZEN_TRANSPORT` | unset | When `bun-sidecar`, direct Zen requests use the bundled Bun helper (Bun 1.1+ required); any failure falls back to the normal transport. |
 | `PI_FREEFLOW_CLINE_POOL_FILE` | beside the relay state file | Override the per-user Cline login pool file. |
 | `PI_FREEFLOW_CLINE_WORKOS_CLIENT_ID` | bundled default | Override the Cline/WorkOS client id used for browser login. |
+
+Two session behaviors apply with no knob (deliberate continuity fixes, not opt-ins): a body carrying only camelCase `promptCacheKey` also gains `prompt_cache_key` (a non-empty snake value still wins), so camel-only callers keep a stable session; and 29-character `ses_` keys pass through verbatim instead of being remapped, matching the live CLI shape.
 
 ## Atomic Disk Catalog Cache
 

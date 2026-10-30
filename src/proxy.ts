@@ -35,6 +35,7 @@ import {
  UPSTREAM_HEADER_TIMEOUT_MS,
  UPSTREAM_OPENCODE,
  OPENCODE_ORIGIN,
+ OPENCODE_EXTRA_HEADERS_ENV,
  opencodeHeaders,
  refreshOpenCodeUserAgent,
  zenUpstreamPathFor,
@@ -44,6 +45,7 @@ import {
  convertSseToJson,
  enforceOpencodeFingerprint,
  looksLikeSse,
+ normalizePromptCacheKey,
  repairJsonToolArguments,
  sseToChatCompletionJson,
  type CaseRestoreMap,
@@ -54,6 +56,8 @@ import { getModelUpstream, isClineModel, isOvhModel, KILO_MODEL_IDS, MODEL_MAP, 
 import { ClineAuthError, refreshClineToken, toApiKey } from "./cline-device-auth.ts";
 import { rollChat, clineUpstreamModelId, keepClineTokensAlive, refreshClineVersion } from "./cline-accounts.ts";
 import { fetchWithSystemCA } from "./system-ca-fetch.ts";
+import { fetchZenDirectViaSidecar, resolveZenSidecarScript, resolveZenTransport } from "./zen-transport.ts";
+import type { ZenTransportMode } from "./zen-transport.ts";
 import {
  buildFindGlobRestore,
  chatBodyFromResponsesBody,
@@ -1090,6 +1094,15 @@ export function isRelayEligibleModel(model: unknown): boolean {
 }
 
 /**
+ * True when the resolved Zen transport forbids relay egress: a relay would
+ * re-originate the connection and forfeit the sidecar's fingerprint, so the
+ * request must ride the direct leg the transport was chosen for.
+ */
+export function relayBypassedForTransport(mode: ZenTransportMode): boolean {
+ return mode === "bun-sidecar";
+}
+
+/**
  * Failing-over decision for a canonicalized request body. Only active when
  * the PI_FREEFLOW_ZEN_KILO_FAILOVER opt-in is set; otherwise passthrough.
  * Returns failover
@@ -1169,6 +1182,33 @@ export function validatePath(rawUrl: string): URL | null {
 }
 
 /**
+ * Extra-header allowlist entries that must never ride the OpenCode lane even
+ * when the operator lists them: credentials, cookies, hop-by-hop framing, and
+ * headers the proxy owns (host, user-agent, accept-encoding). x-opencode-* is
+ * refused before this list is consulted.
+ */
+const EXTRA_HEADER_DENY = new Set([
+ "authorization",
+ "proxy-authorization",
+ "cookie",
+ "set-cookie",
+ "content-length",
+ "transfer-encoding",
+ "connection",
+ "keep-alive",
+ "proxy-connection",
+ "te",
+ "trailer",
+ "upgrade",
+ "host",
+ "user-agent",
+ "accept-encoding",
+ "x-relay-auth",
+ "x-session-affinity",
+ "x-session-id",
+]);
+
+/**
  * Sanitize and inject standard headers before forwarding request to upstream.
  * Affinity headers (x-session-affinity / x-session-id) are NEVER forwarded on
  * the opencode lane — opencodeHeaders() no longer emits them, and any client
@@ -1189,6 +1229,15 @@ export function sanitizeHeaders(
   accept: true,
   "x-request-id": true,
  };
+ // Parse the opt-in allowlist once per request, not once per header. Entries
+ // on EXTRA_HEADER_DENY are dropped: an operator-listed credential, cookie,
+ // or framing header must never be forwarded just because it was named.
+ const extraRaw = process.env[OPENCODE_EXTRA_HEADERS_ENV];
+ const extraAllowed = new Set(
+  typeof extraRaw === "string" && extraRaw.length > 0
+   ? extraRaw.split(",").map((p) => p.trim().toLowerCase()).filter((p) => p.length > 0 && !EXTRA_HEADER_DENY.has(p))
+   : [],
+ );
  const sanitized: Record<string, string> = {};
  for (const [key, value] of Object.entries(incoming)) {
   const lower = key.toLowerCase();
@@ -1197,9 +1246,14 @@ export function sanitizeHeaders(
   // request/session/project stamps, and affinity-shaped keys would all read
   // as a non-OpenCode signal upstream. The live roster is assigned below.
   if (lower.startsWith("x-opencode-")) continue;
-  if (!allowed[lower]) continue;
+  if (!allowed[lower] && !extraAllowed.has(lower)) continue;
   if (typeof value === "string") sanitized[lower] = value;
   else if (Array.isArray(value)) sanitized[lower] = value.join(", ");
+ }
+ // Opt-in default accept: only when the allowlist lists accept and the caller
+ // sent none — default (unset) leaves it absent.
+ if (sanitized["accept"] === undefined && extraAllowed.has("accept")) {
+  sanitized["accept"] = "*/*";
  }
  sanitized.host = targetHost;
  // Drop the client's own user-agent so opencodeHeaders() cannot produce a
@@ -1910,7 +1964,12 @@ export function startProxy(
     ? { model: auditModel, messages: parsedBody.messages ?? parsedBody.input, tools: parsedBody.tools }
     : undefined;
 
-   const sessionKey = sessionKeyOf(parsedBody);
+   const sessionKey = (() => {
+    if (parsedBody !== null && typeof parsedBody === "object" && !Array.isArray(parsedBody)) {
+     normalizePromptCacheKey(parsedBody as Record<string, unknown>);
+    }
+    return sessionKeyOf(parsedBody);
+   })();
    // Gate-rejection memory, captured BEFORE the body is rewritten: the next
    // attempt of this conversation is hashed from the caller's own bytes, so a
    // fingerprint taken after the fingerprint/tool normalization and the env
@@ -2025,9 +2084,15 @@ export function startProxy(
       relayState.enabled !== false &&
       Boolean(relayState.url || (relayState.relays && relayState.relays.length > 0));
      const relayEligible = isRelayEligibleModel(parsedBody?.model);
-     const shouldUseRelay = relayPoolOn && relayEligible;
+     // Sidecar-active Zen requests skip the relay pool: a relay would
+     // re-originate the connection and forfeit the sidecar's fingerprint.
+     const zenTransport = resolveZenTransport();
+     const transportBypass = relayBypassedForTransport(zenTransport.mode);
+     const shouldUseRelay = relayPoolOn && relayEligible && !transportBypass;
      if (relayPoolOn && !relayEligible) {
       log("info", `relay bypass for non-catalog model ${String(parsedBody?.model ?? "?")} — routing direct upstream`, { model: parsedBody?.model }, reqId);
+     } else if (relayPoolOn && transportBypass) {
+      log("info", "relay bypass for bun-sidecar transport — routing direct upstream", { transport: zenTransport.mode }, reqId);
      }
      if (shouldUseRelay) {
       // Dead-client guard: 'close' fires when the client goes away, the
@@ -2400,6 +2465,8 @@ export function startProxy(
      const plainHref = target.href;
      const directHref = compatHref !== plainHref ? compatHref : plainHref;
      const directFallbackHref = compatHref !== plainHref ? plainHref : null;
+     // Trace leg label: which stack originated the direct connection.
+     let directLegLabel = "zen-direct-node";
 
      const sendDirect = async (payload: Buffer, href = directHref): Promise<Response> => {
       const headers = { ...fwd };
@@ -2415,6 +2482,30 @@ export function startProxy(
       res.on("close", onClientClose);
       req.on("error", onReqError);
       try {
+       // Opt-in Bun sidecar: same bytes, Bun-originated TLS. Any failure
+       // degrades to the Node fetch below — still the direct leg
+       // (servedIssuer null, no relay mark, no gate-prime beyond the
+       // existing direct-only rule).
+       if (zenTransport.mode === "bun-sidecar" && zenTransport.bunPath !== null) {
+        try {
+         const via = await fetchZenDirectViaSidecar(
+          href,
+          {
+           method: req.method || "POST",
+           headers: { ...headers },
+           body: payload,
+           headerTimeoutMs: UPSTREAM_HEADER_TIMEOUT_MS,
+          },
+          { runtimePath: zenTransport.bunPath, scriptPath: resolveZenSidecarScript(), signal: controller.signal },
+         );
+         directLegLabel = "zen-direct-bun";
+         return via;
+        } catch (sidecarErr) {
+         directLegLabel = "zen-direct-node";
+         if (controller.signal.aborted) throw sidecarErr;
+         log("debug", `zen sidecar degraded to node fetch (${String(sidecarErr)})`, { error: String(sidecarErr) }, reqId);
+        }
+       }
        return await fetch(href, {
         method: req.method,
         headers,
@@ -2475,7 +2566,7 @@ export function startProxy(
        rememberIssuerRelay(directConversationKey, null);
       }
       if (upstreamRes.status >= 400) {
-       log("warn", `direct upstream ${upstreamRes.status} for model ${String(parsedBody?.model ?? "?")} ${target.pathname}`, { status: upstreamRes.status, model: parsedBody?.model, path: target.pathname }, reqId);
+       log("warn", `direct upstream ${upstreamRes.status} for model ${String(parsedBody?.model ?? "?")} ${target.pathname}`, { status: upstreamRes.status, model: parsedBody?.model, path: target.pathname, leg: directLegLabel }, reqId);
        audit?.attemptFailure({ attempt: 0, status: upstreamRes.status, reason: "final-upstream-status" });
       }
       // Upstream degradation tracking, mirroring the relay path: successes

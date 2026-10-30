@@ -127,6 +127,8 @@ export function isPlaceholderToolName(name: unknown): boolean {
  * explicitly through the SSE converters; never module-global.
  */
 export type CaseRestoreMap = Record<string, string>;
+/** Opt-in empty-tools: "1" skips the 11-injection on tool-less turns; unset → today's 11-injection. */
+export const ZEN_EMPTY_TOOLS_ENV = "PI_FREEFLOW_ZEN_EMPTY_TOOLS";
 
 /**
  * Lowercase caller placeholder declarations (Bash -> bash) in place before
@@ -685,6 +687,18 @@ export function ensureEnvBlock(body: Record<string, unknown>, pathname: string):
 }
 
 /**
+ * Normalize the camelCase `promptCacheKey` alias onto `prompt_cache_key` so
+ * every session-key reader sees one spelling. A non-empty snake_case value
+ * wins; neither spelling is ever stripped on the Zen lane.
+ */
+export function normalizePromptCacheKey(body: Record<string, unknown>): void {
+ const camelKey = body["promptCacheKey"];
+ if (typeof camelKey === "string" && camelKey.length > 0 && (typeof body["prompt_cache_key"] !== "string" || (body["prompt_cache_key"] as string).length === 0)) {
+  body["prompt_cache_key"] = camelKey;
+ }
+}
+
+/**
  * Enforce the full OpenCode free-tier client fingerprint on a parsed request body.
  * Caller placeholders are lowercased (Bash -> bash),
  * tools translated to the target path's wire shape (Pi find -> upstream glob via
@@ -717,7 +731,12 @@ export function enforceOpencodeFingerprint(
  argSchemas: Map<string, Record<string, unknown>>;
 } {
  const clientRequestedStream = body.stream === true;
+ normalizePromptCacheKey(body);
  const callerHadTools = Array.isArray(body.tools) && body.tools.length > 0;
+ // Opt-in title-only lane: with PI_FREEFLOW_ZEN_EMPTY_TOOLS=1 a tool-less
+ // caller rides through with 0 tools (still stream:true + stream_options +
+ // env block). Default (unset) keeps today's 11-injection.
+ const emptyToolsLane = process.env[ZEN_EMPTY_TOOLS_ENV] === "1" && !callerHadTools;
  // Zen takes the bare model id: the live CLI sends `model: <bare>` (e.g.
  // glm-5.3-flash-free), never the `opencode/`-prefixed catalog id the host
  // may carry. Strip one prefix so a prefixed id still routes.
@@ -764,41 +783,50 @@ export function enforceOpencodeFingerprint(
  // name (what arrives downstream), and injected placeholders must not be
  // repairable.
  const argSchemas = buildArgRepairSchemas(Array.isArray(body.tools) ? body.tools : []);
- const callerUpstream = new Set<string>();
- if (Array.isArray(body.tools)) {
-  for (const tool of body.tools) {
-   const n = toolNameOf(tool);
-   if (n) {
-    callerUpstream.add(upstreamToolNameFor(n).toLowerCase());
+ const injected: string[] = [];
+ let addedTools = false;
+ if (emptyToolsLane) {
+  // Title-only lane: no injection, but the chat lane still carries the usage
+  // accounting the CLI's openai-compat request sends.
+  if (!pathname.endsWith("/responses") && !pathname.endsWith("/messages")) applyOpenAiCompatVariant(body);
+ } else {
+  const callerUpstream = new Set<string>();
+  if (Array.isArray(body.tools)) {
+   for (const tool of body.tools) {
+    const n = toolNameOf(tool);
+    if (n) {
+     callerUpstream.add(upstreamToolNameFor(n).toLowerCase());
+    }
    }
   }
- }
- const missing = FULL11_TOOL_NAMES.filter((n) => !callerUpstream.has(n.toLowerCase()));
- // Cloak list carries every injected slot: none of them is the caller's own
- // tool, so model calls to them must never execute downstream — edit included,
- // even though it now rides with its real schema (real-or-drop, never a
- // no-op placeholder).
- const injected = [...missing];
+  const missing = FULL11_TOOL_NAMES.filter((n) => !callerUpstream.has(n.toLowerCase()));
+  // Cloak list carries every injected slot: none of them is the caller's own
+  // tool, so model calls to them must never execute downstream — edit included,
+  // even though it now rides with its real schema (real-or-drop, never a
+  // no-op placeholder).
+  injected.push(...missing);
 
- // Zen alone asks for a rename: its free-tier gate looks for the roster name
- // `glob`, so a Pi caller that sent `find` needs it renamed into that slot.
- // Every other lane accepts the caller's own names untouched.
- if (Array.isArray(body.tools)) {
-  body.tools = translateToolsForPath(body.tools, pathname, { forFingerprint: true });
- }
+  // Zen alone asks for a rename: its free-tier gate looks for the roster name
+  // `glob`, so a Pi caller that sent `find` needs it renamed into that slot.
+  // Every other lane accepts the caller's own names untouched.
+  if (Array.isArray(body.tools)) {
+   body.tools = translateToolsForPath(body.tools, pathname, { forFingerprint: true });
+  }
 
- const before = Array.isArray(body.tools) ? body.tools.length : 0;
- if (pathname.endsWith("/responses")) {
-  ensureResponsesFull11Tools(body);
- } else if (pathname.endsWith("/messages")) {
-  ensureMessagesFull11Tools(body);
- } else {
-  ensureChatFull11Tools(body);
-  // The openai-compat lane carries usage accounting the way the CLI's
-  // openai-compat request does.
-  applyOpenAiCompatVariant(body);
+  const before = Array.isArray(body.tools) ? body.tools.length : 0;
+  if (pathname.endsWith("/responses")) {
+   ensureResponsesFull11Tools(body);
+  } else if (pathname.endsWith("/messages")) {
+   ensureMessagesFull11Tools(body);
+  } else {
+   ensureChatFull11Tools(body);
+   // The openai-compat lane carries usage accounting the way the CLI's
+   // openai-compat request does.
+   applyOpenAiCompatVariant(body);
+  }
+  const after = Array.isArray(body.tools) ? body.tools.length : 0;
+  addedTools = after > before;
  }
- const after = Array.isArray(body.tools) ? body.tools.length : 0;
 
  // Note: Upstream OpenCode Zen explicitly rejects any tool_choice other than "auto"
  // with HTTP 400 (only "auto" is supported). tool_choice is auto-or-absent on the
@@ -809,7 +837,7 @@ export function enforceOpencodeFingerprint(
  // Empty-placeholder callers stay silent via the COMPAT description and the
  // output-aggregator; real OMP definitions execute normally.
 
- return { clientRequestedStream, callerHadTools, addedTools: after > before, caseRestore, findGlob, injected, argSchemas };
+ return { clientRequestedStream, callerHadTools, addedTools, caseRestore, findGlob, injected, argSchemas };
 }
 
 /**

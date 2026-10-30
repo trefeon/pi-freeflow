@@ -9,7 +9,7 @@
 import "./user-flow-env.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isRelayEligibleModel, startProxy } from "../src/proxy.ts";
+import { isRelayEligibleModel, relayBypassedForTransport, startProxy } from "../src/proxy.ts";
 import { resetAllRelayHealth, setActiveRelayState } from "../src/relay-state.ts";
 import type { KnownRelay, RelayState } from "../src/types.ts";
 import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
@@ -52,6 +52,11 @@ test("isRelayEligibleModel allows missing/empty models (bodiless routes keep rou
  assert.equal(isRelayEligibleModel(null), true);
  assert.equal(isRelayEligibleModel(""), true);
  assert.equal(isRelayEligibleModel("   "), true);
+});
+
+test("relay egress is bypassed for the sidecar transport only", () => {
+ assert.equal(relayBypassedForTransport("bun-sidecar"), true);
+ assert.equal(relayBypassedForTransport("node"), false);
 });
 
 // ── Proxy-level routing proof ─────────────────────────────

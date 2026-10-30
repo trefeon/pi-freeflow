@@ -60,6 +60,9 @@ export const FULL11_TOOL_NAMES = [
  "skill", "task", "todowrite", "webfetch", "websearch", "write",
 ] as const;
 export type Full11ToolName = (typeof FULL11_TOOL_NAMES)[number];
+// NOTE(#124): when the live matrix proves v2 tool names matter (shell vs bash,
+// path vs filePath), gate FULL11_TOOL_DEFS selection behind
+// PI_FREEFLOW_OPENCODE_UA_V2 (v2 UA ⇒ v2 schemas); default stays 1.19 roster.
 
 export const FULL11_TOOL_DEFS: Record<Full11ToolName, { description: string; parameters: Record<string, unknown> }> = {
  bash: {

@@ -8,6 +8,7 @@ import http from "node:http";
 import { startProxy } from "../src/proxy.ts";
 import { getHealthData, handleHealthRequest } from "../src/health.ts";
 import { getActiveRelayState, setActiveRelayState, resetAllRelayHealth } from "../src/relay-state.ts";
+import { _resetZenTransportForTest } from "../src/zen-transport.ts";
 import { authHeaders } from "./_auth.ts";
 
 function makeMockRes() {
@@ -28,6 +29,22 @@ function makeMockRes() {
  };
  return res as unknown as http.ServerResponse & { status: number; headers: Record<string, string>; body: string };
 }
+
+test("health reports the zen transport status (default node)", () => {
+ const saved = process.env["PI_FREEFLOW_ZEN_TRANSPORT"];
+ delete process.env["PI_FREEFLOW_ZEN_TRANSPORT"];
+ _resetZenTransportForTest();
+ try {
+  const data = getHealthData(29182);
+  assert.equal(data.zenTransport.mode, "node");
+  assert.equal(data.zenTransport.bunVersion, null);
+  assert.equal(data.zenTransport.reason, "transport-flag-off");
+ } finally {
+  if (saved === undefined) delete process.env["PI_FREEFLOW_ZEN_TRANSPORT"];
+  else process.env["PI_FREEFLOW_ZEN_TRANSPORT"] = saved;
+  _resetZenTransportForTest();
+ }
+});
 
 test("health returns 200 with active, mode, relays and catalog 32", async () => {
  const port = 29180;

@@ -132,6 +132,14 @@ export const OPENCODE_VERSION_TTL_MS = 6 * 60 * 60 * 1_000;
 export const OPENCODE_USER_AGENT_ENV = "PI_FREEFLOW_OPENCODE_USER_AGENT";
 /** Owned UA probe cache file (sibling of the update-check cache). */
 export const OPENCODE_VERSION_CACHE_ENV = "PI_FREEFLOW_OPENCODE_VERSION_CACHE";
+/** Opt-in 4-token UA: "1" emits opencode/latest/<live>/cli (2.x allowed); "channel/client" customizes. Unset → default 3-token shape. */
+export const OPENCODE_UA_V2_ENV = "PI_FREEFLOW_OPENCODE_UA_V2";
+/** Opt-in project variant: "cwd" hashes cwd via sha1; unset/any other → "global". Default byte-identical. */
+export const OPENCODE_PROJECT_ENV = "PI_FREEFLOW_OPENCODE_PROJECT";
+/** Working directory for the project header when PROJECT=cwd; ignored on every other variant. */
+export const OPENCODE_CWD_ENV = "PI_FREEFLOW_OPENCODE_CWD";
+/** Opt-in extra header allowlist (comma-separated, e.g. b3,traceparent,accept); default allowlist unchanged. */
+export const OPENCODE_EXTRA_HEADERS_ENV = "PI_FREEFLOW_OPENCODE_EXTRA_HEADERS";
 
 export const OPENCODE_CLIENT = "cli";
 
@@ -327,9 +335,18 @@ function currentOpenCodeVersion(): string {
 
 /**
  * Synchronous UA getter — the single User-Agent implementation every lane
- * sends (offline-safe by construction). Always the verbatim CLI full shape.
+ * sends (offline-safe by construction). Default the verbatim CLI full shape.
+ * With PI_FREEFLOW_OPENCODE_UA_V2=1, the 4-token latest/cli shape with the
+ * live version (2.x allowed); "channel/client" customizes both tokens.
  */
 export function getOpenCodeUserAgent(): string {
+ const v2raw = process.env[OPENCODE_UA_V2_ENV];
+ const v2 = typeof v2raw === "string" ? v2raw.trim() : "";
+ if (v2.length > 0) {
+  if (v2 === "1") return buildOpenCodeUserAgent(getLiveOpenCodeVersion(), { channel: "latest", client: OPENCODE_CLIENT });
+  const parts = v2.split("/").map((p) => p.trim()).filter((p) => p.length > 0);
+  if (parts.length === 2) return buildOpenCodeUserAgent(getLiveOpenCodeVersion(), { channel: parts[0], client: parts[1] });
+ }
  return buildOpenCodeUserAgent(currentOpenCodeVersion());
 }
 
@@ -378,15 +395,20 @@ export function getOpenCodeVersionSource(): OpenCodeVersionSource | null {
 }
 
 /**
- * Build the OpenCode User-Agent string: always the verbatim CLI full shape
+ * Build the OpenCode User-Agent string: default the verbatim CLI full shape
  * (`opencode/<version> ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`).
- * The legacy bare and channel shapes are gone with the A/B profiles.
+ * With both channel+client, the 4-token CLI shape
+ * (`opencode/<channel>/<version>/<client> ai-sdk/... runtime/...`).
+ * The legacy bare shape is gone with the A/B profiles.
  */
-export function buildOpenCodeUserAgent(version: string): string {
+export function buildOpenCodeUserAgent(version: string, opts?: { channel?: string; client?: string }): string {
+ if (typeof opts?.channel === "string" && opts.channel.length > 0 && typeof opts?.client === "string" && opts.client.length > 0) {
+  return `opencode/${opts.channel}/${version}/${opts.client} ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`;
+ }
  return `opencode/${version} ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`;
 }
 
-const STABLE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+const STABLE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{13,14}$/;
 const STABLE_SESSION_CAP = 1000;
 const stableSessionCache = new Map<string, string>();
 const TIME48_MASK = (1n << 48n) - 1n;
@@ -480,11 +502,20 @@ export function createOpenCodeRequestId(): string {
 }
 
 /**
- * Live project header: the CLI sends `global` outside a repo and the sha1 of
- * the working directory inside one. Without a cwd to hash, `global` is the
- * truthful value — never the fixed pin above.
+ * Live project header: legacy cwd hash preserved, env only overrides. Unset
+ * PI_FREEFLOW_OPENCODE_PROJECT keeps today's behavior (cwd → sha1, else
+ * `global`), so the wire default (no cwd threaded) stays `global` and
+ * existing callers/tests are unchanged. "global" forces global even with a
+ * cwd; "cwd" hashes the param or PI_FREEFLOW_OPENCODE_CWD (else global).
  */
 export function resolveOpenCodeProjectLive(cwd?: string): string {
+ const variant = process.env[OPENCODE_PROJECT_ENV];
+ if (variant === "cwd") {
+  const effective = typeof cwd === "string" && cwd.length > 0 ? cwd : process.env[OPENCODE_CWD_ENV];
+  if (typeof effective === "string" && effective.length > 0) return openCodeProjectForCwd(effective);
+  return OPENCODE_PROJECT_GLOBAL;
+ }
+ if (variant === "global") return OPENCODE_PROJECT_GLOBAL;
  if (typeof cwd === "string" && cwd.length > 0) return openCodeProjectForCwd(cwd);
  return OPENCODE_PROJECT_GLOBAL;
 }
@@ -499,7 +530,9 @@ export function resolveOpenCodeProjectLive(cwd?: string): string {
  * @param sessionKey conversation-scoped key reused within a run
  *   (stableOpenCodeSessionId maps it deterministically; a valid ses_* passes
  *   through verbatim). Omitted/empty allocates a fresh id for this call.
- * @param cwd working directory for the project header; omitted → `global`.
+ * @param cwd working directory for the project header; omitted → `global`
+ *   unless PI_FREEFLOW_OPENCODE_PROJECT=cwd supplies one through
+ *   PI_FREEFLOW_OPENCODE_CWD.
  */
 export function opencodeHeaders(sessionKey?: string, cwd?: string): Record<string, string> {
  const sessionId =
@@ -794,6 +827,16 @@ export const BASE_PORT_REPROBE_MS = 3_000;
 export const MAX_BODY_BYTES = 32 * 1024 * 1024;
 /** Default timeout for upstream headers while proxying a request. */
 export const UPSTREAM_HEADER_TIMEOUT_MS = 300_000;
+// ── Zen transport (opt-in Bun sidecar) ─────────────────────────────────
+// PI_FREEFLOW_ZEN_TRANSPORT selects the TLS stack that originates the Zen
+// direct-leg connection. Unset (or anything but "bun-sidecar") keeps the
+// Node fetch path, byte-identical to today. Set exactly "bun-sidecar" to
+// route the Zen direct leg through src/zen-sidecar.ts (Bun.fetch native
+// stack) with automatic degrade to Node fetch when bun is absent, too old,
+// or the sidecar fails. Zen relay legs are skipped while the sidecar is
+// active (a relay would re-originate the connection and forfeit the
+// sidecar's fingerprint); non-Zen lanes never use the sidecar.
+export const ZEN_TRANSPORT_ENV = "PI_FREEFLOW_ZEN_TRANSPORT";
 /** Timeout for refreshing the catalog (host fetchDynamicModels). */
 export const CATALOG_REFRESH_TIMEOUT_MS = 10_000;
 /** Timeout for probing a relay with a light /v1/models request. */
