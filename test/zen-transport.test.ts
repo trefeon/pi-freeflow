@@ -6,6 +6,9 @@ import * as http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { ZEN_TRANSPORT_ENV } from "../src/config.ts";
+import { isZenTransportEnvMismatch } from "../src/client.ts";
+import { getDaemonHealth, startProxy } from "../src/proxy.ts";
+import { authHeaders } from "./_auth.ts";
 import {
 	_resetZenTransportForTest,
 	fetchZenDirectViaSidecar,
@@ -415,6 +418,155 @@ describe("sidecar under Bun (opt-in, skipped when Bun is absent)", () => {
 			assert.equal(run.stdout.slice(nl + 1), "data: bun\n\n");
 		} finally {
 			await new Promise<void>((r) => server.close(() => r()));
+		}
+	});
+});
+
+describe("isZenTransportEnvMismatch", () => {
+	it("returns true when client wants bun-sidecar and daemon has transport-flag-off", () => {
+		const mismatch = isZenTransportEnvMismatch(
+			{ mode: "node", bunVersion: null, reason: "transport-flag-off" },
+			"bun-sidecar",
+		);
+		assert.equal(mismatch, true);
+	});
+
+	it("returns false when daemon has bun-absent or bun-probe-failed or mode bun-sidecar", () => {
+		assert.equal(
+			isZenTransportEnvMismatch(
+				{ mode: "node", bunVersion: null, reason: "bun-absent" },
+				"bun-sidecar",
+			),
+			false,
+		);
+		assert.equal(
+			isZenTransportEnvMismatch(
+				{ mode: "node", bunVersion: null, reason: "bun-probe-failed" },
+				"bun-sidecar",
+			),
+			false,
+		);
+		assert.equal(
+			isZenTransportEnvMismatch(
+				{ mode: "bun-sidecar", bunVersion: "1.2.5", reason: "bun-detected" },
+				"bun-sidecar",
+			),
+			false,
+		);
+	});
+
+	it("returns true when client has unset flag and daemon has mode bun-sidecar", () => {
+		const mismatch = isZenTransportEnvMismatch(
+			{ mode: "bun-sidecar", bunVersion: "1.2.5", reason: "bun-detected" },
+			undefined,
+		);
+		assert.equal(mismatch, true);
+	});
+
+	it("returns false when daemonZenTransport is undefined", () => {
+		assert.equal(isZenTransportEnvMismatch(undefined, "bun-sidecar"), false);
+		assert.equal(isZenTransportEnvMismatch(undefined, undefined), false);
+	});
+});
+
+describe("getDaemonHealth zenTransport preservation", () => {
+	it("preserves zenTransport from a running proxy's /_health", async () => {
+		const { server, port } = await startProxy(0);
+		try {
+			const health = await getDaemonHealth(port);
+			assert.ok(health !== null, "daemon health must return an object");
+			assert.ok(health.zenTransport !== undefined, "zenTransport must be present");
+			assert.ok(
+				health.zenTransport?.mode === "node" || health.zenTransport?.mode === "bun-sidecar",
+				"mode must be node or bun-sidecar",
+			);
+			assert.ok(typeof health.zenTransport?.reason === "string", "reason must be string");
+		} finally {
+			if (server) await new Promise<void>((r) => server.close(() => r()));
+		}
+	});
+});
+
+describe("direct lane 200 OK streaming SSE chunk delivery", () => {
+	it("delivers first chunk to downstream client BEFORE upstream response closes", async () => {
+		let upstreamClosed = false;
+		let downstreamReceivedFirstChunk = false;
+		let firstChunkArrivalSawUpstreamOpen = false;
+		const { promise: firstChunkReceived, resolve: signalFirstChunkReceived } = Promise.withResolvers<void>();
+
+		const mockUpstream = http.createServer((_req, res) => {
+			res.writeHead(200, {
+				"content-type": "text/event-stream; charset=utf-8",
+				"cache-control": "no-cache",
+				"connection": "keep-alive",
+			});
+			res.write("data: first-chunk\n\n");
+			// Keep upstream response open until downstream explicitly signals that the first chunk was received
+			void firstChunkReceived.then(() => {
+				res.write("data: second-chunk\n\n");
+				res.end();
+				upstreamClosed = true;
+			});
+		});
+
+		const { promise: upstreamListening, resolve: onUpstreamListening } = Promise.withResolvers<void>();
+		mockUpstream.listen(0, "127.0.0.1", () => onUpstreamListening());
+		await upstreamListening;
+		const mockPort = (mockUpstream.address() as { port: number }).port;
+
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+			const targetUrl = new URL(String(url));
+			return realFetch(`http://127.0.0.1:${mockPort}${targetUrl.pathname}`, init);
+		}) as typeof fetch;
+
+		const { server, port } = await startProxy(0);
+
+		try {
+			const postData = JSON.stringify({
+				model: "nemotron-3.5-super-vl-free",
+				messages: [{ role: "user", content: "stream test" }],
+				stream: true,
+			});
+
+			const { promise: clientFinished, resolve: resolveClient, reject: rejectClient } = Promise.withResolvers<void>();
+			const req = http.request({
+				hostname: "127.0.0.1",
+				port,
+				path: "/v1/chat/completions",
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"content-length": Buffer.byteLength(postData),
+					...authHeaders(),
+				},
+			});
+
+			req.on("response", (res) => {
+				assert.equal(res.statusCode, 200);
+				res.on("data", (chunk: Buffer) => {
+					const text = chunk.toString();
+					if (text.includes("first-chunk") && !downstreamReceivedFirstChunk) {
+						downstreamReceivedFirstChunk = true;
+						firstChunkArrivalSawUpstreamOpen = !upstreamClosed;
+						signalFirstChunkReceived();
+					}
+				});
+				res.on("end", () => resolveClient());
+			});
+
+			req.on("error", rejectClient);
+			req.write(postData);
+			req.end();
+
+			await clientFinished;
+
+			assert.equal(downstreamReceivedFirstChunk, true, "downstream client must receive first chunk");
+			assert.equal(firstChunkArrivalSawUpstreamOpen, true, "first chunk must arrive while upstream response is still open");
+		} finally {
+			globalThis.fetch = realFetch;
+			if (server) await new Promise<void>((r) => server.close(() => r()));
+			await new Promise<void>((r) => mockUpstream.close(() => r()));
 		}
 	});
 });

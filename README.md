@@ -183,7 +183,8 @@ each password once afterwards.
 The same command set works identically in OMP and Pi:
 
 ```bash
-/freeflow status                  # View active relay, pool status, and candidates
+/freeflow status                  # View installed version, active relay, pool status, and candidates
+/freeflow version                 # Show installed plugin version and cached update status (alias: ver)
 /freeflow hide|show               # Hide or restore the status-bar widget (also `widget hide`/`widget show`)
 /freeflow list                    # List all relays with real-time health badges
 /freeflow use <url|index|label>   # Switch active relay

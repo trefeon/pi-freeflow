@@ -41,6 +41,7 @@ import {
  RECOVERY_BACKOFF_CAP_MS,
  refreshOpenCodeUserAgent,
  resolveDaemonSrcCacheDir,
+ ZEN_TRANSPORT_ENV,
 } from "./config.ts";
 import { logInfo, logWarn } from "./logger.ts";
 import {
@@ -1029,18 +1030,48 @@ export async function waitForReady(
  return false;
 }
 
+/**
+ * True when the running daemon's zenTransport snapshot disagrees with this
+ * client's PI_FREEFLOW_ZEN_TRANSPORT env setting. A daemon started with
+ * PI_FREEFLOW_ZEN_TRANSPORT=bun-sidecar reports mode "bun-sidecar" or
+ * reason "bun-absent" / "bun-probe-failed" (never "transport-flag-off"),
+ * so a missing/broken Bun binary does not trigger a respawn loop.
+ */
+export function isZenTransportEnvMismatch(
+ daemonZenTransport: { mode: string; bunVersion: string | null; reason: string } | undefined,
+ clientEnvValue = process.env[ZEN_TRANSPORT_ENV],
+): boolean {
+ if (!daemonZenTransport) return false;
+ const clientWantsSidecar = clientEnvValue === "bun-sidecar";
+ const daemonHadSidecarFlag =
+  daemonZenTransport.mode === "bun-sidecar" ||
+  daemonZenTransport.reason === "bun-absent" ||
+  daemonZenTransport.reason === "bun-probe-failed";
+ return clientWantsSidecar !== daemonHadSidecarFlag;
+}
+
 async function probeAndMaybeReplace(
  port: number,
  label: string,
  probeTimeoutMs = 150,
 ): Promise<number | null> {
  if (!(await isProxyAlive(port, probeTimeoutMs))) return null;
- const ver = await getDaemonVersion(port);
+ const health = await getDaemonHealth(port);
+ const ver = health ? health.version : null;
  if (ver !== null && ver !== PKG_VERSION) {
   logWarn(`detected proxy daemon version mismatch: running v${ver}, required v${PKG_VERSION} — auto-restarting`);
   await killStaleDaemon(port, ver, label);
   lastSpawnAt = 0;
   return null;
+ }
+ if (health !== null && isZenTransportEnvMismatch(health.zenTransport)) {
+  logWarn(
+   `detected proxy daemon zenTransport mismatch: running ${health.zenTransport?.mode ?? "node"} (${health.zenTransport?.reason ?? "unknown"}), client wants ${process.env[ZEN_TRANSPORT_ENV] === "bun-sidecar" ? "bun-sidecar" : "node"} — auto-restarting`,
+  );
+  if (await killStaleDaemon(port, ver ?? PKG_VERSION, label)) {
+   lastSpawnAt = 0;
+   return null;
+  }
  }
  return port;
 }

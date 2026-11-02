@@ -86,8 +86,8 @@ test("direct streaming forces anti-buffer headers even when upstream omits them"
 test("relay dispatcher gate matches the bundled-undici rule and legs share one warm agent", async (t) => {
 	const memBefore = getActiveRelayState();
 	await withIsolatedRelayFiles(async () => {
-		const expected = Number((process.versions.undici ?? "0").split(".")[0]) >= 7;
-		assert.equal(canUseRelayDispatcher, expected, "gate must track the bundled undici major (npm undici 7 needs bundled 7+)");
+		const expected = Number((process.versions.undici ?? "0").split(".")[0]) === 7;
+		assert.equal(canUseRelayDispatcher, expected, "gate must track the bundled undici major (npm undici 7 needs bundled === 7)");
 
 		const state: RelayState = {
 			mode: "auto",

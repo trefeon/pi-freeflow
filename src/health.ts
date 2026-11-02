@@ -68,7 +68,7 @@ interface HealthData {
  * for unversioned responses. The key list must match what getDaemonHealth parses.
  */
 export type DaemonHealthSnapshot = {
- [K in "activeRequests" | "sseRate" | "sseDegraded" | "lastBytesAt"]?: HealthData[K] | undefined;
+ [K in "activeRequests" | "sseRate" | "sseDegraded" | "lastBytesAt" | "zenTransport"]?: HealthData[K] | undefined;
 } & {
  version: string | null;
 } | null;

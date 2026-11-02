@@ -105,6 +105,31 @@ export function getLocalVersion(): string | null {
  }
 }
 
+/**
+ * First line of every /freeflow status banner and /freeflow version reply.
+ * Null local (unreadable package.json) falls back to "unknown" instead of
+ * throwing or printing an empty version.
+ */
+export function formatVersionLine(local: string | null): string {
+ return `pi-freeflow v${local ?? "unknown"}`;
+}
+
+/**
+ * Version reply body: the version line plus a cached-latest verdict.
+ * Offline by design — `latest` must come from getCachedUpdate(), never a
+ * live fetch, so this stays pure and synchronous.
+ */
+export function formatVersionDetail(local: string | null, latest: string | null): string {
+ const line = formatVersionLine(local);
+ if (latest && local && compareVersions(latest, local) > 0) {
+  return `${line}\nUpdate available: ${local} -> ${latest} — run /freeflow update`;
+ }
+ if (local && latest) {
+  return `${line}\nUp to date (v${local})`;
+ }
+ return line;
+}
+
 export async function fetchLatestVersion(): Promise<string | null> {
  try {
   const res = await fetch(REGISTRY_URL, {

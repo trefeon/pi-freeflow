@@ -136,7 +136,7 @@ Runtime knobs, all read in `src/config.ts`. "Unset" means the default applies.
 | `PI_FREEFLOW_OPENCODE_EXTRA_HEADERS` | unset | Comma-separated caller headers to forward in addition to the built-in allowlist. Credentials, cookies, and hop-by-hop headers are always refused. |
 | `PI_FREEFLOW_ZEN_EMPTY_TOOLS` | unset | When `1`, tool-less Zen turns are sent with zero tools instead of the injected client roster. |
 | `PI_FREEFLOW_ZEN_KILO_FAILOVER` | unset | When `1`, a refused Zen turn silently fails over to a healthy Kilo model. |
-| `PI_FREEFLOW_ZEN_TRANSPORT` | unset | When `bun-sidecar`, direct Zen requests use the bundled Bun helper (Bun 1.1+ required); any failure falls back to the normal transport. |
+| `PI_FREEFLOW_ZEN_TRANSPORT` | unset | When `bun-sidecar`, direct Zen requests use the bundled Bun helper (Bun 1.1+ required); any failure falls back to the normal transport. Starting a session with this variable set automatically replaces an idle background daemon started without it, and `/freeflow status` displays the active Zen transport mode and fallback reason when set. |
 | `PI_FREEFLOW_CLINE_POOL_FILE` | beside the relay state file | Override the per-user Cline login pool file. |
 | `PI_FREEFLOW_CLINE_WORKOS_CLIENT_ID` | bundled default | Override the Cline/WorkOS client id used for browser login. |
 

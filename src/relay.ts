@@ -35,18 +35,17 @@ const ROLL_NOTIFY_MS = 5 * 60 * 1_000;
  * (bodies stream unbounded — a wedged leg is cut by stream-pipe's
  * body-stall watchdog instead), connections 50 caps burst spray.
  *
- * Compat: an npm undici Agent is rejected as a `dispatcher`
- * by an older-major global fetch bundled in Node
- * (`invalid onRequestStart method`, cf. commit 7cbbb37), so
- * the custom dispatcher attaches only when the bundled
- * undici major covers the npm major (both 7 here); older
- * Node keeps the built-in global dispatcher, which already
- * pools keep-alive.
+ * Compat: an npm undici 7.x Agent is only compatible when Node's
+ * bundled undici major equals 7 (an 8.x vs 7.x major mismatch
+ * throws `invalid onRequestStart method` or breaks cloned stream
+ * bodies under Node 22/24's built-in fetch); older or newer Node
+ * keeps the built-in global dispatcher, which already pools
+ * keep-alive.
  ********************************************************/
 let relayAgent: Agent | null = null;
 /** True when the bundled undici accepts the npm undici 7.x Agent as dispatcher. */
 export const canUseRelayDispatcher =
- Number((process.versions.undici ?? "0").split(".")[0]) >= 7;
+ Number((process.versions.undici ?? "0").split(".")[0]) === 7;
 function getRelayAgent(): Agent {
  if (!relayAgent) {
   relayAgent = new Agent({ keepAliveTimeout: 60_000, connectTimeout: 10_000, headersTimeout: 60_000, bodyTimeout: 0, connections: 50 });

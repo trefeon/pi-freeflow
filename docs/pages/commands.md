@@ -6,7 +6,8 @@ All commands are available inside the OMP or Pi TUI via `/freeflow`:
 
 | Command | Action |
 | :--- | :--- |
-| `/freeflow status` | View active relay URL, pool status (ON/OFF), candidates, and a Cline login summary (logins saved, most recently used login and model) |
+| `/freeflow status` | View installed plugin version, active relay URL, pool status (ON/OFF), candidates, Cline login summary (logins saved, most recently used login and model), and active Zen transport mode when `PI_FREEFLOW_ZEN_TRANSPORT` is set |
+| `/freeflow version` | Show installed plugin version and cached update status (offline, alias: `/freeflow ver`) |
 | `/freeflow hide` | Hide the status-bar widget (also `widget hide`) |
 | `/freeflow show` | Show the status-bar widget again (also `widget show`) |
 | `/freeflow list` | List all relays with health badges (✓ / ⚠️ cooling) |

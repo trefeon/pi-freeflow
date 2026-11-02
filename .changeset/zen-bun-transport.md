@@ -4,7 +4,9 @@
 
 Add an opt-in Bun transport for direct OpenCode Zen requests, and fix stream handling on the same lane.
 
-Setting `PI_FREEFLOW_ZEN_TRANSPORT=bun-sidecar` sends direct Zen traffic through a bundled Bun helper, so the TLS connection originates from Bun's networking stack while the request bytes stay identical. The helper is used only when a Bun 1.1+ binary is found and passes a quick version check; otherwise the proxy stays on its normal transport, and any helper failure falls back to it per request. Relay routing is skipped while the helper is active, because a relay would originate a different connection.
+Setting `PI_FREEFLOW_ZEN_TRANSPORT=bun-sidecar` sends direct Zen traffic through a bundled Bun helper, so the TLS connection originates from Bun's networking stack while the request bytes stay identical. The helper is used only when a Bun 1.1+ binary is found and passes a quick version check; otherwise the proxy stays on its normal transport, and any helper failure falls back to it per request. Relay routing is skipped while the helper is active, because a relay would originate a different connection. Exporting or clearing `PI_FREEFLOW_ZEN_TRANSPORT=bun-sidecar` automatically restarts an idle background proxy daemon so the transport change takes effect immediately. Direct OpenCode Zen `200 OK` streams now flush immediately instead of buffering the full stream before forwarding.
+
+`/freeflow status` now shows the installed `pi-freeflow` version on its first line and displays the active Zen transport mode when `PI_FREEFLOW_ZEN_TRANSPORT` is set. A new `/freeflow version` command (alias `/freeflow ver`) reports the installed plugin version and cached update status offline.
 
 The direct lane also stops cutting a response body when the header wait expires after headers have arrived, reports a child that dies mid-body instead of ending the stream silently, and returns responses that must not carry a body (204, 205, 304) correctly. Bun installs whose path contains spaces are now detected, and the helper refuses plain-HTTP targets outside loopback and URLs carrying embedded credentials.
 

@@ -456,3 +456,30 @@ test("ci.yml classifies changed paths into the gates it promises", { skip: SKIP_
 		});
 	});
 });
+
+test("dependabot.yml ignores semver-major updates for runtime-critical packages", { skip: SKIP_NO_YAML }, () => {
+	assert.ok(yamlLoad, "workflow parsing unavailable");
+	const dependabotPath = path.join(ROOT, ".github", "dependabot.yml");
+	const raw = fs.readFileSync(dependabotPath, "utf8");
+	const doc = yamlLoad(raw) as {
+		updates?: Array<{
+			"package-ecosystem"?: string;
+			ignore?: Array<{
+				"dependency-name"?: string;
+				"update-types"?: string[];
+			}>;
+		}>;
+	};
+	assert.ok(Array.isArray(doc?.updates), "updates must be an array");
+	const npmConfig = doc.updates.find((u) => u["package-ecosystem"] === "npm");
+	assert.ok(npmConfig, "npm package-ecosystem must exist");
+	const ignores = npmConfig.ignore ?? [];
+
+	const nodeTypesIgnore = ignores.find((i) => i["dependency-name"] === "@types/node");
+	assert.ok(nodeTypesIgnore, "@types/node must be in ignore list");
+	assert.deepEqual(nodeTypesIgnore["update-types"], ["version-update:semver-major"]);
+
+	const undiciIgnore = ignores.find((i) => i["dependency-name"] === "undici");
+	assert.ok(undiciIgnore, "undici must be in ignore list");
+	assert.deepEqual(undiciIgnore["update-types"], ["version-update:semver-major"]);
+});

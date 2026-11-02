@@ -1381,12 +1381,28 @@ export async function getDaemonHealth(
    const sr = "sseRate" in data ? data.sseRate : undefined;
    const sd = "sseDegraded" in data ? data.sseDegraded : undefined;
    const lb = "lastBytesAt" in data ? data.lastBytesAt : undefined;
+   let zt: DaemonHealthSnapshot extends null ? never : NonNullable<DaemonHealthSnapshot>["zenTransport"] = undefined;
+   if ("zenTransport" in data && typeof data.zenTransport === "object" && data.zenTransport !== null) {
+    const rawZt = data.zenTransport as Record<string, unknown>;
+    if (
+     (rawZt.mode === "node" || rawZt.mode === "bun-sidecar") &&
+     (typeof rawZt.bunVersion === "string" || rawZt.bunVersion === null) &&
+     typeof rawZt.reason === "string"
+    ) {
+     zt = {
+      mode: rawZt.mode,
+      bunVersion: rawZt.bunVersion,
+      reason: rawZt.reason,
+     };
+    }
+   }
    return {
     version: v,
     activeRequests: typeof ar === "number" ? ar : undefined,
     sseRate: typeof sr === "number" ? sr : undefined,
     sseDegraded: typeof sd === "boolean" ? sd : undefined,
     lastBytesAt: typeof lb === "number" ? lb : undefined,
+    zenTransport: zt,
    };
   }
   return null;
@@ -1520,28 +1536,45 @@ export async function killPortHolder(port: number): Promise<boolean> {
    }
   } catch { }
   if (process.platform === "win32") {
+   let killed = false;
+   const tryTaskkillPid = (rawPid: string | undefined): void => {
+    const pid = rawPid?.trim();
+    if (!pid || !/^\d+$/.test(pid)) return;
+    const num = Number(pid);
+    if (num <= 4 || num === process.pid) return; // never kill system/idle (0/4) or self
+    try {
+     execSync(`taskkill /F /T /PID ${pid}`, { timeout: 3000, stdio: "ignore", windowsHide: true });
+     killed = true;
+    } catch { }
+   };
    try {
     const out = execSync(`netstat -ano | findstr :${port}`, {
      encoding: "utf8",
      timeout: 3000,
      windowsHide: true,
     }) as string;
-    let killed = false;
     for (const line of out.split("\n")) {
      if (!line.includes("LISTENING")) continue;
      const parts = line.trim().split(/\s+/);
      if (!parts[1] || !parts[1].endsWith(`:${port}`)) continue;
-     const pid = parts[parts.length - 1];
-     if (!pid || !/^\d+$/.test(pid)) continue;
-     if (Number(pid) === process.pid) continue; // never self-kill
-     try {
-      execSync(`taskkill /F /T /PID ${pid}`, { timeout: 3000, stdio: "ignore", windowsHide: true });
-      killed = true;
-     } catch { }
+     tryTaskkillPid(parts[parts.length - 1]);
     }
-    if (killed) return true;
    } catch { }
-   return false;
+   if (!killed) {
+    // Windows 11 24H2+ (build 26300+) can report Bound TCP listeners with
+    // PID 0 or omit them from netstat -ano; Get-NetTCPConnection still
+    // resolves the owning process id reliably.
+    try {
+     const psOut = execSync(
+      `powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique"`,
+      { encoding: "utf8", timeout: 5000, windowsHide: true },
+     ) as string;
+     for (const line of psOut.split(/\r?\n/)) {
+      tryTaskkillPid(line);
+     }
+    } catch { }
+   }
+   return killed;
   }
   try {
    const out = execSync(`lsof -ti tcp:${port} 2>/dev/null || fuser -n tcp ${port} 2>/dev/null`, {
@@ -2536,7 +2569,10 @@ export function startProxy(
       // gate). Refresh once and resend once with rebuilt headers; when the
       // refresh is offline or changes nothing, the original verdict stands
       // with no extra upstream traffic. Single retry, direct lane only.
-      if (upstreamRes.status !== 404 && upstreamRes.status !== 405) {
+      // Only 400, 403, and 426 can ever match isStaleOpenCodeVersionError;
+      // cloning a 200 OK response would buffer the entire SSE stream to EOF
+      // before pipeUpstreamStream starts.
+      if (upstreamRes.status === 400 || upstreamRes.status === 403 || upstreamRes.status === 426) {
        let staleText = "";
        try { staleText = await upstreamRes.clone().text(); } catch { }
        if (isStaleOpenCodeVersionError(upstreamRes.status, staleText)) {

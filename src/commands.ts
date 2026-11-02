@@ -11,11 +11,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getClientPort, isJsRuntimeExecutable, materializeDaemonSources, resolveDaemonRuntime } from "./client.ts";
 import { refreshCatalog, setAliveCatalog } from "./catalog.ts";
-import { DAEMON_SPAWN_ENV, DATA_DIR_ENV, DEBUG_STATE_FILE, HOST, LOG_FILE, PORT, RELAY_STATE_FILE } from "./config.ts";
+import { DAEMON_SPAWN_ENV, DATA_DIR_ENV, DEBUG_STATE_FILE, HOST, LOG_FILE, PORT, RELAY_STATE_FILE, ZEN_TRANSPORT_ENV } from "./config.ts";
 import { getCachedUpdate, isLinkedInstall } from "./update-checker.ts";
 import {
  compareVersions,
  fetchLatestVersion,
+ formatVersionDetail,
+ formatVersionLine,
  getLocalVersion,
  runUpdateStep,
 } from "./update-core.ts";
@@ -38,6 +40,7 @@ import {
  saveDebugState,
 } from "./logger.ts";
 import { probeRelay } from "./probe.ts";
+import { resolveZenTransport } from "./zen-transport.ts";
 import { killPortHolder } from "./proxy.ts";
 import { getUpstreamHealth, resetUpstreamGate } from "./upstream-health.ts";
 import {
@@ -558,7 +561,7 @@ export function createCommandSpec(
 ): Omit<RegisteredCommand, "name"> {
  return {
   description:
-   "Relay egress: auto | sticky | spread | on | off | hide | show | widget hide/show | status | kill|stop|shutdown | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | url [value] | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | trace [reqId] | debug on|off|level <level> | refresh | models|reload | update [auto on|off] | autoupdate [on|off] | deploy cloudflare | deploy deno | deploy vercel | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot] | cline signout|switch",
+   "Relay egress: auto | sticky | spread | on | off | hide | show | widget hide/show | status | version|ver | kill|stop|shutdown | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | url [value] | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | trace [reqId] | debug on|off|level <level> | refresh | models|reload | update [auto on|off] | autoupdate [on|off] | deploy cloudflare | deploy deno | deploy vercel | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot] | cline signout|switch",
   getArgumentCompletions: (prefix: string) =>
    [
     "auto",
@@ -570,6 +573,8 @@ export function createCommandSpec(
     "widget hide",
     "widget show",
     "status",
+    "version",
+    "ver",
     "kill",
     "stop",
     "shutdown",
@@ -1221,8 +1226,9 @@ export function createCommandSpec(
     ctx.ui.notify("Widget shown", "info");
    } else if (sub === "status") {
     flash();
+    const local = getLocalVersion();
+    const versionLine = formatVersionLine(local);
     try {
-     const local = getLocalVersion();
      let latest: string | null = null;
      const cached = getCachedUpdate();
      if (cached && typeof cached.latest === "string") {
@@ -1233,6 +1239,8 @@ export function createCommandSpec(
        `Update available: ${local} -> ${latest} - run /freeflow update`,
        "info",
       );
+     } else if (latest && local) {
+      ctx.ui.notify(`Up to date (v${local})`, "info");
      }
     } catch {
      // swallow — status banner is best-effort
@@ -1260,6 +1268,13 @@ export function createCommandSpec(
      })
      .join(" | ");
     const clineLine = formatClineStatusSnippet(loadPool());
+    const zenTransportLine =
+     typeof process.env[ZEN_TRANSPORT_ENV] === "string" && process.env[ZEN_TRANSPORT_ENV].trim() !== ""
+      ? (() => {
+       const zt = resolveZenTransport();
+       return `\nZen transport: ${zt.mode} (${zt.mode === "bun-sidecar" && zt.bunVersion ? `bun v${zt.bunVersion}` : zt.reason})`;
+      })()
+      : "";
     const deadParked = relayState.relays.filter((r) => {
      const h = getRelayHealth(r.url);
      return h != null && h.lastStatus === 402 && Date.now() < h.cooldownUntil;
@@ -1267,7 +1282,18 @@ export function createCommandSpec(
     const deadLine = deadParked.length
      ? `\nDead relays (HTTP 402 disabled deployment, parked): ${deadParked.map((r) => r.url).join(", ")} — delete the Vercel project, run /freeflow remove <url>, then deploy Cloudflare`
      : "";
-    ctx.ui.notify(`${modeLine} | ${poolLine} | auto-update: ${relayState.autoUpdate ? "on" : "off"}\n${stateFileLine}\nUpstream: ${upstreamLine}\n${clineLine}${deadLine}`, "info");
+    ctx.ui.notify(`${versionLine}\n${modeLine} | ${poolLine} | auto-update: ${relayState.autoUpdate ? "on" : "off"}\n${stateFileLine}\nUpstream: ${upstreamLine}${zenTransportLine}\n${clineLine}${deadLine}`, "info");
+   } else if (sub === "version" || sub === "ver") {
+    // Offline by design: cached-latest only, never a live fetch.
+    const local = getLocalVersion();
+    try {
+     const cached = getCachedUpdate();
+     const latest = cached && typeof cached.latest === "string" ? cached.latest : null;
+     ctx.ui.notify(formatVersionDetail(local, latest), "info");
+    } catch {
+     // swallow — version reply is best-effort
+     ctx.ui.notify(formatVersionLine(local), "info");
+    }
    } else if (sub === "kill" || sub === "stop" || sub === "shutdown") {
     const port = getClientPort() || PORT;
     try {
