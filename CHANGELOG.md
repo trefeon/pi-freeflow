@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.44.1
+
+### Patch Changes
+
+- Split oversized source modules into focused files with no behavior change. The proxy, command registry, stream pipeline, fingerprint, tool translation, Cline pool, and config internals now live in single-responsibility modules behind the same import paths, so updates and reviews land in smaller files while every command, lane, and gate behaves exactly as before.
+
 ## 1.44.0
 
 ### Minor Changes
