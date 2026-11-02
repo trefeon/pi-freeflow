@@ -14,7 +14,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const configSrc = fs.readFileSync(path.join(rootDir, "src", "config.ts"), "utf8");
+// Config constants live in src/config.ts and its split modules (config-paths.ts,
+// opencode-identity.ts); scan them together so source-derived keys keep working.
+const configSrc =
+ fs.readFileSync(path.join(rootDir, "src", "config.ts"), "utf8") +
+ "\n" +
+ fs.readFileSync(path.join(rootDir, "src", "config-paths.ts"), "utf8");
 const loggerSrc = fs.readFileSync(path.join(rootDir, "src", "logger.ts"), "utf8");
 
 // Proxy port env key (dot-access: `process.env.<KEY>_PORT`).
