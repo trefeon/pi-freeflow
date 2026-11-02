@@ -13,21 +13,14 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type * as http from "node:http";
 import {
  BASE_PORT_REPROBE_MS,
- BREAKER_FAILURES,
- BREAKER_HALT_MS,
- BREAKER_WINDOW_MS,
- BUSY_BYPASS_CONTINUOUS_MS,
- BUSY_BYPASS_QUIET_MS,
  DAEMON_CONTROL_TIMEOUT_MS,
  DAEMON_CONTROL_TIMEOUT_MS_ENV,
  DAEMON_HEARTBEAT_MS,
  DAEMON_HEARTBEAT_MS_ENV,
  DAEMON_READY_TIMEOUT_MS,
- DAEMON_RUNTIME_ENV,
  DAEMON_SPAWN_ENV,
  DAEMON_WATCHDOG_MS,
  DAEMON_WATCHDOG_MS_ENV,
@@ -37,10 +30,7 @@ import {
  OPENCODE_VERSION_TTL_MS,
  PKG_VERSION,
  PORT,
- RECOVERY_BACKOFF_BASE_MS,
- RECOVERY_BACKOFF_CAP_MS,
  refreshOpenCodeUserAgent,
- resolveDaemonSrcCacheDir,
  ZEN_TRANSPORT_ENV,
 } from "./config.ts";
 import { logInfo, logWarn } from "./logger.ts";
@@ -55,8 +45,71 @@ import {
 } from "./proxy.ts";
 import { compareVersions } from "./update-core.ts";
 import { isDaemonIdentityBody } from "./health.ts";
-import type { DaemonHealthSnapshot } from "./health.ts";
 import { tokenAuthHeaders } from "./token.ts";
+import {
+ daemonScriptPath,
+ findExecutableOnPath,
+ isJsRuntimeExecutable,
+ isUnderNodeModules,
+ materializeDaemonSources,
+ pruneStaleDaemonSrcDirs,
+ readPackageJsonObject,
+ resolveDaemonRuntime,
+ resolvePackageDir,
+ stageRuntimeDependencies,
+ type DaemonRuntime,
+} from "./client-staging.ts";
+import {
+ computeRecoveryBackoffMs,
+ getBusySince,
+ isBreakerHalted,
+ isOlderDaemonVersion,
+ isStuckBusy,
+ recordRecoveryFailure,
+ recordRecoverySuccess,
+ resetBusySince,
+ shouldRecoverOnHealth,
+ trackBusyEdge,
+ triggerRecovery,
+ watchdogCheck,
+ _getRecoveryStateForTest,
+ _resetRecoveryForTest,
+ type HealthForRecovery,
+ type RecoveryDeps,
+} from "./client-recovery.ts";
+
+export {
+ daemonScriptPath,
+ findExecutableOnPath,
+ isJsRuntimeExecutable,
+ isUnderNodeModules,
+ materializeDaemonSources,
+ pruneStaleDaemonSrcDirs,
+ readPackageJsonObject,
+ resolveDaemonRuntime,
+ resolvePackageDir,
+ stageRuntimeDependencies,
+ type DaemonRuntime,
+};
+
+export {
+ computeRecoveryBackoffMs,
+ getBusySince,
+ isBreakerHalted,
+ isOlderDaemonVersion,
+ isStuckBusy,
+ recordRecoveryFailure,
+ recordRecoverySuccess,
+ resetBusySince,
+ shouldRecoverOnHealth,
+ trackBusyEdge,
+ triggerRecovery,
+ watchdogCheck,
+ _getRecoveryStateForTest,
+ _resetRecoveryForTest,
+ type HealthForRecovery,
+ type RecoveryDeps,
+};
 
 const CLIENT_ID = randomUUID();
 
@@ -71,145 +124,10 @@ let ensuring = false;
  */
 let ensureInFlight: Promise<number> | null = null;
 let fallbackServer: http.Server | null = null;
-/** First tick (Date.now()) the daemon has looked continuously busy; 0 = idle. */
-let busySince = 0;
-/** Consecutive recovery attempts (backoff exponent n). Reset on healthy watchdog tick. */
-let backoffAttempt = 0;
-/** Timestamps of recent recovery failures (breaker window). */
-let recoveryFailures: number[] = [];
-/** Watchdog respawns halted until this time (breaker open). */
-let breakerOpenUntil = 0;
 /** Last wall-clock attempt of a background UA refresh; storm-guard for heartbeat cadence. */
 let lastUaRefreshAt = 0;
 /** Test-injected fetch for the background UA refresh; null = global fetch. */
 let uaRefreshFetch: typeof fetch | null = null;
-
-interface DaemonRuntime {
- execPath: string;
- args: string[];
- runtimeType: "bun" | "node";
-}
-
-/**
- * Detect whether an executable path is a JavaScript/TypeScript runtime (bun or node).
- * Rejects host binaries like omp, pi, electron, code, etc.
- */
-export function isJsRuntimeExecutable(execPath: string): "bun" | "node" | null {
- if (!execPath || typeof execPath !== "string") return null;
- const checkName = (target: string): "bun" | "node" | null => {
-  const base = path.basename(target.replace(/\\/g, "/")).toLowerCase().replace(/\.exe$/i, "");
-  if (base === "bun" || base === "bunx") return "bun";
-  if (base === "node" || base === "nodejs") return "node";
-  return null;
- };
-
- const direct = checkName(execPath);
- if (direct) return direct;
-
- try {
-  const real = fs.realpathSync(execPath);
-  const realMatch = checkName(real);
-  if (realMatch) return realMatch;
- } catch { }
-
- return null;
-}
-
-/**
- * Search directories in PATH for an executable matching name.
- * On Windows, tests extensions from PATHEXT (.exe, .cmd, .bat).
- * On POSIX, checks file existence and executable bit (X_OK).
- */
-export function findExecutableOnPath(
- name: string,
- envPath: string = process.env.PATH || process.env.Path || "",
-): string | null {
- if (!envPath || typeof envPath !== "string") return null;
- const dirs = envPath.split(path.delimiter).filter(Boolean);
- const hasExt = path.extname(name).length > 0;
- const extensions = process.platform === "win32"
-  ? (hasExt ? [""] : (process.env.PATHEXT ? process.env.PATHEXT.split(";").filter(Boolean) : [".exe", ".cmd", ".bat"]))
-  : [""];
-
- for (const dir of dirs) {
-  for (const ext of extensions) {
-   const candidate = ext ? path.join(dir, `${name}${ext}`) : path.join(dir, name);
-   try {
-    const stat = fs.statSync(candidate);
-    if (stat.isFile()) {
-     if (process.platform !== "win32") {
-      fs.accessSync(candidate, fs.constants.X_OK);
-     }
-     return candidate;
-    }
-   } catch { }
-  }
- }
- return null;
-}
-
-/**
- * Resolve the executable and arguments needed to run src/daemon.ts.
- *
- * Priority order:
- * 1. Explicit override via opts.overrideExecPath or PI_FREEFLOW_DAEMON_RUNTIME env var.
- * 2. Current process.execPath (if and only if it is actually a node or bun executable).
- * 3. Search PATH for `bun` (preferred: native TypeScript support with zero flags).
- * 4. Search PATH for `node` (Node.js >= 22.6 with --experimental-strip-types).
- *
- * Returns null if no valid runtime is found (e.g. running as a standalone `omp` binary
- * without bun or node on PATH). The caller MUST fall back to an in-process proxy rather
- * than spawning an arbitrary binary (which would cause recursive agent fork-bombs).
- */
-export function resolveDaemonRuntime(opts?: {
- overrideExecPath?: string;
- scriptPath?: string;
- envPath?: string;
- currentExecPath?: string;
-}): DaemonRuntime | null {
- const script = opts?.scriptPath ?? daemonScriptPath();
- const envExec = opts?.overrideExecPath ?? (typeof process.env[DAEMON_RUNTIME_ENV] === "string" ? process.env[DAEMON_RUNTIME_ENV]?.trim() : undefined);
-
- // 1. Explicit override
- if (envExec) {
-  const type = isJsRuntimeExecutable(envExec) ?? "node";
-  const args = type === "bun" ? [script] : ["--experimental-strip-types", script];
-  return { execPath: envExec, args, runtimeType: type };
- }
-
- // 2. Check current process.execPath
- const currentExec = opts?.currentExecPath ?? process.execPath;
- const currentType = isJsRuntimeExecutable(currentExec);
- if (currentType !== null) {
-  const args = currentType === "bun" ? [script] : ["--experimental-strip-types", script];
-  return { execPath: currentExec, args, runtimeType: currentType };
- }
-
- // 3. Current executable is not a JS runtime (e.g. omp, pi, electron).
- // Search PATH for bun first, then node.
- const pathVal = opts?.envPath ?? process.env.PATH ?? process.env.Path ?? "";
-
- const bunOnPath = findExecutableOnPath("bun", pathVal);
- if (bunOnPath) {
-  return { execPath: bunOnPath, args: [script], runtimeType: "bun" };
- }
-
- const nodeOnPath = findExecutableOnPath("node", pathVal);
- if (nodeOnPath) {
-  return {
-   execPath: nodeOnPath,
-   args: ["--experimental-strip-types", script],
-   runtimeType: "node",
-  };
- }
-
- return null;
-}
-
-function daemonScriptPath(): string {
- const p = path.join(path.dirname(fileURLToPath(import.meta.url)), "daemon.ts");
- return process.platform === "win32" ? p.replace(/\\/g, "/") : p;
-}
 
 function getHeartbeatMs(): number {
  const raw = process.env[DAEMON_HEARTBEAT_MS_ENV];
@@ -309,7 +227,7 @@ function startHeartbeat(port: number): void {
  } catch { }
  const wms = getWatchdogMs();
  watchdogTimer = setInterval(() => {
-  void watchdogCheck(port);
+  void watchdogCheck(port, recoveryDeps);
  }, wms);
  try {
   watchdogTimer.unref();
@@ -364,107 +282,6 @@ async function attachTo(port: number): Promise<void> {
  maybeRefreshOpenCodeUserAgent();
 }
 
-/**
- * Respawn backoff: min(2s * 2^n, 60s) + jitter. n is the consecutive-failure
- * count; pass jitterMs = 0 in tests for a deterministic base.
- */
-export function computeRecoveryBackoffMs(attempt: number, jitterMs = Math.random() * 500): number {
- const n = Math.max(0, Math.floor(attempt));
- const base = Math.min(RECOVERY_BACKOFF_BASE_MS * 2 ** n, RECOVERY_BACKOFF_CAP_MS);
- return base + Math.max(0, jitterMs);
-}
-
-/**
- * Stuck-busy check (pure, testable): a busy daemon may only be replaced after
- * 5min of continuous busy AND zero forwarded stream bytes for 60s+. Anything
- * else must be left untouched mid-request.
- */
-export function isStuckBusy(busySinceMs: number, lastBytesAt: number, now = Date.now()): boolean {
- if (!busySinceMs) return false;
- if (now - busySinceMs < BUSY_BYPASS_CONTINUOUS_MS) return false;
- if (lastBytesAt && now - lastBytesAt < BUSY_BYPASS_QUIET_MS) return false;
- return true;
-}
-
-/** Track the busy/idle edge from a health snapshot; returns the updated busySince. */
-export function trackBusyEdge(activeRequests: number, lastBytesAt: number, now = Date.now()): number {
- if (activeRequests > 0) {
-  if (!busySince) busySince = now;
- } else {
-  busySince = 0;
- }
- return busySince;
-}
-
-/** True while the breaker halt is in effect (respawns paused, fallback serves). */
-export function isBreakerHalted(now = Date.now()): boolean {
- return now < breakerOpenUntil;
-}
-
-/** Record a recovery failure; opens the breaker after 5 straight failures in 5min. */
-export function recordRecoveryFailure(now = Date.now()): boolean {
- recoveryFailures.push(now);
- recoveryFailures = recoveryFailures.filter((t) => now - t <= BREAKER_WINDOW_MS);
- backoffAttempt += 1;
- if (recoveryFailures.length >= BREAKER_FAILURES) {
-  breakerOpenUntil = now + BREAKER_HALT_MS;
-  logWarn("recovery breaker open — 5 straight failures in 5min, halting respawn for 10min (in-process fallback meanwhile)");
-  return true;
- }
- return false;
-}
-
-/** Record a healthy watchdog tick: clears the straight-failure run and backoff. */
-export function recordRecoverySuccess(): void {
- recoveryFailures = [];
- backoffAttempt = 0;
- breakerOpenUntil = 0;
-}
-
-/** Test seam: snapshot of the recovery counters. */
-export function _getRecoveryStateForTest(): {
- backoffAttempt: number;
- failures: number[];
- breakerOpenUntil: number;
- busySince: number;
-} {
- return { backoffAttempt, failures: [...recoveryFailures], breakerOpenUntil, busySince };
-}
-
-/** Test seam: reset recovery counters without touching timers. */
-export function _resetRecoveryForTest(): void {
- backoffAttempt = 0;
- recoveryFailures = [];
- breakerOpenUntil = 0;
- busySince = 0;
-}
-
-/** Recovery-decision shape; canonical definition lives in health.ts. */
-export type HealthForRecovery = DaemonHealthSnapshot;
-
-/**
- * Older-version guard: only a daemon strictly older than this build is worth
- * recovering. shouldReplaceDaemon deliberately leaves a NEWER daemon running,
- * so recovering from one could never succeed (watchdog → recover → refused →
- * reattach → watchdog, until the breaker parks into the in-process fallback).
- * Null/undefined version (pre-version daemon) is not older on its own.
- */
-function isOlderDaemonVersion(version: string | null | undefined): boolean {
- return version != null && compareVersions(version, PKG_VERSION) < 0;
-}
-
-/**
- * Watchdog decision matrix (pure, testable). Recover when the daemon is gone,
- * serves an older version, or reports a degraded failed-SSE window. Missing
- * sseDegraded (pre-window daemon) never triggers on its own.
- */
-export function shouldRecoverOnHealth(health: HealthForRecovery): boolean {
- if (health === null) return true;
- if (isOlderDaemonVersion(health.version)) return true;
- if (health.sseDegraded === true) return true;
- return false;
-}
-
 async function ensureInProcessFallback(): Promise<number> {
  try {
   const r = await startProxy();
@@ -477,85 +294,21 @@ async function ensureInProcessFallback(): Promise<number> {
  }
 }
 
-async function triggerRecovery(port: number, why: string): Promise<void> {
- if (ensuring) return;
- ensuring = true;
- try {
-  const now = Date.now();
-  if (isBreakerHalted(now)) {
-   logWarn(`recovery breaker halted — serving in-process fallback meanwhile (${why})`);
-   void ensureInProcessFallback();
-   return;
-  }
-  const opened = recordRecoveryFailure(now);
-  if (opened) {
-   void ensureInProcessFallback();
-   return;
-  }
-  const delay = computeRecoveryBackoffMs(backoffAttempt - 1);
-  logWarn(`watchdog recovery (${why}) — backing off ${Math.round(delay)}ms before respawn`);
-  stopHeartbeatInternal();
+const recoveryDeps: RecoveryDeps = {
+ isEnsuring: () => ensuring,
+ setEnsuring: (val: boolean) => {
+  ensuring = val;
+ },
+ ensureInProcessFallback,
+ stopHeartbeatInternal,
+ resetHeartbeatPort: () => {
   heartbeatPort = 0;
-  await new Promise<void>((r) => setTimeout(r, delay));
-  try {
-   const health = await getDaemonHealth(port);
-   if (health && (health.activeRequests ?? 0) > 0) {
-    trackBusyEdge(health.activeRequests ?? 0, health.lastBytesAt ?? 0, Date.now());
-    if (!isStuckBusy(busySince, health.lastBytesAt ?? 0, Date.now())) {
-     logInfo(`watchdog recovery deferred — daemon busy (${health.activeRequests} active, waiting for 5min-stuck + 60s-quiet)`);
-     await attachTo(port);
-     return;
-    }
-   }
-   const ver = health?.version ?? PKG_VERSION;
-   await killStaleDaemon(port, ver, "proxy daemon");
-  } catch (e) {
-   logWarn("watchdog pre-respawn probe failed", { error: String(e) });
-  }
-  // Release before delegating: ensureDaemon owns the flag from here (it
-  // early-returns while ensuring is true). The handoff is synchronous up
-  // to ensureDaemon's own ensuring=true, so no tick slips between.
-  ensuring = false;
-  await ensureDaemon();
- } finally {
-  ensuring = false;
- }
-}
-
-/**
- * 5s watchdog tick: polls /_health for version + failed-SSE rate and drives
- * stopHeartbeat → busy-ruled kill → ensureDaemon when the daemon is stale or
- * degraded. Healthy ticks reset backoff/breaker and track the busy edge.
- */
-async function watchdogCheck(port: number): Promise<void> {
- if (ensuring) return;
- if (isBreakerHalted()) return;
- let health: Awaited<ReturnType<typeof getDaemonHealth>>;
- try {
-  health = await getDaemonHealth(port);
- } catch {
-  return;
- }
- if (health === null) {
-  await new Promise<void>((r) => setTimeout(r, 200));
-  try {
-   health = await getDaemonHealth(port);
-  } catch {
-   return;
-  }
- }
- if (health && (health.activeRequests ?? 0) > 0) {
-  trackBusyEdge(health.activeRequests ?? 0, health.lastBytesAt ?? 0);
- } else {
-  trackBusyEdge(0, 0);
- }
- if (!shouldRecoverOnHealth(health)) {
-  recordRecoverySuccess();
-  return;
- }
- if (health && (health.activeRequests ?? 0) > 0 && !isStuckBusy(busySince, health.lastBytesAt ?? 0)) return;
- void triggerRecovery(port, health === null ? "daemon gone" : isOlderDaemonVersion(health.version) ? `stale v${health.version}` : "failed-SSE degraded").catch((e) => logWarn("watchdog recovery failed", { error: String(e) }));
-}
+ },
+ attachTo,
+ killStaleDaemon: (p, v, w) => killStaleDaemon(p, v, w),
+ ensureDaemon: () => ensureDaemon(),
+ getDaemonHealth: (p: number) => getDaemonHealth(p),
+};
 
 async function shouldReplaceDaemon(port: number, remoteVer: string): Promise<boolean> {
  if (NO_KILL_ENV && process.env[NO_KILL_ENV] === "1") {
@@ -578,8 +331,8 @@ async function shouldReplaceDaemon(port: number, remoteVer: string): Promise<boo
   return false;
  }
  if (health.activeRequests > 0) {
-  trackBusyEdge(health.activeRequests, health.lastBytesAt ?? 0);
-  if (!isStuckBusy(busySince, health.lastBytesAt ?? 0)) {
+  const currentBusy = trackBusyEdge(health.activeRequests, health.lastBytesAt ?? 0);
+  if (!isStuckBusy(currentBusy, health.lastBytesAt ?? 0)) {
    logInfo(
     `Reusing existing pi-freeflow proxy daemon on http://${HOST}:${port} (${health.activeRequests} active request${health.activeRequests === 1 ? "" : "s"} — not interrupted)`,
    );
@@ -588,7 +341,7 @@ async function shouldReplaceDaemon(port: number, remoteVer: string): Promise<boo
   logWarn(`busy daemon on :${port} stuck (busy 5min+, no forwarded bytes 60s+) — bypassing busy guard`);
   return true;
  }
- busySince = 0;
+ resetBusySince();
  return true;
 }
 
@@ -799,132 +552,6 @@ export async function ensureProxyReady(
  if (await isProxyAlive(next)) return { ok: true, port: next };
  if (next !== port && (await isProxyAlive(port))) return { ok: true, port };
  return { ok: false, port, reason: proxyDownMessage(port) };
-}
-
-/** True when any path segment of `filePath` is `node_modules`. Node refuses to
- * strip types for files under such a path (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING),
- * so a Node-spawned daemon must run from a staged copy elsewhere. */
-function isUnderNodeModules(filePath: string): boolean {
- return filePath.split(/[\\/]/).includes("node_modules");
-}
-
-function readPackageJsonObject(dir: string): Record<string, unknown> | null {
- try {
-  const raw: unknown = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
-  return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
- } catch {
-  return null;
- }
-}
-
-/** Resolve a dependency's package directory the way Node would: walk up the
- *  node_modules chain from the importing package's root. */
-function resolvePackageDir(name: string, fromDir: string): string | null {
- let dir = fromDir;
- for (; ;) {
-  const pkgJson = path.join(dir, "node_modules", name, "package.json");
-  if (fs.existsSync(pkgJson)) return path.dirname(pkgJson);
-  const parent = path.dirname(dir);
-  if (parent === dir) return null;
-  dir = parent;
- }
-}
-
-/** Link (or copy, when linking is unavailable) each runtime dependency beside
- *  the staged sources so bare imports such as `undici` still resolve. */
-function stageRuntimeDependencies(pkgRoot: string, pkgJson: Record<string, unknown>, stagedDir: string): void {
- const deps = pkgJson.dependencies;
- if (!deps || typeof deps !== "object") return;
- const nodeModulesDir = path.join(stagedDir, "node_modules");
- for (const name of Object.keys(deps as Record<string, unknown>)) {
-  const target = resolvePackageDir(name, pkgRoot);
-  if (target === null) {
-   logWarn("daemon dependency not found for staging", { dependency: name });
-   continue;
-  }
-  try {
-   fs.mkdirSync(nodeModulesDir, { recursive: true });
-   // Junction on Windows (no elevated privileges needed); dir symlink elsewhere.
-   fs.symlinkSync(target, path.join(nodeModulesDir, name), process.platform === "win32" ? "junction" : "dir");
-  } catch {
-   try {
-    fs.cpSync(target, path.join(nodeModulesDir, name), { recursive: true, dereference: true });
-   } catch (e) {
-    logWarn("daemon dependency staging failed", { dependency: name, error: String(e) });
-   }
-  }
- }
-}
-
-/** Best-effort prune of staged daemon sources from earlier versions (1 day TTL). */
-function pruneStaleDaemonSrcDirs(root: string, currentVersion: string): void {
- try {
-  const now = Date.now();
-  for (const entry of fs.readdirSync(root)) {
-   if (entry === currentVersion) continue;
-   const full = path.join(root, entry);
-   try {
-    if (now - fs.statSync(full).mtimeMs > 24 * 60 * 60 * 1000) {
-     fs.rmSync(full, { recursive: true, force: true });
-    }
-   } catch { }
-  }
- } catch { }
-}
-
-/**
- * Materialize the daemon's sources outside node_modules so a Node runtime can
- * execute `src/daemon.ts` (Node refuses type stripping for any file under a
- * node_modules path, and this package ships TypeScript sources). Copies
- * `src/` + `package.json` into a per-version cache directory, stages the
- * runtime dependencies beside them, and returns the staged daemon entry.
- * Returns the input path unchanged when the script is already outside
- * node_modules (dev checkouts) or the package root is unreadable.
- */
-export function materializeDaemonSources(scriptPath: string, cacheDir?: string): string {
- if (!isUnderNodeModules(scriptPath)) return scriptPath;
- const pkgRoot = path.dirname(path.dirname(scriptPath));
- const pkgJson = readPackageJsonObject(pkgRoot);
- const version = pkgJson !== null && typeof pkgJson.version === "string" ? pkgJson.version : "";
- if (pkgJson === null || !version) return scriptPath;
-
- const root = cacheDir ?? resolveDaemonSrcCacheDir();
- const finalDir = path.join(root, version);
- const finalEntry = path.join(finalDir, "src", "daemon.ts");
- if (fs.existsSync(finalEntry) && fs.existsSync(path.join(finalDir, "package.json"))) {
-  pruneStaleDaemonSrcDirs(root, version);
-  return finalEntry;
- }
-
- const tmpDir = `${finalDir}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
- try {
-  fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
-  fs.cpSync(path.join(pkgRoot, "src"), path.join(tmpDir, "src"), { recursive: true });
-  fs.copyFileSync(path.join(pkgRoot, "package.json"), path.join(tmpDir, "package.json"));
-  stageRuntimeDependencies(pkgRoot, pkgJson, tmpDir);
-  try {
-   fs.renameSync(tmpDir, finalDir);
-   logInfo(`staged proxy daemon sources outside node_modules at ${finalDir}`);
-  } catch (e) {
-   // A concurrent starter won the rename (or the dir appeared meanwhile):
-   // its copy is byte-identical for the same version, so reuse it.
-   try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-   } catch { }
-   if (!fs.existsSync(finalEntry)) {
-    logWarn("daemon source staging failed", { error: String(e), dir: finalDir });
-    return scriptPath;
-   }
-  }
- } catch (e) {
-  try {
-   fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch { }
-  logWarn("daemon source staging failed — spawning from the installed path", { error: String(e), dir: tmpDir });
-  return scriptPath;
- }
- pruneStaleDaemonSrcDirs(root, version);
- return finalEntry;
 }
 
 interface DaemonChild {

@@ -39,12 +39,18 @@ test("windows-hide contract: every child-spawn site sets windowsHide:true", () =
  // of each documented child-spawn site. The detached-daemon spawn in
  // src/client.ts is additionally asserted at runtime against the real spawn
  // options object in test/daemon-runtime.test.ts (_setDaemonSpawnForTest).
- const clientSrc = fs.readFileSync("src/client.ts", "utf8");
- const proxySrc = fs.readFileSync("src/proxy.ts", "utf8");
- const cmdSrc = fs.readFileSync("src/commands.ts", "utf8");
- assert.match(clientSrc, /windowsHide:\s*true/);
- assert.match(proxySrc, /windowsHide:\s*true/);
- assert.match(cmdSrc, /windowsHide:\s*true/);
+ // Split-aware: spawn sites now live in extracted modules (proxy-ports.ts,
+ // client-staging.ts, commands-startup.ts, ...), so derive the file list
+ // from actual child-process call sites instead of pinning three filenames.
+ const owners = fs.readdirSync("src").filter((f) => f.endsWith(".ts")).filter((f) => {
+  const src = fs.readFileSync("src/" + f, "utf8");
+  return /\b(spawn|spawnSync|execSync)\s*\(/.test(src);
+ });
+ assert.ok(owners.length > 0, "expected child-spawn sites in src");
+ for (const f of owners) {
+  const src = fs.readFileSync("src/" + f, "utf8");
+  assert.match(src, /windowsHide:\s*true/, `${f} spawn sites must set windowsHide:true`);
+ }
 });
 
 test("idle leak: heartbeat does not bloat leases", async () => {
