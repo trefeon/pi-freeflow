@@ -82,6 +82,7 @@ process.stdout.write(`${JSON.stringify({ status: res.status, headers: out })}\n`
 // A closed stdout means the bridge is gone; stop quietly instead of crashing
 // on EPIPE while the body is still streaming.
 process.stdout.on("error", () => process.exit(0));
+process.stdout.on("close", () => process.exit(0));
 try {
  if (res.body) {
   for await (const c of res.body) {

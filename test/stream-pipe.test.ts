@@ -1375,3 +1375,61 @@ test("audit: messages argument fragments are observed on both the bypassed and c
 	assert.ok(kinds.includes("arguments-repaired"), "the actual repair is reported");
 	assert.deepEqual(cloakStub.finishes, [{ terminal: true }]);
 });
+
+test("onError flushes buffered tool args before [DONE]", async () => {
+	const todoSchema = {
+		type: "object",
+		properties: { task: { type: "string" } },
+		required: ["task"],
+	};
+	const cloak: StreamCloakOptions = {
+		callerHadTools: true,
+		caseRestore: {},
+		findGlob: { renamedFindToGlob: false },
+		injected: [],
+		argSchemas: new Map([["todo", todoSchema]]),
+		pathname: "/v1/chat/completions",
+	};
+	const stream = new PassThrough();
+	const { res } = pipeCloaked(stream, "/v1/chat/completions", RELAY_URL, cloak, {
+		upstreamContentType: "text/event-stream",
+	});
+
+	const drained = once(stream, "data");
+	stream.push(
+		Buffer.from(
+			`data: ${JSON.stringify({
+				choices: [
+					{
+						index: 0,
+						delta: {
+							tool_calls: [
+								{
+									index: 0,
+									id: "call_1",
+									type: "function",
+									function: { name: "todo", arguments: '{"task":"buy milk"}' },
+								},
+							],
+						},
+					},
+				],
+			})}\n\n`,
+			"utf8",
+		),
+	);
+	await drained;
+
+	const errored = once(stream, "error");
+	const done = once(res, "done");
+	stream.destroy(new Error("upstream socket died"));
+	await errored;
+	await done;
+
+	const body = res.body();
+	assert.ok(body.includes("buy milk"), "buffered arguments flushed on error");
+	assert.ok(body.includes("[DONE]"), "synthetic terminal [DONE] appended");
+	const flushedPos = body.indexOf("buy milk");
+	const donePos = body.indexOf("[DONE]");
+	assert.ok(flushedPos < donePos, "flushed tool call arguments appear before [DONE]");
+});

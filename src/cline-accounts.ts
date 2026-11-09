@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "./atomic-write.ts";
 import type { FetchImpl } from "./cline-device-auth.ts";
-import { refreshClineToken, toApiKey } from "./cline-device-auth.ts";
+import { ClineAuthError, refreshClineToken, toApiKey } from "./cline-device-auth.ts";
 import { fetchWithSystemCA } from "./system-ca-fetch.ts";
 import {
  CLINE_POOL_FILE,
@@ -114,12 +114,15 @@ export async function refreshClineVersion(fetchImpl: FetchImpl = fetchWithSystem
  return getClineVersion();
 }
 
-async function defaultClineRefresher(refreshToken: string): Promise<ClineRefreshResult | null> {
+export async function defaultClineRefresher(refreshToken: string): Promise<ClineRefreshResult | null> {
  try {
   const creds = await refreshClineToken(undefined, refreshToken);
   return { token: toApiKey(creds.access), refreshToken: creds.refresh, expiresAt: creds.expires };
- } catch {
-  return null;
+ } catch (e) {
+  if (e instanceof ClineAuthError && e.status !== undefined && e.status >= 400 && e.status < 500) {
+   return null;
+  }
+  throw e;
  }
 }
 

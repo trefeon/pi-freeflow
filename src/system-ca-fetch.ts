@@ -13,6 +13,7 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { execFileSync } from "node:child_process";
+import tls from "node:tls";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -163,18 +164,26 @@ function windowsBundle(): string[] {
 
 let systemCaCache: string[] | null = null;
 
+/** Test-only: reset the system CA bundle cache. */
+export function _resetSystemCaCacheForTest(): void {
+ systemCaCache = null;
+}
+
 /** OS trust bundle: platform store plus NODE_EXTRA_CA_CERTS when set. */
-function systemCaBundle(): string[] {
+export function systemCaBundle(): string[] {
  if (systemCaCache) return systemCaCache;
  const extra = nodeExtraCa();
  const platform = process.platform === "win32" ? windowsBundle() : linuxBundle();
  const seen = new Set<string>();
- systemCaCache = [...extra, ...platform].filter((b) => {
+ const combined = [...extra, ...platform].filter((b) => {
   if (seen.has(b)) return false;
   seen.add(b);
   return true;
  });
-  return systemCaCache;
+ if (combined.length > 0) {
+  systemCaCache = combined;
+ }
+ return combined;
 }
 
 function toNodeHeaders(headers: HeadersInit | undefined): Record<string, string> {
@@ -229,9 +238,11 @@ export function requestViaNodeHttp(input: string, init?: RequestInit): Promise<R
  const req = sender(url, {
   method: init?.method ?? "GET",
   headers,
-  ca: bundle.length > 0 ? bundle : undefined,
+  ca: bundle.length > 0 ? [...tls.rootCertificates, ...bundle] : undefined,
   signal: nodeSignal,
  }, (res) => {
+  res.on("error", reject);
+  res.on("aborted", () => reject(new Error("upstream response aborted")));
   const chunks: Buffer[] = [];
   res.on("data", (c: Buffer) => chunks.push(c));
   res.on("end", () => {

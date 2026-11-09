@@ -305,7 +305,7 @@ export function handleControlRequest(
  }
  if (isShutdown) {
   log("info", "control /_shutdown received — closing proxy");
-  res.writeHead(200, { "content-type": "application/json" });
+  res.writeHead(200, { "content-type": "application/json", connection: "close" });
   res.end(JSON.stringify({ ok: true }));
   setTimeout(() => {
    try {
@@ -316,6 +316,7 @@ export function handleControlRequest(
   }, 50);
   return true;
  }
+ req.on("error", () => {});
  const chunks: Buffer[] = [];
  let total = 0;
  req.on("data", (c: Buffer) => {
@@ -496,7 +497,7 @@ export function startProxy(
  // Write/read the installation token before the listener is bound so the host
  // can never observe a port that answers without a token, and so the daemon
  // owns the value its own clients will read from the file.
- const serverToken = ensureToken();
+ let serverToken = ensureToken();
  if (!serverToken) {
   log("error", "proxy token unavailable — refusing every request until the data directory is writable");
  }
@@ -547,12 +548,16 @@ export function startProxy(
   // client recognise its daemon before it has a token.
   const isIdentityProbe = req.method === "GET" && reqPathname === "/health";
   if (!isIdentityProbe && !isAuthorizedBearer(req.headers.authorization, serverToken)) {
-   res.writeHead(401, { "content-type": "application/json" });
-   res.end(JSON.stringify({ error: "unauthorized" }));
-   return;
+   const latestToken = ensureToken();
+   if (latestToken && latestToken !== serverToken) serverToken = latestToken;
+   if (!isAuthorizedBearer(req.headers.authorization, serverToken)) {
+    res.writeHead(401, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "unauthorized" }));
+    return;
+   }
   }
 
-  if (handleControlRequest(req, res, reqPathname, () => server.close())) return;
+  if (handleControlRequest(req, res, reqPathname, () => { try { server.closeIdleConnections?.(); } catch {} server.close(); })) return;
   // Loopback-only health endpoint — always accessible even when widget hidden
   if (req.method === "GET" && reqPathname !== null && (reqPathname === "/_health" || reqPathname === "/health")) {
    const addr = server.address();
@@ -625,10 +630,12 @@ export function startProxy(
   req.on("data", (chunk: Buffer) => {
    bufferedBytes += chunk.length;
    if (bufferedBytes > MAX_BODY_BYTES) {
-    req.destroy();
+    bodyChunks.length = 0;
     if (!res.headersSent) {
-     res.writeHead(413, { "content-type": "application/json" });
-     res.end(JSON.stringify({ error: "payload too large" }));
+     res.writeHead(413, { "content-type": "application/json", connection: "close" });
+     res.end(JSON.stringify({ error: "payload too large" }), () => req.destroy());
+    } else {
+     req.destroy();
     }
     return;
    }
@@ -642,17 +649,24 @@ export function startProxy(
    let isOvh = false;
    let parsedBody: Record<string, unknown> | null = null;
    let clientRequestedStream = false;
+   let bodyModified = false;
 
    try {
     parsedBody = JSON.parse(bodyStr);
     if (typeof parsedBody?.model === "string") {
      const canonical = resolveCanonicalModelId(parsedBody.model);
+     if (canonical !== parsedBody.model) {
+      parsedBody.model = canonical;
+      bodyModified = true;
+     } else {
+      parsedBody.model = canonical;
+     }
      if (isClineModel(canonical)) {
       isCline = true;
-    } else if (isOvhModel(canonical)) {
-     isOvh = true;
-    } else if (KILO_MODEL_IDS.has(canonical)) {
-     isKilo = true;
+     } else if (isOvhModel(canonical)) {
+      isOvh = true;
+     } else if (KILO_MODEL_IDS.has(canonical)) {
+      isKilo = true;
      }
     }
     if (parsedBody && typeof parsedBody === "object") {
@@ -695,6 +709,7 @@ export function startProxy(
    if (zenFailover.action === "failover" && parsedBody) {
     const from = String(parsedBody.model);
     parsedBody.model = zenFailover.model;
+    bodyModified = true;
     if (target.pathname.endsWith("/responses")) {
      prepareResponsesFailoverBody(parsedBody);
     } else {
@@ -721,7 +736,7 @@ export function startProxy(
    // OpenCode Zen free-tier fingerprint: upstream mandates stream: true and the
    // live 11-tool roster. Missing tools (such as on
    // subagent or advisor watchdog turns) trigger 403 FreeTierError.
-   let bodyModified = false;
+   // bodyModified was initialized above before model alias / failover mutations.
    let callerHadTools = true;
    let callerCaseRestore: CaseRestoreMap | undefined;
    let callerFindGlob: FindGlobRestore | undefined;

@@ -202,7 +202,7 @@ test("full-inventory stream passes through byte-identical", async () => {
  const sse = [
   'event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"call_1","name":"my_tool","arguments":""}}',
   'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","output":[{"type":"function_call","name":"my_tool","arguments":"{}"}]}}',
- ].join("\n\n");
+ ].join("\n\n") + "\n\n";
 
  const body = await runStreamed(sse, "/v1/responses", cloak, thirds(sse));
 
@@ -689,5 +689,28 @@ test("chat stream: a name split across deltas reassembles into the flushed call"
  const flushed = flushedChatCalls(body);
  assert.equal(flushed.length, 1, "one call flushes");
  assert.equal(flushed[0].function.name, "get_weather", "name fragments append, so the flush carries the whole name");
+ assert.deepEqual(JSON.parse(flushed[0].function.arguments), { city: "Tokyo" });
+});
+
+test("chat stream: repeated function.name on second argument delta preserves first delta's buffered arguments", async () => {
+ const weatherSchema = { type: "object", properties: { city: { type: "string" } }, required: ["city"] };
+ const cloak: StreamCloakOptions = {
+  callerHadTools: true,
+  caseRestore: {},
+  findGlob: { renamedFindToGlob: false },
+  injected: [],
+  argSchemas: new Map([["get_weather", weatherSchema]]),
+  pathname: "/v1/chat/completions",
+ };
+ const sse = [
+  chatDelta([chatToolCall("call_w", { name: "get_weather", arguments: '{"city":' })]),
+  chatDelta([chatToolCall("call_w", { name: "get_weather", arguments: '"Tokyo"}' })]),
+  finishDelta(),
+ ].join("\n\n") + "\n\n";
+ const body = await runStreamed(sse, "/v1/chat/completions", cloak, thirds(sse));
+
+ const flushed = flushedChatCalls(body);
+ assert.equal(flushed.length, 1, "one call flushes");
+ assert.equal(flushed[0].function.name, "get_weather");
  assert.deepEqual(JSON.parse(flushed[0].function.arguments), { city: "Tokyo" });
 });

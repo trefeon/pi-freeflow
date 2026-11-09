@@ -176,3 +176,94 @@ test("client abort kills both hedged attempts without marking either", async (t)
 		restorePool();
 	}
 });
+
+test("fast 429 on hedge leg B does not abort slow 200 OK on primary leg A", async (t) => {
+	const restoreGrace = _setHedgeGraceForTest(0);
+	try {
+		usePool([R1, R2]);
+		const calls: string[] = [];
+		const bothFired = Promise.withResolvers<void>();
+		const gateA = Promise.withResolvers<Response>();
+		let served: string | null | undefined;
+		t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+			calls.push(url);
+			const signal = (init as { signal?: AbortSignal } | undefined)?.signal;
+			if (calls.length === 2) bothFired.resolve();
+			if (url === R1) {
+				signal?.addEventListener("abort", () => gateA.reject(abortError()), { once: true });
+				return await gateA.promise;
+			}
+			if (url === R2) {
+				return new Response("rate-limited", { status: 429 });
+			}
+			return new Response("unexpected", { status: 500 });
+		});
+
+		const pending = relayFetch(UPSTREAM, { method: "POST" }, "hedge-fast-429", {
+			onServed: (r) => { served = r; },
+		});
+
+		await bothFired.promise;
+		assert.deepEqual(calls, [R1, R2]);
+
+		gateA.resolve(new Response("primary-ok", { status: 200 }));
+		const res = await pending;
+
+		assert.equal(res.status, 200);
+		assert.equal(await res.text(), "primary-ok");
+		assert.equal(served, R1, "primary leg A serves despite fast 429 on leg B");
+		assert.equal(getRelayHealth(R1)?.successCount ?? 0, 1, "R1 marks success");
+		const r2Health = getRelayHealth(R2);
+		assert.ok(r2Health && r2Health.consecutiveFailures >= 1, "R2 must be marked failure with 429");
+	} finally {
+		restoreGrace();
+		restorePool();
+	}
+});
+
+test("slow 429 on leg A does not skip healthy leg B", async (t) => {
+	const restoreGrace = _setHedgeGraceForTest(0);
+	try {
+		usePool([R1, R2]);
+		const calls: string[] = [];
+		const bothFired = Promise.withResolvers<void>();
+		const gateA = Promise.withResolvers<Response>();
+		const gateB = Promise.withResolvers<Response>();
+		let served: string | null | undefined;
+		t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+			calls.push(url);
+			const signal = (init as { signal?: AbortSignal } | undefined)?.signal;
+			if (calls.length === 2) bothFired.resolve();
+			if (url === R1) {
+				signal?.addEventListener("abort", () => gateA.reject(abortError()), { once: true });
+				return await gateA.promise;
+			}
+			if (url === R2) {
+				signal?.addEventListener("abort", () => gateB.reject(abortError()), { once: true });
+				return await gateB.promise;
+			}
+			return new Response("unexpected", { status: 500 });
+		});
+
+		const pending = relayFetch(UPSTREAM, { method: "POST" }, "hedge-slow-429", {
+			onServed: (r) => { served = r; },
+		});
+
+		await bothFired.promise;
+		assert.deepEqual(calls, [R1, R2]);
+
+		gateA.resolve(new Response("slow-429", { status: 429 }));
+		gateB.resolve(new Response("leg-b-ok", { status: 200 }));
+
+		const res = await pending;
+
+		assert.equal(res.status, 200);
+		assert.equal(await res.text(), "leg-b-ok");
+		assert.equal(served, R2, "leg B must serve when leg A had slow 429");
+		assert.ok((getRelayHealth(R1)?.consecutiveFailures ?? 0) >= 1, "R1 marked failure");
+		assert.equal(getRelayHealth(R2)?.successCount ?? 0, 1, "R2 marked success");
+	} finally {
+		restoreGrace();
+		restorePool();
+	}
+});

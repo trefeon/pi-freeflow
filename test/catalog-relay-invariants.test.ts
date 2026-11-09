@@ -7,13 +7,13 @@ import { VERCEL_RELAY_WORKER, CLOUDFLARE_RELAY_WORKER, DENO_RELAY_SCRIPT } from 
 import { isSubstantial } from "../src/stream-pipe.ts";
 import { loadRelayCore } from "./_relay-core.ts";
 
-test("catalog 32 = 8 OpenCode + 15 Kilo + 1 Cline + 8 OVH", () => {
-	assert.equal(OPENCODE_MODELS.length, 8);
-	assert.equal(KILO_MODELS.length, 15);
+test("catalog 30 = 11 OpenCode + 10 Kilo + 1 Cline + 8 OVH", () => {
+	assert.equal(OPENCODE_MODELS.length, 11);
+	assert.equal(KILO_MODELS.length, 10);
 	assert.equal(CLINE_MODELS.length, 1);
 	assert.equal(OVH_MODELS.length, 8);
-	assert.equal(ALL_MODELS.length, 32);
-	assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 32);
+	assert.equal(ALL_MODELS.length, 30);
+	assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 30);
 });
 
 test("aliases deduplicated and wrong removed", () => {
@@ -26,7 +26,11 @@ test("aliases deduplicated and wrong removed", () => {
  assert.equal(resolveCanonicalModelId("deepseek-v4.1-flash"), "deepseek-v4.1-flash-free");
  assert.equal(isKiloModel("dots-3-note-preview"), true);
  assert.equal(resolveCanonicalModelId("cline-super-vl"), "cline/nemotron-3.5-super-vl");
-	assert.equal(Object.keys(MODEL_ALIASES).length, 29);
+ assert.equal(resolveCanonicalModelId("lfm-3"), "liquid/lfm-3-1.7b:free");
+ assert.equal(resolveCanonicalModelId("crouton"), "crouton-alpha-free");
+ assert.equal(resolveCanonicalModelId("iceman"), "iceman-free");
+ assert.equal(resolveCanonicalModelId("inkling-2-small"), "inkling-2-small-free");
+	assert.equal(Object.keys(MODEL_ALIASES).length, 28);
 });
 
 test("log rotation 10MB x10", () => {

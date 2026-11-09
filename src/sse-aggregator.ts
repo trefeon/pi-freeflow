@@ -349,6 +349,7 @@ export function sseToResponsesJson(
   const ev = events[i];
   try {
    const parsed = JSON.parse(ev.data);
+   if (parsed?.type === "response.created" || parsed?.type === "response.in_progress") continue;
    if (parsed?.response && typeof parsed.response === "object") {
     cloakResponsesObject(parsed.response, callerHadTools, caseRestore, findGlob, injected, argSchemas);
     return parsed.response as Record<string, unknown>;

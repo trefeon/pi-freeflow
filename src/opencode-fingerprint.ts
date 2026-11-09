@@ -54,6 +54,7 @@ import {
  upstreamToolNameFor,
  type FindGlobRestore,
 } from "./tool-translation.ts";
+import { OPENCODE_MODELS, resolveCanonicalModelId } from "./models.ts";
 import { buildArgRepairSchemas } from "./tool-args.ts";
 import {
  type CaseRestoreMap,
@@ -120,8 +121,10 @@ export function enforceOpencodeFingerprint(
  // Zen takes the bare model id: the live CLI sends `model: <bare>` (e.g.
  // glm-5.3-flash-free), never the `opencode/`-prefixed catalog id the host
  // may carry. Strip one prefix so a prefixed id still routes.
- if (typeof body.model === "string" && body.model.startsWith("opencode/")) {
-  body.model = body.model.slice("opencode/".length);
+ if (typeof body.model === "string") {
+  const stripped = body.model.startsWith("opencode/") ? body.model.slice("opencode/".length) : body.model;
+  const canonical = resolveCanonicalModelId(stripped);
+  body.model = OPENCODE_MODELS.some((m) => m.id === canonical) ? canonical : stripped;
  }
  // Zen responses shape conformance first (Chat leftovers, tool_choice, spark
  // effort clamp, store default): Kilo/Cline bodies never reach here.

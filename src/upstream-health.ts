@@ -400,8 +400,28 @@ export function isUnprovenSession(parsedBody: unknown, pathname: string): boolea
  const key = sessionKeyOf(parsedBody);
  if (key && isEstablished(key)) return false;
  if (String(pathname ?? "").includes("responses")) return true;
- const messages = (parsedBody as { messages?: unknown }).messages;
- if (Array.isArray(messages) && messages.length > 1) return false;
+ const messages = typeof parsedBody === "object" && parsedBody !== null && "messages" in parsedBody
+  ? (parsedBody as { messages?: unknown }).messages
+  : undefined;
+ if (Array.isArray(messages)) {
+  const hasPriorTurn = messages.some(
+   (m) =>
+    m !== null &&
+    typeof m === "object" &&
+    "role" in m &&
+    (m.role === "assistant" || m.role === "tool"),
+  );
+  if (hasPriorTurn) return false;
+  const nonSystemCount = messages.filter(
+   (m) =>
+    m !== null &&
+    typeof m === "object" &&
+    "role" in m &&
+    m.role !== "system" &&
+    m.role !== "developer",
+  ).length;
+  if (nonSystemCount > 1) return false;
+ }
  return true;
 }
 

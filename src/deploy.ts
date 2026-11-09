@@ -80,6 +80,7 @@ const isPrivateHostname = function(h) {
     return false
   }
   if (host.includes(":")) {
+    if (host.startsWith("64:ff9b:") || host.startsWith("2002:")) return true
     if (host.startsWith("fc") || host.startsWith("fd")) return true
     if (/^fe[89ab]/.test(host)) return true
     return false
@@ -121,7 +122,7 @@ async function relayHandler(req) {
   DENY_HEADERS.forEach((h) => headers.delete(h));
   headers.delete("x-relay-auth");
   try {
-    const init = { method: req.method, headers };
+    const init = { method: req.method, headers, redirect: "manual" };
     if (req.method !== "GET" && req.method !== "HEAD") { init.body = req.body; init.duplex = "half"; }
     const response = await fetch(resolved.url, init);
     return new Response(response.body, { status: response.status, headers: response.headers });
@@ -242,6 +243,7 @@ export async function deployVercelRelay(
 
  const depJson = (await dep.json()) as { id?: string; uid?: string; projectId?: string };
  const depId = depJson.id || depJson.uid;
+ if (!depId) throw new Error("Vercel did not return a deployment id");
  const projectId = depJson.projectId || name;
 
  // 2. Make the deployment public (disable SSO protection if enabled on team)

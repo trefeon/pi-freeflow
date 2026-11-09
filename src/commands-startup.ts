@@ -237,7 +237,10 @@ export function uninstallStartupHook(opts?: {
    return { ok: true, changed: false, undo: plan.command, detail: `already removed — no unit file at ${plan.filePath}` };
   }
   try {
-   execSync(`systemctl --user disable ${STARTUP_SERVICE_NAME}`, { timeout: 10_000, stdio: "ignore" });
+   startupHookRunner(`systemctl --user disable ${STARTUP_SERVICE_NAME}`);
+  } catch { }
+  try {
+   startupHookRunner("systemctl --user daemon-reload");
   } catch { }
   fs.rmSync(plan.filePath, { force: true });
   return { ok: true, changed: true, undo: plan.command, detail: `removed ${plan.filePath} (re-install: ${plan.command})` };

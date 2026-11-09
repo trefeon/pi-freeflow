@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { fetchWithSystemCA, isCertError, requestViaNodeHttp } from "../src/system-ca-fetch.ts";
+import { _resetSystemCaCacheForTest, fetchWithSystemCA, isCertError, requestViaNodeHttp, systemCaBundle } from "../src/system-ca-fetch.ts";
 
 function chainError(code: string): Error {
  const inner = new Error("self-signed certificate in certificate chain") as Error & { code: string };
@@ -112,5 +112,36 @@ describe("fetchWithSystemCA", () => {
   } finally {
    globalThis.fetch = realFetch;
   }
+ });
+ it("requestViaNodeHttp rejects when response stream is aborted prematurely", async () => {
+  const server = http.createServer((_req, res) => {
+   res.writeHead(200, { "content-type": "application/json" });
+   res.write('{"chunk":1}');
+   setImmediate(() => {
+    res.destroy();
+   });
+  });
+  const { promise: listenPromise, resolve: listenResolve } = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", listenResolve);
+  await listenPromise;
+  const addr = server.address();
+  const port = addr && typeof addr === "object" && "port" in addr ? (addr.port as number) : 0;
+  try {
+   await assert.rejects(
+    requestViaNodeHttp(`http://127.0.0.1:${port}/test`),
+    (err: unknown) => err instanceof Error,
+   );
+  } finally {
+   const { promise: closePromise, resolve: closeResolve } = Promise.withResolvers<void>();
+   server.close(() => closeResolve());
+   await closePromise;
+  }
+ });
+ it("systemCaBundle returns CA array and preserves bundles", () => {
+  _resetSystemCaCacheForTest();
+  const bundle1 = systemCaBundle();
+  assert.ok(Array.isArray(bundle1));
+  const bundle2 = systemCaBundle();
+  assert.equal(bundle1, bundle2, "consecutive calls return memoized bundle");
  });
 });

@@ -223,6 +223,41 @@ test("resolveDaemonRuntime: issue #12 repro — when running under omp with node
  }
 });
 
+test("resolveDaemonRuntime: skips Node < 22.6 on PATH in favor of supported candidate", () => {
+ const dirOld = fs.mkdtempSync(path.join(os.tmpdir(), "ff-old-node-"));
+ const dirNew = fs.mkdtempSync(path.join(os.tmpdir(), "ff-new-node-"));
+ try {
+  const nodeOld = isWin ? path.join(dirOld, "node.cmd") : path.join(dirOld, "node");
+  const nodeNew = isWin ? path.join(dirNew, "node.cmd") : path.join(dirNew, "node");
+
+  if (isWin) {
+   fs.writeFileSync(nodeOld, "@echo v18.19.1\r\n", "utf8");
+   fs.writeFileSync(nodeNew, "@echo v22.12.0\r\n", "utf8");
+  } else {
+   fs.writeFileSync(nodeOld, "#!/bin/sh\necho v18.19.1\n", { mode: 0o755 });
+   fs.writeFileSync(nodeNew, "#!/bin/sh\necho v22.12.0\n", { mode: 0o755 });
+  }
+
+  const combinedPath = `${dirOld}${path.delimiter}${dirNew}`;
+  const runtime = resolveDaemonRuntime({
+   currentExecPath: "/home/user/.local/bin/omp",
+   scriptPath: "/path/to/daemon.ts",
+   envPath: combinedPath,
+  });
+
+  assert.ok(runtime, "must resolve a supported node runtime");
+  assert.equal(
+   path.resolve(runtime!.execPath).toLowerCase(),
+   path.resolve(nodeNew).toLowerCase(),
+   "must skip v18.19.1 and select v22.12.0",
+  );
+  assert.deepEqual(runtime!.args, ["--experimental-strip-types", "/path/to/daemon.ts"]);
+ } finally {
+  fs.rmSync(dirOld, { recursive: true, force: true });
+  fs.rmSync(dirNew, { recursive: true, force: true });
+ }
+});
+
 test("resolveDaemonRuntime: issue #12 repro — when running under omp with neither bun nor node, returns null (fallback to in-process)", () => {
  const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "ff-issue12-empty-"));
  try {

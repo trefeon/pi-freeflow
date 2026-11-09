@@ -13,6 +13,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { ZEN_TRANSPORT_ENV } from "./config.ts";
@@ -132,20 +133,31 @@ export function probeBunVersion(opts: {
  */
 export function findBunOnPath(envPath?: string): string | null {
  const raw = envPath ?? process.env.PATH ?? process.env.Path ?? "";
- if (!raw || typeof raw !== "string") return null;
- const extensions = process.platform === "win32"
-  ? (process.env.PATHEXT ? process.env.PATHEXT.split(";").filter(Boolean) : [".exe", ".cmd", ".bat"])
-  : [""];
- for (const dir of raw.split(path.delimiter).filter(Boolean)) {
-  for (const ext of extensions) {
-   const candidate = ext ? path.join(dir, `bun${ext}`) : path.join(dir, "bun");
-   try {
-    const stat = fs.statSync(candidate);
-    if (!stat.isFile()) continue;
-    if (process.platform !== "win32") fs.accessSync(candidate, fs.constants.X_OK);
-    return candidate;
-   } catch { }
+ if (raw && typeof raw === "string") {
+  const extensions = process.platform === "win32"
+   ? (process.env.PATHEXT ? process.env.PATHEXT.split(";").filter(Boolean) : [".exe", ".cmd", ".bat"])
+   : [""];
+  for (const dir of raw.split(path.delimiter).filter(Boolean)) {
+   for (const ext of extensions) {
+    const candidate = ext ? path.join(dir, `bun${ext}`) : path.join(dir, "bun");
+    try {
+     const stat = fs.statSync(candidate);
+     if (!stat.isFile()) continue;
+     if (process.platform !== "win32") fs.accessSync(candidate, fs.constants.X_OK);
+     return candidate;
+    } catch { }
+   }
   }
+ }
+ if (envPath === undefined) {
+  const fallback = path.join(os.homedir(), ".bun", "bin", process.platform === "win32" ? "bun.exe" : "bun");
+  try {
+   const stat = fs.statSync(fallback);
+   if (stat.isFile()) {
+    if (process.platform !== "win32") fs.accessSync(fallback, fs.constants.X_OK);
+    return fallback;
+   }
+  } catch { }
  }
  return null;
 }
@@ -252,11 +264,21 @@ export function fetchZenDirectViaSidecar(
  let stdoutEnded = false;
  const spawnFn = opts.spawnImpl ?? spawn;
  try {
-  child = spawnFn(opts.runtimePath, [...(opts.runtimeArgs ?? []), opts.scriptPath], {
-   stdio: ["pipe", "pipe", "pipe"],
-   windowsHide: true,
-   detached: false,
-  });
+  if (process.platform === "win32" && /\.(?:cmd|bat)$/i.test(opts.runtimePath) && opts.spawnImpl === undefined) {
+   const quotedCmd = `"${opts.runtimePath}" ${[...(opts.runtimeArgs ?? []), opts.scriptPath].map((a) => `"${a}"`).join(" ")}`;
+   child = spawnFn(quotedCmd, [], {
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    detached: false,
+    shell: true,
+   });
+  } else {
+   child = spawnFn(opts.runtimePath, [...(opts.runtimeArgs ?? []), opts.scriptPath], {
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    detached: false,
+   });
+  }
  } catch (e) {
   reject(e instanceof Error ? e : new Error(String(e)));
   return promise;
@@ -362,6 +384,14 @@ export function fetchZenDirectViaSidecar(
    read() {
     // Backpressure: only resume the child pipe when the consumer wants more.
     if (!stdoutEnded) stdout.resume();
+   },
+   destroy(err, cb) {
+    finished = true;
+    opts.signal?.removeEventListener("abort", onAbort);
+    try {
+     killZenSidecarTree(proc);
+    } catch { }
+    cb(err);
    },
   });
   const pushBody = (c: Buffer): void => {

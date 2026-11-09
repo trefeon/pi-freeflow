@@ -8,6 +8,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { HOST } from "../src/config.ts";
 import {
 	getLastActivityAt,
@@ -402,6 +405,38 @@ test("daemon entry guard: isDaemonMain matches only the real entry script", asyn
 		process.argv[1] = real;
 	}
 	assert.equal(isDaemonMain(), false);
+});
+
+test("daemon entry guard: isDaemonMain matches via symlink and lowercase Windows drive letter", async () => {
+	const { isDaemonMain } = await import("../src/daemon.ts");
+	const real = process.argv[1] ?? "";
+	const targetPath = fileURLToPath(new URL("../src/daemon.ts", import.meta.url));
+	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ff-daemon-link-"));
+	try {
+		// 1. Symlink
+		const linkPath = path.join(tmpDir, "daemon-symlink.ts");
+		try {
+			fs.symlinkSync(targetPath, linkPath);
+			process.argv[1] = linkPath;
+			assert.equal(isDaemonMain(), true, "the guard must fire when argv[1] is a symlink to daemon.ts");
+		} catch (symlinkErr) {
+			// Fallback if OS denies symlink creation
+		}
+
+		// 2. Lowercase/uppercase Windows drive letter
+		if (process.platform === "win32" && /^[A-Za-z]:/i.test(targetPath)) {
+			const lowerDrive = targetPath[0].toLowerCase() + targetPath.slice(1);
+			process.argv[1] = lowerDrive;
+			assert.equal(isDaemonMain(), true, "the guard must fire with lowercase drive letter");
+
+			const upperDrive = targetPath[0].toUpperCase() + targetPath.slice(1);
+			process.argv[1] = upperDrive;
+			assert.equal(isDaemonMain(), true, "the guard must fire with uppercase drive letter");
+		}
+	} finally {
+		process.argv[1] = real;
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	}
 });
 
 test("daemon seed helpers move disk relay state and catalog cache into process state", async () => {

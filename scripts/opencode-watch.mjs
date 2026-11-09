@@ -380,6 +380,11 @@ export function detectDrift(state, liveData) {
 
   if (stale) {
    staleFiles.push(file);
+   if (CRITICAL_FILES.includes(file)) {
+    hasDrift = true;
+    criticalDrift = true;
+    summary.push(`Critical file \`${file}\` is unavailable / stale`);
+   }
    continue;
   }
 

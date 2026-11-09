@@ -353,6 +353,69 @@ describe("sidecar framing (offline, no bun required)", () => {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("res.body.cancel() kills child process", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ff-zen-cancel-"));
+		const beat = path.join(dir, "heartbeat.txt");
+		try {
+			const streamScript = writeScript(dir, "stream.mjs", [
+				"import fs from 'node:fs';",
+				"process.stdin.resume();",
+				"process.stdout.write(JSON.stringify({ status: 200, headers: { 'content-type': 'text/event-stream' } }) + '\\n');",
+				"const timer = setInterval(() => {",
+				`  try { fs.writeFileSync(${JSON.stringify(beat)}, String(Date.now())); } catch {}`,
+				"  try { process.stdout.write('data: ping\\n\\n'); } catch {}",
+				"}, 50);",
+			].join("\n") + "\n");
+			const res = await fetchZenDirectViaSidecar(
+				"https://example.invalid/x",
+				{ method: "POST", headers: {}, body: Buffer.from("{}"), headerTimeoutMs: 5000 },
+				{ runtimePath: process.execPath, scriptPath: streamScript },
+			);
+			assert.equal(res.status, 200);
+			assert.ok(res.body);
+			for (let i = 0; i < 20 && !fs.existsSync(beat); i++) {
+				await new Promise((r) => setTimeout(r, 50));
+			}
+			assert.ok(fs.existsSync(beat), "heartbeat file must be written while stream is live");
+			await res.body.cancel();
+			const mtimeAtCancel = fs.statSync(beat).mtimeMs;
+			// Real-timer exception: proves a live child OS process dies on body cancel —
+			// fake timers cannot advance external OS process kills, so the platform clock
+			// and filesystem mtime are the assertion here.
+			const { promise: delayPromise, resolve: delayResolve } = Promise.withResolvers<void>();
+			setTimeout(delayResolve, 600);
+			await delayPromise;
+			assert.equal(fs.statSync(beat).mtimeMs, mtimeAtCancel, "child process must be killed when body is cancelled");
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("spawns .cmd shim on Windows with shell: true without EINVAL", async () => {
+		if (process.platform !== "win32") return;
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ff-zen-cmd-"));
+		try {
+			const shim = path.join(dir, "runner.cmd");
+			fs.writeFileSync(
+				shim,
+				"@echo off\r\necho {\"status\":200,\"headers\":{\"content-type\":\"text/plain\"}}\r\necho hello from cmd\r\n",
+				"utf8",
+			);
+			const dummyScript = path.join(dir, "dummy.js");
+			fs.writeFileSync(dummyScript, "", "utf8");
+			const res = await fetchZenDirectViaSidecar(
+				"https://example.invalid/x",
+				{ method: "POST", headers: {}, body: Buffer.from("{}"), headerTimeoutMs: 5000 },
+				{ runtimePath: shim, scriptPath: dummyScript },
+			);
+			assert.equal(res.status, 200);
+			const text = await res.text();
+			assert.ok(text.includes("hello from cmd"), "output from .cmd runner must be received");
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });
 
 function runSidecar(frame: unknown, runtimePath = process.execPath, runtimeArgs = ["--experimental-strip-types"]): Promise<{ code: number | null; stdout: string; stderr: string }> {

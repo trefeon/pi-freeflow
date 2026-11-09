@@ -46,6 +46,7 @@ function isPrivateRelayHostname(hostname: string): boolean {
   return false;
  }
  if (host.includes(":")) {
+  if (host.startsWith("64:ff9b:") || host.startsWith("2002:")) return true;
   if (host.startsWith("fc") || host.startsWith("fd")) return true; // ULA fc00::/7
   if (/^fe[89ab]/.test(host)) return true; // link-local fe80::/10
   return false;
@@ -611,7 +612,8 @@ const RELAY_STATE_LOCK_FILE = `${RELAY_STATE_FILE}.lock`;
 /** A lock older than this is presumed abandoned (crashed holder) and taken over. */
 const LOCK_STALE_MS = 30_000;
 
-function tryAcquireRelayLock(): boolean {
+export function tryAcquireRelayLock(depth = 0): boolean {
+ if (depth >= 3) return false;
  try {
   fs.writeFileSync(RELAY_STATE_LOCK_FILE, String(process.pid), { flag: "wx" });
   return true;
@@ -630,9 +632,12 @@ function tryAcquireRelayLock(): boolean {
    stale = Date.now() - fs.statSync(RELAY_STATE_LOCK_FILE).mtimeMs > LOCK_STALE_MS;
   } catch {
    // The lock vanished between the failed create and the stat — retry once.
-   return tryAcquireRelayLock();
+   return tryAcquireRelayLock(depth + 1);
   }
-  if (!stale) return false;
+  if (!stale) {
+   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+   return tryAcquireRelayLock(depth + 1);
+  }
   try {
    fs.rmSync(RELAY_STATE_LOCK_FILE, { force: true });
   } catch {
@@ -640,7 +645,7 @@ function tryAcquireRelayLock(): boolean {
    // the proxy request path.
    return false;
   }
-  return tryAcquireRelayLock();
+  return tryAcquireRelayLock(depth + 1);
  }
 }
 

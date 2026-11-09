@@ -32,7 +32,10 @@ All commands are available inside the OMP or Pi TUI via `/freeflow`:
 | `/freeflow update` | Check for and install a package update (restarts daemon automatically on success) |
 | `/freeflow autoupdate [on &vert; off]` | Toggle or view automatic background updates (`/freeflow update auto on &vert; off` also works) |
 | `/freeflow kill` | Shut the proxy daemon down; the next freeflow request restarts it (aliases `stop`, `shutdown`) |
+| `/freeflow restart` | Stop and restart the proxy daemon immediately |
+| `/freeflow version` | Show local and cached latest package version (alias `ver`) |
 | `/freeflow debug on &vert; off` | Toggle full HTTP lifecycle debug logging |
+| `/freeflow cline` | Manage Cline free-tier accounts, pool, and rotation (`login`, `accounts`, `logout`, `signout`, `switch`) |
 | `/freeflow cline login` | Sign in through the browser, save to the per-user pool |
 | `/freeflow cline accounts` | List saved Cline logins with per-login usage (requests served, last model used) |
 | `/freeflow cline logout` | Remove a saved Cline login |

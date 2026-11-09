@@ -201,7 +201,7 @@ export function showList(ctx: ExtensionContext, getRelayState: () => RelayState)
 export async function removeRelayMenu(ctx: ExtensionContext, act: Pick<RelayActionContext, "applyRelayState" | "persist" | "getRelayState">): Promise<void> {
  const relayState = act.getRelayState();
  const removable = relayState.relays.filter(
-  (r) => r.url !== relayState.url,
+  (r) => relayState.relays.length === 1 || r.url !== relayState.url,
  );
  if (!removable.length) {
   ctx.ui.notify(
@@ -718,7 +718,7 @@ export async function handleRelaySubcommand(
     ctx.ui.notify(`Relay '${target}' not in saved list`, "warning");
     return true;
    }
-   if (matched.url === relayState.url) {
+   if (matched.url === relayState.url && relayState.relays.length > 1) {
     ctx.ui.notify(
      "Cannot remove the active relay — switch to another relay first",
      "warning",

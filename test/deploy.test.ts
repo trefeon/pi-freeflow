@@ -78,7 +78,9 @@ test("relay worker sources keep the whitelist contract on every platform", () =>
 		assert.ok(src.includes('"host"'), `${label}: host in denylist`);
 		assert.equal(src.includes("export const config"), false, `${label}: no Vercel config`);
 		assert.ok(src.includes('duplex'), `${label}: duplex half for streaming`);
-		// Per-deployment auth: secret embedded, enforced constant-time, never forwarded upstream.
+		assert.match(src, /redirect:\s*"manual"/, `${label}: redirect manual`);
+		assert.match(src, /64:ff9b:/, `${label}: NAT64 guard`);
+		assert.match(src, /2002:/, `${label}: 6to4 guard`);
 		assert.ok(src.includes(`const RELAY_AUTH = ${JSON.stringify(TEST_AUTH)};`), `${label}: embedded auth secret`);
 		assert.match(src, /timingSafeEqualStr/, `${label}: constant-time compare`);
 		assert.match(src, /status: 401/, `${label}: unauthorized rejected`);
@@ -502,8 +504,7 @@ test("numeric-IP target spellings are rejected as private/loopback, not merely o
 
 			const relayHandler = loadHandler(src);
 
-			for (const target of ["https://2130706433/", "https://0x7f.0.0.1/", "https://0177.0.0.1/", "https://127.1/", "https://0/"]) {
-
+			for (const target of ["https://2130706433/", "https://0x7f.0.0.1/", "https://0177.0.0.1/", "https://127.1/", "https://0/", "https://[64:ff9b::192.0.2.1]/", "https://[2002:c000:0201::1]/"]) {
 				const res = await relayHandler({ method: "GET", headers: new Headers({ "x-relay-target": target, "x-relay-path": "/" }), body: null });
 
 				assert.equal(res.status, 403, `	${target} must not pass`);

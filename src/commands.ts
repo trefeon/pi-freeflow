@@ -5,7 +5,7 @@
  */
 
 import path from "node:path";
-import { getClientPort } from "./client.ts";
+import { ensureDaemon as ensureClientDaemon, getClientPort, stopHeartbeat } from "./client.ts";
 import { refreshCatalog, setAliveCatalog } from "./catalog.ts";
 import { DATA_DIR_ENV, DEBUG_STATE_FILE, HOST, LOG_FILE, PORT, RELAY_STATE_FILE, ZEN_TRANSPORT_ENV } from "./config.ts";
 import { getCachedUpdate, isLinkedInstall } from "./update-checker.ts";
@@ -144,7 +144,7 @@ export {
  */
 export function updateStatusBar(ui?: ExtensionUIContext): void {
  if (!ui) return;
- ui.setStatus("freeflow", formatRelayStatusLabel(getActiveRelayState()) ?? undefined);
+ ui.setStatus?.("freeflow", formatRelayStatusLabel(getActiveRelayState()) ?? undefined);
 }
 
 let deployProbeRetries = 5;
@@ -253,7 +253,8 @@ export function validateDeployProjectName(
  */
 let updateStepRunner = spawnWithProgress;
 let attachedPortResolver = (): number => getClientPort() || PORT;
-let attachedPortKiller = (port: number): Promise<unknown> => killPortHolder(port);
+let attachedPortKiller: (port: number) => Promise<unknown> = killPortHolder;
+let daemonEnsurer: () => Promise<unknown> = ensureClientDaemon;
 
 /** Test seam for the /freeflow update restart path (null restores the real deps). */
 export function _setUpdateRestartDepsForTest(
@@ -261,11 +262,13 @@ export function _setUpdateRestartDepsForTest(
   runUpdateStep?: (cmd: string, args: string[], ctx: ExtensionContext) => Promise<number>;
   resolveAttachedPort?: () => number;
   killAttachedPort?: (port: number) => Promise<unknown>;
+  ensureDaemon?: () => Promise<unknown>;
  } | null,
 ): void {
  updateStepRunner = opts?.runUpdateStep ?? spawnWithProgress;
  attachedPortResolver = opts?.resolveAttachedPort ?? ((): number => getClientPort() || PORT);
- attachedPortKiller = opts?.killAttachedPort ?? ((port: number): Promise<unknown> => killPortHolder(port));
+ attachedPortKiller = opts?.killAttachedPort ?? killPortHolder;
+ daemonEnsurer = opts?.ensureDaemon ?? ensureClientDaemon;
 }
 
 export function createCommandSpec(
@@ -430,7 +433,7 @@ export function createCommandSpec(
      }
     }
 
-    ctx.ui.setStatus("freeflow", `deploying ${platform} relay…`);
+ ctx.ui.setStatus?.("freeflow", `deploying ${platform} relay…`);
     try {
      const deployer =
       platform === "cloudflare"
@@ -639,6 +642,22 @@ export function createCommandSpec(
     } catch {
      ctx.ui.notify("Daemon not running or not reachable", "warning");
     }
+    try { await stopHeartbeat(); } catch { }
+   } else if (sub === "restart") {
+    const port = getClientPort() || PORT;
+    try {
+     await fetch(`http://${HOST}:${port}/_shutdown`, {
+      method: "POST",
+      headers: tokenAuthHeaders(),
+      signal: AbortSignal.timeout(1500),
+     });
+    } catch { }
+    try {
+     await ensureClientDaemon();
+     ctx.ui.notify("Proxy daemon restarted", "info");
+    } catch (e) {
+     ctx.ui.notify(`Restart failed: ${(e as Error).message}`, "error");
+    }
    } else if (sub === "autoupdate" || (sub === "update" && rest.trim().toLowerCase().startsWith("auto"))) {
     const arg = sub === "autoupdate"
      ? rest.trim().toLowerCase()
@@ -718,6 +737,7 @@ export function createCommandSpec(
          // Restart the daemon that is actually attached — a walked port must
          // not leave the old build serving after a successful update.
          try { await attachedPortKiller(attachedPortResolver()); } catch { }
+         try { await daemonEnsurer(); } catch { }
          ctx.ui.notify(`Updated to ${latest} and restarted proxy daemon`, "info");
         } else {
          ctx.ui.notify(
@@ -792,7 +812,9 @@ export function createCommandSpec(
      let count = 25;
      const rawTokens = rawRest ? rawRest.split(/\s+/) : [];
      const isFollow = rawTokens.includes("--follow") || rawTokens.includes("-f");
-
+     if (!isFollow) {
+      stopLogsFollow();
+     }
      if (sub === "trace" && rawRest) {
       filterReqId = rawTokens.filter((t) => t !== "--follow" && t !== "-f")[0] || null;
      } else if (rawRest) {

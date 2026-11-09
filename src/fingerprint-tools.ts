@@ -41,7 +41,7 @@ export function clampedEffortFor(model: string, effort: string): string | null {
  // Alias of a supported level: rewrite, because upstream knows the level, not
  // the alias.
  if (isUltra && key in map && map[key] !== null && map[key] !== undefined) return map[key];
- // Effort is supported (non-null) → no clamp
+ // Effort is supported (non-null) → no clamp needed
  if (key in map && map[key] !== null && map[key] !== undefined) return null;
  // Effort key is unknown and not "ultra" → let upstream decide
  if (!(key in map) && !isUltra) return null;

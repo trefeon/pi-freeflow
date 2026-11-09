@@ -16,7 +16,7 @@ import {
  refreshCatalog,
  setAliveCatalog,
 } from "./catalog.ts";
-import { ensureDaemon as ensureClientDaemon, ensureProxyReady, getClientPort, hasFallbackServer, stopHeartbeat } from "./client.ts";
+import { ensureDaemon as ensureClientDaemon, ensureProxyReady, getClientPort, stopHeartbeat } from "./client.ts";
 import { createCommandSpec, stopLogsFollow, updateStatusBar } from "./commands.ts";
 import { HOST, ONBOARDED_FLAG_FILE, PORT } from "./config.ts";
 import { logInfo, logWarn } from "./logger.ts";
@@ -179,6 +179,9 @@ export function buildProviderConfig(
          supportsDeveloperRole: false,
          supportsReasoningEffort: true,
         }),
+     ...(m.thinkingLevelMap !== undefined
+      ? { reasoningEffortMap: Object.fromEntries(Object.entries(m.thinkingLevelMap).filter(([, v]) => typeof v === "string")) }
+      : {}),
      ...(m.requiresReasoningContentOnAssistantMessages !== undefined
       ? { requiresReasoningContentOnAssistantMessages: m.requiresReasoningContentOnAssistantMessages }
       : {}),
@@ -371,15 +374,16 @@ export default async function(pi: ExtensionAPI): Promise<void> {
    ctx.ui?.setStatus?.("freeflow", undefined);
   }
  });
- pi.on?.("session_shutdown", () => {
+ pi.on?.("session_shutdown", async () => {
   stopLogsFollow();
-  if (hasFallbackServer()) {
-   stopHeartbeat();
-  }
+  await stopHeartbeat();
+ });
+ process.once("beforeExit", () => {
+  void stopHeartbeat();
  });
  process.once("exit", () => {
   try {
-   stopHeartbeat();
+   void stopHeartbeat();
   } catch { }
  });
 }

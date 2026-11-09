@@ -49,6 +49,7 @@ import { tokenAuthHeaders } from "./token.ts";
 import {
  daemonScriptPath,
  findExecutableOnPath,
+ findSupportedNodeOnPath,
  isJsRuntimeExecutable,
  isUnderNodeModules,
  materializeDaemonSources,
@@ -81,6 +82,7 @@ import {
 export {
  daemonScriptPath,
  findExecutableOnPath,
+ findSupportedNodeOnPath,
  isJsRuntimeExecutable,
  isUnderNodeModules,
  materializeDaemonSources,
@@ -245,18 +247,23 @@ function stopHeartbeatInternal(): void {
  }
 }
 
-export function stopHeartbeat(): void {
+export async function stopHeartbeat(): Promise<void> {
  const port = heartbeatPort;
+ const hadFallback = fallbackServer !== null;
  stopHeartbeatInternal();
  heartbeatPort = 0;
- if (port) {
-  void controlCall(port, "/_client/detach", { id: CLIENT_ID });
- }
  if (fallbackServer) {
   try {
+   fallbackServer.closeIdleConnections?.();
+   fallbackServer.closeAllConnections?.();
    fallbackServer.close();
   } catch { }
   fallbackServer = null;
+ }
+ if (port && !hadFallback) {
+  try {
+   await controlCall(port, "/_client/detach", { id: CLIENT_ID });
+  } catch { }
  }
 }
 
@@ -272,14 +279,15 @@ async function beatOnce(port: number): Promise<void> {
  }
 }
 
-async function attachTo(port: number): Promise<void> {
+async function attachTo(port: number): Promise<boolean> {
  attachedPort = port;
  const result = await controlCall(port, "/_client/attach", { id: CLIENT_ID });
  if (result === "gone") {
-  return;
+  return false;
  }
  startHeartbeat(port);
  maybeRefreshOpenCodeUserAgent();
+ return true;
 }
 
 async function ensureInProcessFallback(): Promise<number> {
@@ -304,7 +312,7 @@ const recoveryDeps: RecoveryDeps = {
  resetHeartbeatPort: () => {
   heartbeatPort = 0;
  },
- attachTo,
+ attachTo: async (p: number) => { await attachTo(p); },
  killStaleDaemon: (p, v, w) => killStaleDaemon(p, v, w),
  ensureDaemon: () => ensureDaemon(),
  getDaemonHealth: (p: number) => getDaemonHealth(p),
@@ -606,20 +614,31 @@ function spawnDaemonProcess(): DaemonChild | null {
  lastSpawnAt = now;
  const logFd = openDaemonLogFd();
  try {
-  const child = daemonSpawner(runtime.execPath, args, {
-   detached: true,
-   stdio: logFd === null ? "ignore" : ["ignore", logFd, logFd],
-   windowsHide: true,
-   env: {
-    ...process.env,
-    [DAEMON_SPAWN_ENV]: "0",
-   },
-  });
+  const child = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(runtime.execPath) && daemonSpawner === spawn
+   ? daemonSpawner(`"${runtime.execPath}" ${args.map((a) => `"${a}"`).join(" ")}`, [], {
+    detached: true,
+    stdio: logFd === null ? "ignore" : ["ignore", logFd, logFd],
+    windowsHide: true,
+    shell: true,
+    env: {
+     ...process.env,
+     [DAEMON_SPAWN_ENV]: "0",
+    },
+   })
+   : daemonSpawner(runtime.execPath, args, {
+    detached: true,
+    stdio: logFd === null ? "ignore" : ["ignore", logFd, logFd],
+    windowsHide: true,
+    env: {
+     ...process.env,
+     [DAEMON_SPAWN_ENV]: "0",
+    },
+   });
   child.unref();
   logInfo(
    `spawned proxy daemon process (pid ${child.pid ?? "unknown"}) using ${runtime.runtimeType} (${runtime.execPath}) for :${PORT}${stagedScript === scriptArg ? "" : " [staged sources]"}`,
   );
-  child.on("error", (err) => {
+  child.on("error", (err: Error) => {
    failedDaemonSpawns.add(child);
    logWarn("daemon spawn failed", { error: String(err), execPath: runtime.execPath });
   });
@@ -731,8 +750,7 @@ export async function ensureDaemon(): Promise<number> {
 async function ensureDaemonAttempt(): Promise<number> {
   const primary = await probeAndMaybeReplace(PORT, "proxy daemon");
   if (primary !== null) {
-   await attachTo(primary);
-   return primary;
+   if (await attachTo(primary)) return primary;
   }
 
 

@@ -67,20 +67,33 @@ export function setCachedUpdate(latest: string): void {
  }
 }
 
+let inFlightUpdateCheck: Promise<void> | null = null;
+
 export function checkForUpdateInBackground(ui?: ExtensionUIContext | null): void {
  try {
   if (isLinkedInstall()) return;
 
   const cached = getCachedUpdate();
+  const local = getLocalVersion();
   if (
    cached &&
    typeof cached.checkedAt === "number" &&
    Date.now() - cached.checkedAt < UPDATE_CHECK_TTL_MS
   ) {
+   if (local && compareVersions(cached.latest, local) > 0) {
+    try {
+     if (!getActiveRelayState().hideWidget) {
+      const targetUi = ui ?? getStatusUi();
+      targetUi?.setStatus?.("freeflow", `update: ${local} → ${cached.latest}`);
+     }
+    } catch { }
+   }
    return;
   }
 
-  void fetchLatestVersion()
+  if (inFlightUpdateCheck !== null) return;
+
+  inFlightUpdateCheck = fetchLatestVersion()
    .then((latest) => {
     if (!latest) return;
     try {
@@ -119,6 +132,9 @@ export function checkForUpdateInBackground(ui?: ExtensionUIContext | null): void
    })
    .catch(() => {
     // swallow — offline / transient network error
+   })
+   .finally(() => {
+    inFlightUpdateCheck = null;
    });
  } catch {
   // swallow — never throw from background check

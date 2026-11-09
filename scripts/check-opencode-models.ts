@@ -27,6 +27,9 @@
  * 1 = at least one dead model, 2 = fatal/infra.
  */
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { startProxy } from "../src/proxy.ts";
 import { OPENCODE_MODELS } from "../src/models.ts";
@@ -315,72 +318,77 @@ function tableCell(value: string): string {
 }
 
 async function main() {
-  const args = process.argv.slice(2);
-  const outputIdx = args.indexOf("--output");
-  const outputFile = outputIdx !== -1 ? args[outputIdx + 1] : null;
-  const jsonFileIdx = args.indexOf("--json-output");
-  const jsonFile = jsonFileIdx !== -1 ? args[jsonFileIdx + 1] : null;
-  const isJson = args.includes("--json");
+  const customDataDir = !process.env.PI_FREEFLOW_DATA_DIR;
+  const tempDir = customDataDir ? fsSync.mkdtempSync(path.join(os.tmpdir(), "pff-check-models-")) : null;
+  if (tempDir) process.env.PI_FREEFLOW_DATA_DIR = tempDir;
+  try {
+    const args = process.argv.slice(2);
+    const outputIdx = args.indexOf("--output");
+    const outputFile = outputIdx !== -1 ? args[outputIdx + 1] : null;
+    const jsonFileIdx = args.indexOf("--json-output");
+    const jsonFile = jsonFileIdx !== -1 ? args[jsonFileIdx + 1] : null;
+    const isJson = args.includes("--json");
 
-  const { server, port } = await startOwnedProxy();
-  console.log(`[check-opencode] Proxy started on port ${port}, probing ${OPENCODE_MODELS.length} models...`);
+    const { server, port } = await startOwnedProxy();
+    console.log(`[check-opencode] Proxy started on port ${port}, probing ${OPENCODE_MODELS.length} models...`);
 
-  const results: ModelHealthResult[] = [];
-  for (const model of OPENCODE_MODELS) {
-    process.stdout.write(`  Probing ${model.id}... `);
-    const result = await probeModel(port, model);
-    results.push(result);
-    console.log(
-      result.healthy
-        ? `✅ OK (${result.latencyMs}ms)`
-        : `${VERDICT_LABELS[result.verdict]} ${result.status || "network"}: ${result.error}`,
-    );
-  }
-
-  server.close();
-
-  const summary = summarizeResults(results);
-  const report = generateMarkdownReport(results);
-
-  if (outputFile) {
-    await fs.writeFile(outputFile, report, "utf8");
-    console.log(`[check-opencode] Report written to ${outputFile}`);
-  }
-
-  const payload = {
-    affectedCount: summary.affectedCount,
-    deadCount: summary.deadCount,
-    degradedCount: summary.degradedCount,
-    results,
-  };
-  // The file form is what the workflow reads. It is written as a bare JSON
-  // document so no progress or summary line can break the parse; stdout mode
-  // below keeps the same object as the stream's last line.
-  if (jsonFile) {
-    await fs.writeFile(jsonFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-  }
-
-  if (summary.exitCode === 1) {
-    console.error(`[check-opencode] ${summary.deadCount} OpenCode model(s) dead (model-level failure).`);
-  } else {
-    // Availability faults and probe timeouts exit 0: they are reported, never
-    // alerted on, so a shared-runner blip can never file an issue.
-    for (const result of [...summary.unavailable, ...summary.timeouts]) {
+    const results: ModelHealthResult[] = [];
+    for (const model of OPENCODE_MODELS) {
+      process.stdout.write(`  Probing ${model.id}... `);
+      const result = await probeModel(port, model);
+      results.push(result);
       console.log(
-        `[check-opencode] ${VERDICT_LABELS[result.verdict]}: ${result.id} — HTTP ${result.status || "network"} ${result.error ?? ""}`.trimEnd(),
+        result.healthy
+          ? `✅ OK (${result.latencyMs}ms)`
+          : `${VERDICT_LABELS[result.verdict]} ${result.status || "network"}: ${result.error}`,
       );
     }
-    if (summary.degradedCount > 0) {
-      console.log(
-        `[check-opencode] ${summary.degradedCount} model(s) degraded by availability or probe timeout — no dead model, no alert.`,
-      );
+
+    server.close();
+
+    const summary = summarizeResults(results);
+    const report = generateMarkdownReport(results);
+
+    if (outputFile) {
+      await fs.writeFile(outputFile, report, "utf8");
+      console.log(`[check-opencode] Report written to ${outputFile}`);
+    }
+
+    const payload = {
+      affectedCount: summary.affectedCount,
+      deadCount: summary.deadCount,
+      degradedCount: summary.degradedCount,
+      results,
+    };
+    if (jsonFile) {
+      await fs.writeFile(jsonFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    }
+
+    if (summary.exitCode === 1) {
+      console.error(`[check-opencode] ${summary.deadCount} OpenCode model(s) dead (model-level failure).`);
     } else {
-      console.log(`[check-opencode] All ${results.length} models healthy.`);
+      for (const result of [...summary.unavailable, ...summary.timeouts]) {
+        console.log(
+          `[check-opencode] ${VERDICT_LABELS[result.verdict]}: ${result.id} — HTTP ${result.status || "network"} ${result.error ?? ""}`.trimEnd(),
+        );
+      }
+      if (summary.degradedCount > 0) {
+        console.log(
+          `[check-opencode] ${summary.degradedCount} model(s) degraded by availability or probe timeout — no dead model, no alert.`,
+        );
+      } else {
+        console.log(`[check-opencode] All ${results.length} models healthy.`);
+      }
+    }
+
+    if (isJson) console.log(JSON.stringify(payload, null, 2));
+    process.exit(summary.exitCode);
+  } finally {
+    if (tempDir) {
+      delete process.env.PI_FREEFLOW_DATA_DIR;
+      try { fsSync.rmSync(tempDir, { recursive: true, force: true }); } catch {}
     }
   }
-
-  if (isJson) console.log(JSON.stringify(payload, null, 2));
-  process.exit(summary.exitCode);
 }
 
 // Run the CLI only when this file is the process entry point; tests import

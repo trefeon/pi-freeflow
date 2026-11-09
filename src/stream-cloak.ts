@@ -222,6 +222,7 @@ export function shouldBypassStreamCloak(cloak?: StreamCloakOptions): boolean {
  if (cloak.injected !== undefined && cloak.injected.length > 0) return false;
  if (cloak.caseRestore && Object.keys(cloak.caseRestore).length > 0) return false;
  if (cloak.findGlob?.renamedFindToGlob === true) return false;
+ if (cloak.findGlob?.renamed && Object.keys(cloak.findGlob.renamed).length > 0) return false;
  // Tool-less callers must still see tool calls stripped when the
  // injected record exists (legacy direct calls keep everything).
  if (!cloak.callerHadTools && cloak.injected !== undefined) return false;
@@ -655,11 +656,13 @@ export function rewriteChatBlock(
      // Hold this call's arguments: the packet is only judgeable once whole,
      // so it is re-emitted repaired on the terminal finish_reason chunk.
      // Reset-then-absorb mirrors the old per-index buffer exactly.
-     if (!call.buffered) state.audit?.repair("arguments-buffered", toolName);
-     call.buffered = true;
-     call.args = "";
+     if (!call.buffered) {
+      state.audit?.repair("arguments-buffered", toolName);
+      call.buffered = true;
+      call.args = "";
+     }
      if (fnRec && typeof fnRec.arguments === "string" && fnRec.arguments !== "") {
-      call.args = fnRec.arguments;
+      call.args += fnRec.arguments;
       delete fnRec.arguments;
       changed = true;
      }

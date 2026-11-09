@@ -15,7 +15,7 @@ Instead of VPN tunnels, pi-freeflow talks to two families of relays over one con
        ▼
 [Relay — edge worker or self-hosted pool]
        │
-       │ (2) Whitelist validation (allows only opencode.ai & api.kilo.ai)
+       │ (2) Whitelist validation (allows opencode.ai, api.kilo.ai & oai.endpoints.kepler.ai.cloud.ovh.net)
        │ (3) Strips x-relay-* headers, forges clean upstream headers
        ▼
 [Direct Upstream Provider]

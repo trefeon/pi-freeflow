@@ -314,9 +314,11 @@ test("isFreeCatalogId accepts -free, :free, /free and known ids, rejects paid an
 	assert.equal(isFreeCatalogId("flint-40b-free"), true);
 	assert.equal(isFreeCatalogId("minimax/minimax-m3.1-flash:free"), false);
 	assert.equal(isFreeCatalogId("nvidia/nemotron-3.5-super-vl:free"), true);
-	assert.equal(isFreeCatalogId("reflection/beam-free"), true);
-	assert.equal(isFreeCatalogId("recursive/flint-v1.0:free"), true);
-	assert.equal(isFreeCatalogId("xingchen-agi/xing4.0-29b-a4b:free"), true);
+	assert.equal(isFreeCatalogId("reflection/beam-free"), false, "discontinued 2026-11-09");
+	assert.equal(isFreeCatalogId("recursive/flint-v1.0:free"), false, "discontinued 2026-11-09");
+	assert.equal(isFreeCatalogId("xingchen-agi/xing4.0-29b-a4b:free"), false, "discontinued 2026-11-09");
+	assert.equal(isFreeCatalogId("poolside/laguna-s-2.1:free"), false, "discontinued 2026-11-09");
+	assert.equal(isFreeCatalogId("liquid/lfm-3-1.7b:free"), true, "active Kilo free model");
  assert.equal(isFreeCatalogId(""), false);
 });
 

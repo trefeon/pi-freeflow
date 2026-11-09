@@ -279,7 +279,7 @@ async function withDeterministicUpdateEnv(
 			ok: true,
 			json: async () => ({ version: "99.0.0" }),
 		})) as unknown as typeof fetch;
-		_setUpdateRestartDepsForTest(deps);
+		_setUpdateRestartDepsForTest({ ensureDaemon: () => Promise.resolve(PORT), ...deps });
 		await fn();
 	} finally {
 		_setUpdateRestartDepsForTest(null);

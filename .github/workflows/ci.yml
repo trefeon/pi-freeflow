@@ -59,7 +59,7 @@ jobs:
           if [ -z "$RANGE" ]; then
             FILES=$(git ls-files)
           else
-            FILES=$(git diff --name-only "$RANGE")
+            FILES=$(git diff --name-only "$RANGE" 2>/dev/null || git ls-files)
           fi
 
           has() { printf '%s\n' "$FILES" | grep -Eq "$1"; }
@@ -227,10 +227,14 @@ jobs:
             process.stdin.on('data', c => d += c);
             process.stdin.on('end', () => {
               try {
-                const j = JSON.parse(d);
+                const idx = d.indexOf('[');
+                const j = JSON.parse(idx !== -1 ? d.slice(idx) : d);
                 const files = j[0]?.files?.map(f => f.path) || [];
+                if (files.length === 0) process.exit(1);
                 console.log(files.join('\n'));
-              } catch {}
+              } catch {
+                process.exit(1);
+              }
             });
           ")
 

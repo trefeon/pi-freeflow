@@ -180,6 +180,7 @@ function matchesSchema(value: unknown, schema: Record<string, unknown>, depth: n
  }
  if (type === "string") return typeof value === "string";
  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+ if (type === "integer") return typeof value === "number" && Number.isInteger(value);
  if (type === "boolean") return typeof value === "boolean";
  if (Array.isArray(resolved.enum)) return resolved.enum.some((member) => member === value);
  return true;
@@ -342,7 +343,13 @@ function adoptDeclaredKeys(
   for (const key of unknownKeys) {
    const raw = value[key];
    const want = Array.isArray(raw) ? "array" : raw !== null && typeof raw === "object" ? "object" : typeof raw;
-   const candidates = missing.filter((name) => !taken.has(name) && schemaType(declared[name]) === want);
+   const candidates = missing.filter((name) => {
+    if (taken.has(name)) return false;
+    const st = schemaType(declared[name]);
+    if (st === want) return true;
+    if (st === "integer" && want === "number" && typeof raw === "number" && Number.isInteger(raw)) return true;
+    return false;
+   });
    if (candidates.length !== 1) return null;
    taken.add(candidates[0]);
    targets.set(key, candidates[0]);
@@ -540,14 +547,14 @@ function parseArguments(argsJson: string): { value: Record<string, unknown>; sal
  // (`{"opts":{"a":1` must not salvage to `{"a":1}`).
  for (const start of topLevelObjectStarts(argsJson)) {
   const candidate = argsJson.slice(start);
-  const i = start;
   // Two shapes to try, in order: the candidate as written, then the candidate
   // with its missing closers appended. The closer is only offered at the FIRST
   // brace and only when something precedes it — that fragment is the evidence
   // the model was mid-call and lost the tail. A bare `{"op":"init"` stays
   // refused, and so does an inner `{"phase":…` inside an already-truncated
   // object, which is why this is not offered at every brace.
-  const candidates = i === 0 ? [candidate] : [candidate, appendClosers(candidate)];
+  const hasPreceding = argsJson.slice(0, start).trim().length > 0;
+  const candidates = hasPreceding ? [candidate, appendClosers(candidate)] : [candidate];
   for (const attempt of candidates) {
    if (attempt === undefined) continue;
    try {

@@ -275,8 +275,8 @@ export async function killPortHolder(port: number): Promise<boolean> {
      windowsHide: true,
     }) as string;
     for (const line of out.split("\n")) {
-     if (!line.includes("LISTENING")) continue;
      const parts = line.trim().split(/\s+/);
+     if (!line.includes("LISTENING") && !(parts[0]?.toUpperCase() === "TCP" && (parts[2] === "0.0.0.0:0" || parts[2] === "[::]:0"))) continue;
      if (!parts[1] || !parts[1].endsWith(`:${port}`)) continue;
      tryTaskkillPid(parts[parts.length - 1]);
     }
@@ -298,7 +298,7 @@ export async function killPortHolder(port: number): Promise<boolean> {
    return killed;
   }
   try {
-   const out = execSync(`lsof -ti tcp:${port} 2>/dev/null || fuser -n tcp ${port} 2>/dev/null`, {
+   const out = execSync(`lsof -tiTCP:${port} -sTCP:LISTEN 2>/dev/null || fuser -n tcp ${port} 2>/dev/null`, {
     encoding: "utf8",
     timeout: 3000,
    }) as string;

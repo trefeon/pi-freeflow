@@ -195,6 +195,25 @@ export const DEAD_MODEL_IDS = new Set<string>([
  // sibling Kilo id nvidia/nemotron-3-ultra-550b-a55b:free is a separate
  // serving route and is unaffected.
  "nemotron-3-ultra-free",
+ // poolside/laguna-s-2.1:free and poolside/laguna-xs-2.1:free: discontinued
+ // upstream on KiloCode (2026-11-09) — removed from live /api/gateway/models,
+ // answers HTTP 404 "The requested model does not exist" across all egresses.
+ "poolside/laguna-s-2.1:free",
+ "poolside/laguna-xs-2.1:free",
+ // liquid/lfm-2.5-2.6b:free: replaced upstream on KiloCode by liquid/lfm-3-1.7b:free
+ // (2026-11-09) — answers HTTP 404 "The requested model is currently unavailable".
+ "liquid/lfm-2.5-2.6b:free",
+ // reflection/beam-free: discontinued upstream on KiloCode (2026-11-09) —
+ // answers HTTP 404 "The requested model does not exist". The Zen beam-free
+ // twin is a separate serving route and remains active.
+ "reflection/beam-free",
+ // recursive/flint-v1.0:free: discontinued upstream on KiloCode (2026-11-09) —
+ // answers HTTP 404 "The requested model is currently unavailable". The Zen
+ // flint-40b-free twin is a separate serving route and remains active.
+ "recursive/flint-v1.0:free",
+ // xingchen-agi/xing4.0-29b-a4b:free: discontinued upstream on KiloCode (2026-11-09) —
+ // answers HTTP 404 "The requested model is currently unavailable".
+ "xingchen-agi/xing4.0-29b-a4b:free",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.
@@ -336,25 +355,30 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
  // Declared fields win over wire aliases: a listing that already names
  // contextWindow/maxTokens/reasoning keeps its values; the snake_case
  // upstream aliases and the id heuristics only fill gaps.
- let contextWindow =
-  typeof raw.contextWindow === "number" ? raw.contextWindow
-  : typeof raw.context_length === "number" ? raw.context_length : 262_144;
+ const validPosNum = (n: unknown): n is number =>
+  typeof n === "number" && Number.isFinite(n) && n > 0;
+ const declaredContext =
+  validPosNum(raw.contextWindow) ? raw.contextWindow
+  : validPosNum(raw.context_length) ? raw.context_length : undefined;
+ let contextWindow = declaredContext ?? 262_144;
  if (
-  idLower.includes("1m") ||
-  idLower.includes("ultra") ||
-  idLower.includes("lightning") ||
-  idLower.includes("mimo-v2.5") ||
-  idLower.includes("muse-spark")
+  declaredContext === undefined && (
+   idLower.includes("1m") ||
+   idLower.includes("ultra") ||
+   idLower.includes("lightning") ||
+   idLower.includes("mimo-v2.5") ||
+   idLower.includes("muse-spark")
+  )
  ) {
   contextWindow = 1_048_576;
  }
 
- let maxTokens =
-  typeof raw.maxTokens === "number" ? raw.maxTokens
-  : typeof raw.max_output_tokens === "number"
-   ? raw.max_output_tokens
-   : 65_536;
- if (idLower.includes("ultra") || idLower.includes("lightning")) {
+ const declaredMaxTokens =
+  validPosNum(raw.maxTokens) ? raw.maxTokens
+  : validPosNum(raw.max_output_tokens) ? raw.max_output_tokens
+  : validPosNum(raw.max_tokens) ? raw.max_tokens : undefined;
+ let maxTokens = declaredMaxTokens ?? 65_536;
+ if (declaredMaxTokens === undefined && (idLower.includes("ultra") || idLower.includes("lightning"))) {
   maxTokens = 131_072;
  }
 

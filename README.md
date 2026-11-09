@@ -19,7 +19,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 | **32 free models** | 8 from OpenCode Zen, 15 from KiloCode Gateway, 1 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own relays: a self-hosted egress pool (many egress IPs on one small host) or Cloudflare Workers / Deno Deploy / Vercel Edge workers. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your host or platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
-| **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`; the Cline model has no alias and must be typed in full. | **$0** |
+| **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>` (including `cline-super-vl` for Cline). | **$0** |
 | **Shared local proxy** | One daemon on `127.0.0.1:28180` serves every session on the machine, so parallel subagents reuse it instead of opening their own connections. Loopback-only and token-gated: hosts send the token automatically, external tools read `~/.pi/agent/token`. | **$0** |
 | **Logs you can read** | `~/.pi/agent/pi-freeflow.log`, rotated at 10MB. Tail it with `/freeflow logs`. | **$0** |
 | **Tool-call diagnostics** | `~/.pi/agent/toolcall-audit.jsonl`, rotated at 5MB. One line per streamed turn that declared tools (and per non-streamed Chat Completions turn) — the calls it made, argument size and validity, finish reason, classified failure — plus one line per abandoned upstream attempt. Names, sizes and reasons only. | **$0** |
@@ -134,13 +134,13 @@ For `api/relay.js`, use the canonical worker source (see below); `vercel.json` s
 
 **Canonical worker source (all platforms)**
 
-The relay worker template is generated per deployment by `/freeflow deploy`, with one shared core adapted for Vercel, Cloudflare, and Deno. Every deploy embeds a random 32-byte secret, and the generated worker answers `401` to any request without a matching `x-relay-auth` header; the client sends that secret to each relay in the pool. Only a hand-pasted legacy worker built without a secret is open to anyone. Either way, a relay forwards only to an allowlist (`https://opencode.ai`, `https://api.kilo.ai`) with private-host and path checks.
+The relay worker template is generated per deployment by `/freeflow deploy`, with one shared core adapted for Vercel, Cloudflare, and Deno. Every deploy embeds a random 32-byte secret, and the generated worker answers `401` to any request without a matching `x-relay-auth` header; the client sends that secret to each relay in the pool. Only a hand-pasted legacy worker built without a secret is open to anyone. Either way, a relay forwards only to an allowlist (`https://opencode.ai`, `https://api.kilo.ai`, `https://oai.endpoints.kepler.ai.cloud.ovh.net`) with private-host and path checks.
 
 ```js
 // Minimal Cloudflare illustration. Prefer /freeflow deploy: the generated
 // worker is the hardened source for all three platforms.
 // This example omits the private-host guard, path validation, and auth.
-const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
+const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai", "https://oai.endpoints.kepler.ai.cloud.ovh.net"];
 export default {
   async fetch(req) {
     const target = req.headers.get("x-relay-target");
@@ -215,7 +215,7 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 32 models, one command
+### 30 models, one command
 
 ```bash
 /model → freeflow → pick
@@ -225,7 +225,7 @@ Every model specification is reconciled against [models.dev](https://models.dev/
 
 The host catalog carries text and image inputs only. Upstream video and audio support (MiMo: audio + video; GLM 5.3 Flash: video + PDF; Nemotron Super VL and Nano Omni: video) is therefore not selectable from the picker and is not declared in `input`.
 
-#### OpenCode Zen (8 models), Chat Completions API
+#### OpenCode Zen (11 models), Chat Completions API
 
 Good defaults for long coding sessions and agentic work.
 
@@ -239,8 +239,11 @@ Good defaults for long coding sessions and agentic work.
 | `beam-free` | Reflection AI | **1M** (1.048.576) | **131K** (131.072) | `low … max` | ❌ |
 | `deepseek-v4.1-flash-free` | DeepSeek | **1M** (1.048.576) | **393K** (393.216) | `low / high / max` | ✅ |
 | `flint-40b-free` | Recursive | **262K** (262.144) | **65K** (65.536) | `low … max` | ❌ |
+| `crouton-alpha-free` | Stealth (Thinking Machines) | **1M** (1.048.576) | **270K** (270.000) | `minimal … max` | ✅ |
+| `iceman-free` | Stealth | **262K** (262.144) | **131K** (131.072) | `low / high / max` | ❌ |
+| `inkling-2-small-free` | Thinking Machines | **1M** (1.048.576) | **131K** (131.072) | `minimal … max` | ✅ |
 
-#### KiloCode Gateway (15 models), OpenRouter compatible
+#### KiloCode Gateway (10 models), OpenRouter compatible
 
 Keyless access. Most rows have a short alias (shown with the full ID in parentheses); a row that shows only the full ID has no short form.
 
@@ -251,16 +254,11 @@ Keyless access. Most rows have a short alias (shown with the full ID in parenthe
 | `nemotron-3-ultra-550b` (`nvidia/...:free`) | NVIDIA | **1M** (1.000.000) | **182K** (182.520) | `minimal…xhigh`\* | ❌ |
 | `nemotron-3.5-lightning` (`nvidia/nemotron-3.5-lightning:free`) | NVIDIA | **1M** (1.000.000) | **235K** (235.929) | `minimal…xhigh`\* | ❌ |
 | `north-mini-code` (`cohere/...:free`) | Cohere | **256K** (256.000) | **64K** (64.000) | `minimal…xhigh`\* | ❌ |
-| `laguna-s-2.1:free` (`poolside/...:free`) | Poolside | **1M** (1.048.576) | **131K** (131.072) | `minimal…xhigh`\* | ❌ |
-| `laguna-xs-2.1:free` (`poolside/...:free`) | Poolside | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
-| `lfm-2.5` (`liquid/lfm-2.5-2.6b:free`) | Liquid AI | **128K** (128.000) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
+| `lfm-3` (`liquid/lfm-3-1.7b:free`) | Liquid AI | **262K** (262.144) | **8K** (8.192) | `minimal…xhigh`\* | ❌ |
 | `kilo-auto` (`kilo-auto/free`) | Kilo Gateway Auto | **256K** (256.000) | **10K** (10.000) | `minimal…xhigh`\* | ❌ |
 | `openrouter` (`openrouter/free`) | OpenRouter Free | **200K** (200.000) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
 | `glyph-cluster` (`stealth/glyph-cluster`) | Stealth preview (lab undisclosed) | **256K** (256.000) | **256K** (256.000) | `minimal…xhigh`\* | ❌ |
-| `nvidia/nemotron-3.5-super-vl:free` | NVIDIA | **1M** (1.000.000) | **131K** (131.072) | `minimal…xhigh`\* | ✅ |
-| `beam-kilo` (`reflection/beam-free`) | Reflection AI | **1M** (1.048.576) | **131K** (131.072) | `low…max`\* | ❌ |
-| `flint-kilo` (`recursive/flint-v1.0:free`) | Recursive | **262K** (262.144) | **65K** (65.536) | `minimal…xhigh`\* | ❌ |
-| `xing4.0` (`xingchen-agi/xing4.0-29b-a4b:free`) | XingChen | **262K** (262.144) | **235K** (235.929) | `minimal…xhigh`\* | ❌ |
+| `nemotron-3.5-super-vl-kilo` (`nvidia/nemotron-3.5-super-vl:free`) | NVIDIA | **1M** (1.000.000) | **131K** (131.072) | `minimal…xhigh`\* | ✅ |
 
 \* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.
 

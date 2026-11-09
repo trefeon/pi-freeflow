@@ -101,6 +101,8 @@ interface CallAcc {
  /** Accumulated arguments, bounded; `bytes` is the unbounded payload size. */
  args: string;
  bytes: number;
+ argsTruncated?: boolean;
+ argsValid?: boolean;
 }
 
 interface StreamState {
@@ -189,6 +191,9 @@ function appendArgs(state: StreamState, call: CallAcc, chunk: string): void {
   MAX_ARGS_CHARS - call.args.length,
   MAX_TURN_ARGS_CHARS - state.argsChars,
  );
+ if (room <= 0 || chunk.length > room) {
+  call.argsTruncated = true;
+ }
  if (room <= 0) return;
  const take = chunk.length > room ? chunk.slice(0, room) : chunk;
  call.args += take;
@@ -203,6 +208,10 @@ function setArgs(state: StreamState, call: CallAcc, args: string): void {
   0,
   Math.min(MAX_ARGS_CHARS, MAX_TURN_ARGS_CHARS - state.argsChars),
  );
+ if (args.length > room) {
+  call.argsTruncated = true;
+  call.argsValid = isArgsObject(args);
+ }
  const take = args.length > room ? args.slice(0, room) : args;
  call.args = take;
  state.argsChars += take.length;
@@ -261,14 +270,18 @@ function observeChat(evt: Record<string, unknown>, state: StreamState): void {
 
 function observeResponses(evt: Record<string, unknown>, state: StreamState): void {
  const type = typeof evt["type"] === "string" ? (evt["type"] as string) : "";
+ const outputIndex = typeof evt["output_index"] === "number" ? (evt["output_index"] as number) : undefined;
  if (type === "response.output_item.added" || type === "response.output_item.done") {
   const item = asRecord(evt["item"]);
   if (!item || item["type"] !== "function_call") return;
   const id = item["id"] !== undefined ? clip(item["id"], MAX_TEXT) : clip(item["call_id"], MAX_TEXT);
-  let call = findById(state.calls, id);
+  const index = outputIndex ?? state.calls.length;
+  let call = findById(state.calls, id) ?? (outputIndex !== undefined ? findByIndex(state.calls, outputIndex, id) : null);
   if (!call) {
-   call = pushCall(state, state.calls.length, id);
+   call = pushCall(state, index, id);
    if (!call) return;
+  } else if (call.id === "" && id !== "") {
+   call.id = id;
   }
   const name = clip(item["name"], MAX_TEXT);
   if (name !== "") call.name = name;
@@ -281,9 +294,9 @@ function observeResponses(evt: Record<string, unknown>, state: StreamState): voi
  }
  if (type === "response.function_call_arguments.delta") {
   const id = clip(evt["item_id"], MAX_TEXT);
-  let call = findById(state.calls, id);
+  let call = findById(state.calls, id) ?? (outputIndex !== undefined ? findByIndex(state.calls, outputIndex, id) : null);
   if (!call) {
-   call = pushCall(state, state.calls.length, id);
+   call = pushCall(state, outputIndex ?? state.calls.length, id);
    if (!call) return;
   }
   if (typeof evt["delta"] === "string") appendArgs(state, call, evt["delta"] as string);
@@ -291,9 +304,9 @@ function observeResponses(evt: Record<string, unknown>, state: StreamState): voi
  }
  if (type === "response.function_call_arguments.done") {
   const id = clip(evt["item_id"], MAX_TEXT);
-  let call = findById(state.calls, id);
+  let call = findById(state.calls, id) ?? (outputIndex !== undefined ? findByIndex(state.calls, outputIndex, id) : null);
   if (!call) {
-   call = pushCall(state, state.calls.length, id);
+   call = pushCall(state, outputIndex ?? state.calls.length, id);
    if (!call) return;
   }
   if (typeof evt["arguments"] === "string") setArgs(state, call, evt["arguments"] as string);
@@ -421,7 +434,7 @@ export function createToolcallRecorder(opts: ToolcallRecorderOptions): ToolcallR
   const calls = state.calls.slice(0, MAX_CALLS).map((call) => ({
    name: clip(call.name, MAX_NAME),
    argsBytes: call.bytes,
-   argsValid: isArgsObject(call.args),
+   argsValid: call.argsValid ?? (call.argsTruncated ? true : isArgsObject(call.args)),
    known: declaredExact.has(call.name),
   }));
   // A body that never carried an event stream says nothing about the model:

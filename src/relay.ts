@@ -401,50 +401,97 @@ export async function relayFetch(
      fetchA.catch(() => {});
      fetchB.catch(() => {});
      interface HedgedWin { url: string; response: Response; }
+     let hedgeBAbortedByWinner = false;
+     let bProducedOutcome = false;
+     const isCallerAborted = () => Boolean(opts.signal?.aborted);
+     const isNonWinning = (status: number): boolean =>
+      isRetriableStatus(status) || status === 403 || status === 401 || status === 402;
      try {
-      const winner = await new Promise<HedgedWin>((resolve, reject) => {
-       let failures = 0;
-       let firstError: unknown = null;
-       const onError = (err: unknown) => {
-        failures += 1;
-        if (firstError === null) firstError = err;
-        if (failures >= 2) reject(firstError);
-       };
-       fetchA.then(
-        (response) => resolve({ url: primaryUrl, response }),
-        onError,
-       );
-       fetchB.then(
-        (response) => resolve({ url: nextUrl, response }),
-        onError,
-       );
-      });
+      const { promise: winnerPromise, resolve, reject } = Promise.withResolvers<HedgedWin>();
+      let firstBad: HedgedWin | null = null;
+      let firstError: unknown = null;
+      let settledCount = 0;
+      const onResponse = (legUrl: string, response: Response) => {
+       settledCount += 1;
+       if (legUrl === nextUrl) {
+        bProducedOutcome = true;
+       }
+       if (!isNonWinning(response.status)) {
+        if (firstBad) {
+         firstBad.response.body?.cancel().catch(() => {});
+         markRelayFailure(firstBad.url, firstBad.response.status);
+        }
+        resolve({ url: legUrl, response });
+        return;
+       }
+       if (!firstBad) {
+        if (settledCount >= 2) {
+         resolve({ url: legUrl, response });
+        } else {
+         firstBad = { url: legUrl, response };
+        }
+        return;
+       }
+       if (legUrl === nextUrl) {
+        markRelayFailure(nextUrl, response.status);
+        response.body?.cancel().catch(() => {});
+       } else {
+        markRelayFailure(primaryUrl, response.status);
+        response.body?.cancel().catch(() => {});
+       }
+       resolve(firstBad);
+      };
+      const onError = (legUrl: string, err: unknown) => {
+       settledCount += 1;
+       if (legUrl === nextUrl && !hedgeBAbortedByWinner) {
+        bProducedOutcome = true;
+       }
+       if (firstBad) {
+        if (legUrl === nextUrl && !hedgeBAbortedByWinner && !isCallerAborted()) {
+         markRelayFailure(nextUrl, 0, (err as Error)?.message || String(err));
+        }
+        resolve(firstBad);
+        return;
+       }
+       if (firstError === null) {
+        firstError = err;
+       }
+       if (settledCount >= 2) {
+        reject(firstError);
+       }
+      };
+      fetchA.then(
+       (r) => onResponse(primaryUrl, r),
+       (e) => onError(primaryUrl, e),
+      );
+      fetchB.then(
+       (r) => onResponse(nextUrl, r),
+       (e) => onError(nextUrl, e),
+      );
+      const winner = await winnerPromise;
       if (winner.url === nextUrl) {
        hedgeCtlA.abort();
        targetUrl = nextUrl;
        attemptStart = hedgeStart;
       } else {
+       hedgeBAbortedByWinner = true;
        hedgeCtlB.abort();
       }
       res = winner.response;
-      // Both candidates are consumed by this race: skip the next
-      // index so the loser is never retried in this request.
-      hedgeSkipNext = true;
+      if (bProducedOutcome) {
+       hedgeSkipNext = true;
+      }
      } catch (hedgeErr) {
-      // Both hedged attempts failed without usable headers. Caller
-      // abort must propagate unmarked (the outer catch rethrows);
-      // otherwise record the next relay here and let the outer
-      // catch record the primary.
       if ((hedgeErr as Error)?.name === "AbortError" && opts.signal?.aborted) {
        throw hedgeErr;
       }
-      markRelayFailure(nextUrl, 0, (hedgeErr as Error)?.message || String(hedgeErr));
-      // Both legs of this race were abandoned; the outer catch
-      // reports the primary one, this reports the hedge leg.
-      reportAbandoned(
-       (hedgeErr as Error)?.name === "AbortError" ? "header-timeout" : "network-error",
-      );
-      hedgeSkipNext = true;
+      if (bProducedOutcome) {
+       markRelayFailure(nextUrl, 0, (hedgeErr as Error)?.message || String(hedgeErr));
+       reportAbandoned(
+        (hedgeErr as Error)?.name === "AbortError" ? "header-timeout" : "network-error",
+       );
+       hedgeSkipNext = true;
+      }
       throw hedgeErr;
      }
     }

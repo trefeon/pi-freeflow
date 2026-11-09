@@ -74,12 +74,9 @@ test("1M context window models are properly configured", () => {
 		"nemotron-3.5-super-vl-free",
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
-		"poolside/laguna-s-2.1:free",
-		// Added 2026-10-22: twin pairs at the 1M tier. Both free MiniMax M3.1
-		// Flash endpoints were retired on 2026-10-23, so its ids leave this
-		// list entirely.
 		"nvidia/nemotron-3.5-super-vl:free",
-		"reflection/beam-free",
+		"crouton-alpha-free",
+		"inkling-2-small-free",
 	];
 
  for (const id of oneMillionModels) {
@@ -202,11 +199,12 @@ test("model aliases resolve correctly to canonical IDs", () => {
  assert.equal(getModelDef("minimax-m3.1-flash"), undefined);
  assert.equal(MODEL_MAP.has("minimax-m3.1-flash"), false);
  assert.equal(resolveCanonicalModelId("flint"), "flint-40b-free");
- assert.equal(resolveCanonicalModelId("flint-kilo"), "recursive/flint-v1.0:free");
- assert.equal(resolveCanonicalModelId("beam-kilo"), "reflection/beam-free");
- assert.equal(resolveCanonicalModelId("xing4.0"), "xingchen-agi/xing4.0-29b-a4b:free");
  assert.equal(resolveCanonicalModelId("beam"), "beam-free");
  assert.equal(resolveCanonicalModelId("nemotron-3.5-super-vl"), "nemotron-3.5-super-vl-free");
+ assert.equal(resolveCanonicalModelId("crouton"), "crouton-alpha-free");
+ assert.equal(resolveCanonicalModelId("iceman"), "iceman-free");
+ assert.equal(resolveCanonicalModelId("inkling-2-small"), "inkling-2-small-free");
+ assert.equal(resolveCanonicalModelId("lfm-3"), "liquid/lfm-3-1.7b:free");
  // removed :free duplicate aliases must not be needed (canonical passthrough)
 
  const dotsAlias = getModelDef("dots-3-note-preview");
@@ -242,9 +240,7 @@ test("2026-10-22 additions: five lane-verified entries and their twins", () => {
 
 	const kiloLane: Array<[string, number, number, string[]]> = [
 		["nvidia/nemotron-3.5-super-vl:free", 1_000_000, 131_072, ["text", "image"]],
-		["reflection/beam-free", 1_048_576, 131_072, ["text"]],
-		["recursive/flint-v1.0:free", 262_144, 65_536, ["text"]],
-		["xingchen-agi/xing4.0-29b-a4b:free", 262_144, 235_929, ["text"]],
+		["liquid/lfm-3-1.7b:free", 262_144, 8_192, ["text"]],
 	];
 	for (const [id, ctx, max, input] of kiloLane) {
 		const m = getModelDef(id);
@@ -259,28 +255,13 @@ test("2026-10-22 additions: five lane-verified entries and their twins", () => {
 		assert.equal(isKiloModel(id), true, `${id} must be recognized as a Kilo id`);
 	}
 
-	// Twin pairs must stay on their own lanes: the Zen and Kilo twins are
-	// distinct catalog ids and neither may shadow the other.
-	assert.notEqual(
-		resolveCanonicalModelId("flint"),
-		resolveCanonicalModelId("flint-kilo"),
-		"Zen and Kilo flint twins must not collapse",
-	);
-	assert.notEqual(
-		resolveCanonicalModelId("beam"),
-		resolveCanonicalModelId("beam-kilo"),
-		"Zen and Kilo beam twins must not collapse",
-	);
-	assert.equal(getModelUpstream("flint"), "opencode");
-	assert.equal(getModelUpstream("flint-kilo"), "kilo");
-	assert.equal(getModelUpstream("beam"), "opencode");
-	assert.equal(getModelUpstream("beam-kilo"), "kilo");
-	// Both free MiniMax M3.1 Flash endpoints retired on 2026-10-23, so neither
-	// the canonical ids nor the short alias may resolve any more.
-	assert.equal(getModelDef("minimax-m3.1-flash"), undefined);
-	assert.equal(getModelDef("minimax-m3.1-flash-free"), undefined);
-	assert.equal(getModelDef("minimax/minimax-m3.1-flash:free"), undefined);
-	assert.equal(MODEL_MAP.has("minimax-m3.1-flash"), false);
+	// Discontinued Kilo models retired 2026-11-09 must no longer resolve
+	assert.equal(getModelDef("reflection/beam-free"), undefined);
+	assert.equal(getModelDef("recursive/flint-v1.0:free"), undefined);
+	assert.equal(getModelDef("xingchen-agi/xing4.0-29b-a4b:free"), undefined);
+	assert.equal(getModelDef("poolside/laguna-s-2.1:free"), undefined);
+	assert.equal(getModelDef("poolside/laguna-xs-2.1:free"), undefined);
+	assert.equal(getModelDef("liquid/lfm-2.5-2.6b:free"), undefined);
 });
 
 test("every reasoning model declares a thinkingLevelMap so the picker is lockable", () => {
@@ -357,45 +338,20 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
   // prompt_tokens 129,736; 65,536 output is the published figure (70,000 is
   // also accepted, so acceptance is not a cap).
   "flint-40b-free": { ctx: 262_144, max: 65_536, reasoning: true },
+  "crouton-alpha-free": { ctx: 1_048_576, max: 270_000, reasoning: true },
+  "iceman-free": { ctx: 262_144, max: 131_072, reasoning: true },
+  "inkling-2-small-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // KiloCode Gateway
-  // Kilo publishes 512,000 ctx / 460,800 out, but the only provider behind
-  // this free id (atlas-cloud) serves a 393,216-token total window. Re-probed
-  // 2026-10-20: max_tokens 393,195 answers 200 with a 20-token prompt;
-  // 460,800 answers 400. The declared budget keeps prompt headroom.
   "dots-studio/dots-3-note-preview:free": { ctx: 393_216, max: 262_144, reasoning: true },
-  // Reconciled 2026-10-20: 262,144 ctx (256K was a rounded-down copy) / 65,536 out.
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": { ctx: 262_144, max: 65_536, reasoning: true },
-  // Reconciled 2026-10-20: the gateway caps this id at 1,000,000 (a 1.11M-token
-  // request is refused with "maximum context length is 1000000 tokens").
   "nvidia/nemotron-3-ultra-550b-a55b:free": { ctx: 1_000_000, max: 182_520, reasoning: true },
   "nvidia/nemotron-3.5-lightning:free": { ctx: 1_000_000, max: 235_929, reasoning: true },
   "cohere/north-mini-code:free": { ctx: 256_000, max: 64_000, reasoning: true },
-  // Built-in catalog spec: 1,048,576 context. The free gateway's runtime cap
-  // is 262,144; the catalog follows the model's highest spec.
-  "poolside/laguna-s-2.1:free": { ctx: 1_048_576, max: 131_072, reasoning: true },
-  "poolside/laguna-xs-2.1:free": { ctx: 262_144, max: 32_768, reasoning: true },
-  // Reconciled 2026-10-20: 128,000 ctx per the published twin; output stays 32,768.
-  "liquid/lfm-2.5-2.6b:free": { ctx: 128_000, max: 32_768, reasoning: true },
+  "liquid/lfm-3-1.7b:free": { ctx: 262_144, max: 8_192, reasoning: true },
   "kilo-auto/free": { ctx: 256_000, max: 10_000, reasoning: true },
   "openrouter/free": { ctx: 200_000, max: 65_536, reasoning: true },
-	// Retired 2026-10-09 (demoted to paid upstream — :free IDs 404 keyless)
-	// Added 2026-10-09 (live: Kilo free list isFree:true + keyless chat served; 256K/1M ctx)
-	"stealth/glyph-cluster": { ctx: 256_000, max: 256_000, reasoning: true },
-	// Added 2026-10-22: the FREE row — Kilo free listing, gateway top_provider,
-  // the Kilo model page, OpenRouter and models.dev all publish 1,000,000 /
-  // 131,072. The 262,144 / 235,929 pair is the PAID row behind another id.
+  "stealth/glyph-cluster": { ctx: 256_000, max: 256_000, reasoning: true },
   "nvidia/nemotron-3.5-super-vl:free": { ctx: 1_000_000, max: 131_072, reasoning: true },
-  // Added 2026-10-22: Kilo twin of Zen `beam-free`; gateway, models.dev
-  // (kilo/vercel/opencode rows) and the vendor docs all agree.
-  "reflection/beam-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
-  // Added 2026-10-22: same weights as Zen `flint-40b-free`, which publishes
-  // 65,536 output. Prompt and output share the 262,144 window per the vendor
-  // card; the gateway's 235,929 is its 0.9x-window convention.
-  "recursive/flint-v1.0:free": { ctx: 262_144, max: 65_536, reasoning: true },
-  // Added 2026-10-22: lane-published gateway top_provider 262,144 / 235,929.
-  // No cross-lane twin exists; both figures carry the same 0.9x-window
-  // convention (prompt and output share the window).
-  "xingchen-agi/xing4.0-29b-a4b:free": { ctx: 262_144, max: 235_929, reasoning: true },
   // Cline direct-only (per-user pool — https://api.cline.bot)
   "cline/nemotron-3.5-super-vl": { ctx: 1_000_000, max: 131_072, reasoning: true },
   // OVHcloud AI Endpoints, keyless direct-only. Contexts are OVH's own
@@ -546,6 +502,22 @@ test("z-ai/glm-5.3-flash is retired from the free catalog (2026-10-24)", () => {
 	assert.equal(MODEL_MAP.get("z-ai/glm-5.3-flash"), undefined, "z-ai/glm-5.3-flash must not be in MODEL_MAP");
 	assert.equal(ALL_MODELS.some((m) => m.id === "z-ai/glm-5.3-flash"), false, "z-ai/glm-5.3-flash must not be in ALL_MODELS");
 	assert.ok(DEAD_MODEL_IDS.has("z-ai/glm-5.3-flash"), "z-ai/glm-5.3-flash must be dead-listed");
+});
+
+test("2026-11-09 KiloCode discontinued models are dead-listed and pruned", () => {
+	const retiredKilo = [
+		"poolside/laguna-s-2.1:free",
+		"poolside/laguna-xs-2.1:free",
+		"liquid/lfm-2.5-2.6b:free",
+		"reflection/beam-free",
+		"recursive/flint-v1.0:free",
+		"xingchen-agi/xing4.0-29b-a4b:free",
+	];
+	for (const id of retiredKilo) {
+		assert.equal(MODEL_MAP.get(id), undefined, id + " must not be in MODEL_MAP");
+		assert.equal(ALL_MODELS.some((m) => m.id === id), false, id + " must not be in ALL_MODELS");
+		assert.ok(DEAD_MODEL_IDS.has(id), id + " must be dead-listed");
+	}
 });
 
 test("2026-10-13 OVH lane: every id routes to the ovh upstream, never Zen", () => {

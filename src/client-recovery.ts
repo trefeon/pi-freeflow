@@ -168,7 +168,10 @@ export async function triggerRecovery(port: number, why: string, deps: RecoveryD
   logWarn(`watchdog recovery (${why}) — backing off ${Math.round(delay)}ms before respawn`);
   deps.stopHeartbeatInternal();
   deps.resetHeartbeatPort();
-  await new Promise<void>((r) => setTimeout(r, delay));
+  const { promise: backoffDone, resolve: resolveBackoff } = Promise.withResolvers<void>();
+  const backoffTimer = setTimeout(resolveBackoff, delay);
+  try { backoffTimer.unref(); } catch { }
+  await backoffDone;
   try {
    const health = deps.getDaemonHealth ? await deps.getDaemonHealth(port) : null;
    if (health && (health.activeRequests ?? 0) > 0) {

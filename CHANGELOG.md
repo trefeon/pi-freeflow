@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.45.0
+
+### Minor Changes
+
+- Synchronize the free model catalog with live upstreams and resolve cross-platform runtime, stream lifecycle, and process management issues across Windows and Linux (Node 22/24/26, Bun, Pi, and OMP).
+  
+  - **Catalog Sync (30 Models Total)**:
+    - Add 3 live verified OpenCode Zen models: `crouton-alpha-free` (1M context, 270K output), `iceman-free` (262K context, 131K output), and `inkling-2-small-free` (1M context, 131K output, multimodal).
+    - Add `liquid/lfm-3-1.7b:free` on KiloCode Gateway.
+    - Retire 6 discontinued KiloCode models confirmed 404 upstream (`poolside/laguna-s-2.1:free`, `poolside/laguna-xs-2.1:free`, `liquid/lfm-2.5-2.6b:free`, `reflection/beam-free`, `recursive/flint-v1.0:free`, `xingchen-agi/xing4.0-29b-a4b:free`) and dead-list them to prevent revival from stale caches.
+    - Update model aliases with clean mappings (`crouton`, `iceman`, `inkling-2-small`, `lfm-3`).
+  
+  - **Cross-Platform & Stream Lifecycle Fixes**:
+    - Add a `destroy` hook to the Zen sidecar stream and terminate orphaned child processes on stream cancellation, client disconnect, or stall timeouts.
+    - Support Windows `.cmd`/`.bat` runtime shims in child process spawns with `shell: true` and argument quoting, avoiding `EINVAL` under Node 22+.
+    - Fix `isDaemonMain()` to resolve symlinks and compare paths case-insensitively on Windows so symlinked daemon launches and lowercase drive paths start normally.
+    - Ensure client leases detach cleanly on `session_shutdown` and process exit across Node 22/24/26 and Bun.
+    - Filter `lsof` with `-sTCP:LISTEN` on Linux so active client sessions sharing port 28180 are never killed.
+    - Prioritize live registry versions and disk caches over installed 1.x binaries during User-Agent generation to fix version-drift auto-repair.
+    - Prevent tool argument corruption in `stream-cloak.ts` when function names repeat across stream deltas.
+    - Fix the hedged relay race so transient errors on one leg do not prematurely cancel healthy in-flight responses.
+    - Add single-flight deduplication and lockfile serialization to Cline token refreshes to prevent concurrent subagent requests from invalidating single-use refresh tokens.
+
 ## 1.44.1
 
 ### Patch Changes

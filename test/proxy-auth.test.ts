@@ -23,7 +23,7 @@ import fs from "node:fs";
 import http, { createServer } from "node:http";
 import { once } from "node:events";
 import { DEFAULT_PORT, HOST, PKG_VERSION, resolvePort, resolveTokenPath } from "../src/config.ts";
-import { ensureToken, readToken } from "../src/token.ts";
+import { _resetTokenCacheForTest, ensureToken, readToken } from "../src/token.ts";
 import { isAllowedHostHeader, killPortHolder, probePortHolder, startProxy } from "../src/proxy.ts";
 import { MAX_CLIENTS, MAX_CLIENT_ID_LENGTH, _resetLeaseStateForTest, getLeaseCount } from "../src/lease.ts";
 import { buildProviderConfig } from "../src/index.ts";
@@ -363,4 +363,41 @@ test("killPortHolder leaves a foreign service alone and reaps our own daemon", a
 	assert.equal(await killPortHolder(ours.port), true, "our daemon must be reaped");
 	await closed;
 	assert.equal(await probePortHolder(ours.port), "free");
+});
+
+test("rotating or recreating token file on disk is picked up by running proxy without 401 lockout", async () => {
+	const { server, port } = await startProxy(0);
+	const tokenPath = resolveTokenPath();
+	const originalToken = readToken();
+	assert.ok(originalToken);
+	try {
+		// Initial request works with initial token
+		const res1 = await fetch(`http://${HOST}:${port}/v1/models`, {
+			headers: { authorization: `Bearer ${originalToken}` },
+		});
+		assert.equal(res1.status, 200);
+
+		// Rotate token on disk
+		const rotatedToken = "f".repeat(64);
+		fs.writeFileSync(tokenPath, rotatedToken, { encoding: "utf8" });
+		_resetTokenCacheForTest();
+
+		// Running proxy picks up rotated token and does not lock out caller with 401
+		const res2 = await fetch(`http://${HOST}:${port}/v1/models`, {
+			headers: { authorization: `Bearer ${rotatedToken}` },
+		});
+		assert.equal(res2.status, 200, "proxy accepts new token without restart");
+
+		// Old token is now rejected
+		const res3 = await fetch(`http://${HOST}:${port}/v1/models`, {
+			headers: { authorization: `Bearer ${originalToken}` },
+		});
+		assert.equal(res3.status, 401, "old token is rejected after rotation");
+	} finally {
+		if (originalToken) {
+			fs.writeFileSync(tokenPath, originalToken, { encoding: "utf8" });
+			_resetTokenCacheForTest();
+		}
+		await closeServer(server);
+	}
 });

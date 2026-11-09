@@ -5,11 +5,13 @@
  * required for Node's --experimental-strip-types execution.
  */
 
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DAEMON_RUNTIME_ENV, resolveDaemonSrcCacheDir } from "./config.ts";
+import { renameWithRetry } from "./atomic-write.ts";
 import { logInfo, logWarn } from "./logger.ts";
 
 export interface DaemonRuntime {
@@ -25,7 +27,7 @@ export interface DaemonRuntime {
 export function isJsRuntimeExecutable(execPath: string): "bun" | "node" | null {
  if (!execPath || typeof execPath !== "string") return null;
  const checkName = (target: string): "bun" | "node" | null => {
-  const base = path.basename(target.replace(/\\/g, "/")).toLowerCase().replace(/\.exe$/i, "");
+  const base = path.basename(target.replace(/\\/g, "/")).toLowerCase().replace(/\.(?:exe|cmd|bat)$/i, "");
   if (base === "bun" || base === "bunx") return "bun";
   if (base === "node" || base === "nodejs") return "node";
   return null;
@@ -75,6 +77,54 @@ export function findExecutableOnPath(
  }
  return null;
 }
+/**
+ * Search directories in PATH for a Node.js binary meeting the >= 22.6 requirement
+ * for native type stripping (--experimental-strip-types).
+ */
+export function findSupportedNodeOnPath(
+ envPath: string = process.env.PATH || process.env.Path || "",
+): string | null {
+ if (!envPath || typeof envPath !== "string") return null;
+ const dirs = envPath.split(path.delimiter).filter(Boolean);
+ const extensions = process.platform === "win32"
+  ? (process.env.PATHEXT ? process.env.PATHEXT.split(";").filter(Boolean) : [".exe", ".cmd", ".bat"])
+  : [""];
+
+ for (const dir of dirs) {
+  for (const ext of extensions) {
+   const candidate = ext ? path.join(dir, `node${ext}`) : path.join(dir, "node");
+   try {
+    const stat = fs.statSync(candidate);
+    if (!stat.isFile()) continue;
+    if (process.platform !== "win32") {
+     fs.accessSync(candidate, fs.constants.X_OK);
+    }
+    if (stat.size === 0) {
+     return candidate;
+    }
+    const res = spawnSync(candidate, ["--version"], {
+     encoding: "utf8",
+     timeout: 1500,
+     windowsHide: true,
+     shell: process.platform === "win32" && /\.(?:cmd|bat)$/i.test(candidate),
+    });
+    if (res.status === 0) {
+     const match = (res.stdout || "").match(/^v?(\d+)\.(\d+)\./);
+     if (match) {
+      const major = Number(match[1]);
+      const minor = Number(match[2]);
+      if (major < 22 || (major === 22 && minor < 6)) {
+       continue;
+      }
+     }
+    }
+    return candidate;
+   } catch { }
+  }
+ }
+ return null;
+}
+
 
 /**
  * Resolve the executable and arguments needed to run src/daemon.ts.
@@ -122,7 +172,7 @@ export function resolveDaemonRuntime(opts?: {
   return { execPath: bunOnPath, args: [script], runtimeType: "bun" };
  }
 
- const nodeOnPath = findExecutableOnPath("node", pathVal);
+ const nodeOnPath = findSupportedNodeOnPath(pathVal);
  if (nodeOnPath) {
   return {
    execPath: nodeOnPath,
@@ -241,7 +291,7 @@ export function materializeDaemonSources(scriptPath: string, cacheDir?: string):
   fs.copyFileSync(path.join(pkgRoot, "package.json"), path.join(tmpDir, "package.json"));
   stageRuntimeDependencies(pkgRoot, pkgJson, tmpDir);
   try {
-   fs.renameSync(tmpDir, finalDir);
+   renameWithRetry(tmpDir, finalDir);
    logInfo(`staged proxy daemon sources outside node_modules at ${finalDir}`);
   } catch (e) {
    // A concurrent starter won the rename (or the dir appeared meanwhile):

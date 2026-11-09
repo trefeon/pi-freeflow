@@ -88,9 +88,14 @@ export function tokenAuthHeaders(dataDir?: string): Record<string, string> {
  * accepting unauthenticated traffic.
  */
 export function ensureToken(): string {
- const existing = readToken();
- if (existing) return existing;
  const file = resolveTokenPath();
+ const existing = readToken();
+ if (existing) {
+  try {
+   if (process.platform !== "win32") chmodSync(file, TOKEN_MODE);
+  } catch { }
+  return existing;
+ }
  const token = randomBytes(TOKEN_BYTES).toString("hex");
  try {
   mkdirSync(path.dirname(file), { recursive: true });

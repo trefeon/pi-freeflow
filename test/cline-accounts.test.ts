@@ -25,8 +25,11 @@ import {
  getClineClientHeaders,
  refreshClineVersion,
  keepClineTokensAlive,
- clineUpstreamModelId,
- _resetLiveClineVersionForTest,
+	clineUpstreamModelId,
+	_resetLiveClineVersionForTest,
+	defaultClineRefresher,
+	refreshAccountInPlace,
+	type ClineRefreshResult,
 } from "../src/cline-accounts.ts";
 import { CLINE_BROWSER_SIGNOUT_URL } from "../src/cline-device-auth.ts";
 import { readToken, _resetTokenCacheForTest } from "../src/token.ts";
@@ -103,6 +106,7 @@ test("cline pool: a save survives a transient Windows file lock", async () => {
   const fsp = fs as unknown as { renameSync: (from: string, to: string) => void }; // monkey-patch of CJS default-export object
   let attempts = 0;
   fsp.renameSync = (from: string, to: string) => {
+   if (to.includes(".bak")) return realRenameSync(from, to);
    attempts++;
    if (attempts <= 2) {
     const err: NodeJS.ErrnoException = new Error(
@@ -1218,4 +1222,65 @@ test("installation token: rotation and deletion on disk invalidate the read cach
 		_resetTokenCacheForTest();
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("refreshAccountInPlace: concurrent calls deduplicate to a single in-flight refresh", async () => {
+	await withIsolatedPool(async () => {
+		addAccount("slot-dedup", SLOT_A, { refreshToken: "workos:refresh-1" });
+		const account1 = loadPool().accounts[0];
+		const account2 = { ...account1 };
+
+		let refreshCallCount = 0;
+		const gate = Promise.withResolvers<ClineRefreshResult>();
+		const mockRefresher = async (rt: string) => {
+			refreshCallCount += 1;
+			assert.equal(rt, "workos:refresh-1");
+			return await gate.promise;
+		};
+
+		const p1 = refreshAccountInPlace(account1, mockRefresher);
+		const p2 = refreshAccountInPlace(account2, mockRefresher);
+
+		assert.equal(refreshCallCount, 1, "only one refresh call should be fired");
+
+		gate.resolve({
+			token: "workos:refreshed-jwt-token",
+			refreshToken: "workos:refresh-2",
+			expiresAt: Date.now() + 3600_000,
+		});
+
+		const [r1, r2] = await Promise.all([p1, p2]);
+		assert.equal(r1, true);
+		assert.equal(r2, true);
+		assert.equal(refreshCallCount, 1, "refresher must only be called once");
+		assert.equal(account1.token, "workos:refreshed-jwt-token");
+		assert.equal(account2.token, "workos:refreshed-jwt-token");
+		assert.equal(account1.refreshToken, "workos:refresh-2");
+		assert.equal(account2.refreshToken, "workos:refresh-2");
+	});
+});
+
+test("defaultClineRefresher: transient network error rethrows and does not quarantine account", async (t) => {
+	await withIsolatedPool(async () => {
+		addAccount("transient-test", SLOT_A, { refreshToken: "workos:transient-rt" });
+		const account = loadPool().accounts[0];
+
+		const networkErrorRefresher = async () => {
+			throw new Error("fetch failed: ECONNRESET");
+		};
+
+		const outcome = await refreshAccountInPlace(account, networkErrorRefresher);
+		assert.equal(outcome, null, "transient network error should return null (stale fallback)");
+		assert.equal(account.deadUntil, undefined, "transient error must not set deadUntil");
+
+		t.mock.method(globalThis, "fetch", async () => {
+			throw new TypeError("fetch failed: network down");
+		});
+
+		await assert.rejects(
+			async () => defaultClineRefresher("some-refresh-token"),
+			(err: unknown) => err instanceof TypeError && String(err).includes("network down"),
+			"defaultClineRefresher must rethrow transient network error",
+		);
+	});
 });

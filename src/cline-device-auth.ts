@@ -250,14 +250,16 @@ export async function pollDeviceToken(
      device_code: deviceCode,
      client_id: resolveClineWorkosClientId(),
     }),
-    signal: AbortSignal.timeout(options?.timeoutMs ?? HTTP_TIMEOUT_MS),
+    signal: options?.signal
+     ? AbortSignal.any([options.signal, AbortSignal.timeout(options?.timeoutMs ?? HTTP_TIMEOUT_MS)])
+     : AbortSignal.timeout(options?.timeoutMs ?? HTTP_TIMEOUT_MS),
    });
   } catch (error) {
    if (outerSignal?.aborted) {
     throw new ClineAuthError("Device login cancelled", { errorCode: "cancelled" });
    }
    if (error instanceof ClineAuthError) throw error;
-   if (Date.now() > deadline) throw new Error("WorkOS device authorization timed out");
+   if (Date.now() >= deadline) throw new Error("WorkOS device authorization timed out");
    await sleepMs(remainingMs(deadline, interval), outerSignal);
    continue;
   }
@@ -289,7 +291,7 @@ export async function pollDeviceToken(
     { status: response.status, errorCode: typeof payload.error === "string" ? payload.error : undefined },
    );
   }
-  if (Date.now() > deadline) throw new Error("WorkOS device authorization timed out");
+  if (Date.now() >= deadline) throw new Error("WorkOS device authorization timed out");
   await sleepMs(remainingMs(deadline, interval), outerSignal);
  }
 }

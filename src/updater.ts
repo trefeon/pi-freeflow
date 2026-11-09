@@ -12,7 +12,7 @@
  * spawnSync install (minutes on npm/bun) would freeze the host TUI.
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
 import { getClientPort } from "./client.ts";
 import {
@@ -122,9 +122,14 @@ export function probeCommandsAvailable(cmds: string[]): Promise<boolean[]> {
       resolve(false);
       return;
      }
-     const timer = setTimeout(() => resolve(false), PROBE_TIMEOUT_MS);
+     let child: ChildProcess | undefined;
+     const timer = setTimeout(() => {
+      try { child?.kill(); } catch { }
+      resolve(false);
+     }, PROBE_TIMEOUT_MS);
+     timer.unref?.();
      try {
-      const child = spawn(cmd, ["--version"], {
+      child = spawn(cmd, ["--version"], {
        stdio: "ignore",
        windowsHide: true,
        shell: process.platform === "win32",

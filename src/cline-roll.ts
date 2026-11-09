@@ -323,6 +323,8 @@ export function isClineTokenStale(account: ClineAccount, skewMs = CLINE_REFRESH_
  return Date.now() + skewMs >= account.expiresAt;
 }
 
+const refreshInFlight = new Map<string, Promise<boolean | null>>();
+
 /**
  * Refresh outcome for one slot: fresh tokens applied and persisted (`true`),
  * dead grant with nothing to keep (`false`), or a transient fault where the
@@ -334,47 +336,73 @@ export async function refreshAccountInPlace(
 ): Promise<boolean | null> {
  const current = account.refreshToken;
  if (!current) return null;
- let fresh: ClineRefreshResult | null;
- try {
-  fresh = await refreshImpl(current);
- } catch (e) {
-  logWarn("cline slot refresh failed — keeping stale bearer", { slot: account.slot });
-  void e;
-  return null;
+ if (refreshInFlight.has(account.slot)) {
+  const result = await refreshInFlight.get(account.slot)!;
+  const pool = loadPool();
+  const refreshed = pool.accounts.find((a) => a.slot === account.slot);
+  if (refreshed) {
+   account.token = refreshed.token;
+   if (refreshed.refreshToken) account.refreshToken = refreshed.refreshToken;
+   if (typeof refreshed.expiresAt === "number") {
+    account.expiresAt = refreshed.expiresAt;
+   } else {
+    delete account.expiresAt;
+   }
+   if (refreshed.accountId) account.accountId = refreshed.accountId;
+   if (refreshed.email) account.email = refreshed.email;
+   if (refreshed.deadUntil) account.deadUntil = refreshed.deadUntil;
+  }
+  return result;
  }
- const freshToken = fresh !== null && typeof fresh.token === "string" ? fresh.token.trim() : "";
- if (fresh === null || !freshToken || (!freshToken.startsWith("workos:") && !isWorkosJwt(freshToken) && !freshToken.startsWith("clp_"))) {
-  // Cline rejected the grant outright: park the slot on disk so the next
-  // turns skip it instead of re-paying a refresh that cannot succeed. The
-  // credential stays in the pool — a fresh login into the slot clears this —
-  // and the cooldown ends the pause on its own.
-  account.deadUntil = Date.now() + CLINE_DEAD_GRANT_COOLDOWN_MS;
-  logWarn("cline slot refresh rejected — quarantining slot", {
-   slot: account.slot,
-   forMs: CLINE_DEAD_GRANT_COOLDOWN_MS,
+ const promise = (async (): Promise<boolean | null> => {
+  let fresh: ClineRefreshResult | null;
+  try {
+   fresh = await refreshImpl(current);
+  } catch (e) {
+   logWarn("cline slot refresh failed — keeping stale bearer", { slot: account.slot });
+   void e;
+   return null;
+  }
+  const freshToken = fresh !== null && typeof fresh.token === "string" ? fresh.token.trim() : "";
+  if (fresh === null || !freshToken || (!freshToken.startsWith("workos:") && !isWorkosJwt(freshToken) && !freshToken.startsWith("clp_"))) {
+   // Cline rejected the grant outright: park the slot on disk so the next
+   // turns skip it instead of re-paying a refresh that cannot succeed. The
+   // credential stays in the pool — a fresh login into the slot clears this —
+   // and the cooldown ends the pause on its own.
+   account.deadUntil = Date.now() + CLINE_DEAD_GRANT_COOLDOWN_MS;
+   logWarn("cline slot refresh rejected — quarantining slot", {
+    slot: account.slot,
+    forMs: CLINE_DEAD_GRANT_COOLDOWN_MS,
+   });
+   patchAccountOnDisk(account.slot, { deadUntil: account.deadUntil });
+   return false;
+  }
+  account.token = freshToken;
+  if (fresh.refreshToken) account.refreshToken = fresh.refreshToken;
+  if (typeof fresh.expiresAt === "number" && Number.isFinite(fresh.expiresAt) && fresh.expiresAt > 0) {
+   account.expiresAt = fresh.expiresAt;
+  } else {
+   delete account.expiresAt;
+  }
+  if (fresh.accountId?.trim()) account.accountId = fresh.accountId.trim();
+  if (fresh.email?.trim()) account.email = fresh.email.trim();
+  // Persist only the refreshed fields: the snapshot this request holds may
+  // predate a login added or removed in the host process.
+  patchAccountOnDisk(account.slot, {
+   token: account.token,
+   ...(account.refreshToken ? { refreshToken: account.refreshToken } : {}),
+   expiresAt: account.expiresAt,
+   ...(account.accountId ? { accountId: account.accountId } : {}),
+   ...(account.email ? { email: account.email } : {}),
   });
-  patchAccountOnDisk(account.slot, { deadUntil: account.deadUntil });
-  return false;
+  return true;
+ })();
+ refreshInFlight.set(account.slot, promise);
+ try {
+  return await promise;
+ } finally {
+  refreshInFlight.delete(account.slot);
  }
- account.token = freshToken;
- if (fresh.refreshToken) account.refreshToken = fresh.refreshToken;
- if (typeof fresh.expiresAt === "number" && Number.isFinite(fresh.expiresAt) && fresh.expiresAt > 0) {
-  account.expiresAt = fresh.expiresAt;
- } else {
-  delete account.expiresAt;
- }
- if (fresh.accountId?.trim()) account.accountId = fresh.accountId.trim();
- if (fresh.email?.trim()) account.email = fresh.email.trim();
- // Persist only the refreshed fields: the snapshot this request holds may
- // predate a login added or removed in the host process.
- patchAccountOnDisk(account.slot, {
-  token: account.token,
-  ...(account.refreshToken ? { refreshToken: account.refreshToken } : {}),
-  expiresAt: account.expiresAt,
-  ...(account.accountId ? { accountId: account.accountId } : {}),
-  ...(account.email ? { email: account.email } : {}),
- });
- return true;
 }
 
 /**
@@ -532,6 +560,11 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
     refreshedThisSlot = true;
     res = await attempt(account.token);
     if (!res) continue;
+    if (res.status === 200 && res.headers.get("content-type")?.includes("text/event-stream")) {
+     const peek = await peekStreamForInStreamError(res);
+     res = peek.res;
+     if (peek.inStreamError) inStreamLimitText = peek.errorText;
+    }
     kind = mapClineError(res.status);
     if (kind === "ok" || kind === "client") return await succeed(res, kind);
    } else if (outcome === false) {

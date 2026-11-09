@@ -49,10 +49,20 @@ export function responsesInputToChatMessages(input: unknown): Record<string, unk
   if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
   const rec = item as Record<string, unknown>;
   if (rec.type === "function_call") {
-   const args = typeof rec.arguments === "string" ? rec.arguments : JSON.stringify(rec.arguments ?? {});
+   const args = typeof rec.arguments === "string" ? rec.arguments : (rec.arguments !== undefined && rec.arguments !== null ? JSON.stringify(rec.arguments) : "{}");
    const name = typeof rec.name === "string" ? rec.name : "tool";
    const id = typeof rec.call_id === "string" ? rec.call_id : typeof rec.id === "string" ? rec.id : "";
-   messages.push({ role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name, arguments: args } }] });
+   const call = { id, type: "function", function: { name, arguments: args } };
+   const lastMsg = messages[messages.length - 1];
+   if (lastMsg && lastMsg.role === "assistant") {
+    if (Array.isArray(lastMsg.tool_calls)) {
+     (lastMsg.tool_calls as unknown[]).push(call);
+    } else {
+     lastMsg.tool_calls = [call];
+    }
+   } else {
+    messages.push({ role: "assistant", content: null, tool_calls: [call] });
+   }
    continue;
   }
   if (rec.type === "function_call_output") {
@@ -98,6 +108,15 @@ export function chatBodyFromResponsesBody(body: Record<string, unknown>): Record
  for (const key of ["temperature", "top_p", "max_tokens", "max_completion_tokens", "max_output_tokens", "stop", "presence_penalty", "frequency_penalty", "seed", "user", "parallel_tool_calls", "response_format"] as const) {
   if (body[key] !== undefined) out[key] = body[key];
  }
+ if (body.max_output_tokens !== undefined && out.max_tokens === undefined) {
+  out.max_tokens = body.max_output_tokens;
+ }
+ if (out.tool_choice !== undefined && typeof out.tool_choice === "object" && out.tool_choice !== null && !Array.isArray(out.tool_choice)) {
+  const tc = out.tool_choice as Record<string, unknown>;
+  if (tc.type === "function" && typeof tc.name === "string" && tc.function === undefined) {
+   out.tool_choice = { type: "function", function: { name: tc.name } };
+  }
+ }
  return out;
 }
 
@@ -141,7 +160,7 @@ export function chatResponsesJsonFromChatCompletion(chat: Record<string, unknown
     if (typeof tc !== "object" || tc === null || Array.isArray(tc)) continue;
     const rec = tc as Record<string, unknown>;
     const fn = typeof rec.function === "object" && rec.function !== null && !Array.isArray(rec.function) ? (rec.function as Record<string, unknown>) : {};
-    const args = typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments ?? {});
+    const args = typeof fn.arguments === "string" ? fn.arguments : (fn.arguments !== undefined && fn.arguments !== null ? JSON.stringify(fn.arguments) : "{}");
     const callId = typeof rec.id === "string" && rec.id.length > 0 ? rec.id : `call_cline_${output.length}`;
     output.push({ type: "function_call", id: callId, call_id: callId, name: typeof fn.name === "string" ? fn.name : "tool", arguments: args });
    }

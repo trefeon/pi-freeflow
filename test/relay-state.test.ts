@@ -23,6 +23,7 @@ import {
  setRelayLabel,
  shortRelayLabel,
  withRelayState,
+ tryAcquireRelayLock,
  validateRelayUrl,
 } from "../src/relay-state.ts";
 import type { RelayState } from "../src/types.ts";
@@ -464,9 +465,24 @@ test("validateRelayUrl: rejects http, credentials, private/loopback hosts, .loca
  assert.equal(validateRelayUrl("https://relay.local").ok, false, ".local must be rejected");
  assert.equal(validateRelayUrl("https://10.0.0.7").ok, false, "10/8 must be rejected");
  assert.equal(validateRelayUrl("https://172.31.4.8").ok, false, "172.16/12 must be rejected");
+ assert.equal(validateRelayUrl("https://[64:ff9b::192.0.2.1]").ok, false, "NAT64 must be rejected");
+ assert.equal(validateRelayUrl("https://[2002:c000:0201::1]").ok, false, "6to4 must be rejected");
  assert.equal(validateRelayUrl("https://good.example.com:8443").ok, false, "non-default port must be rejected");
  assert.equal(validateRelayUrl("://invalid").ok, false, "unparseable URL must be rejected");
  assert.equal(validateRelayUrl("").ok, false, "empty must be rejected");
+});
+
+test("tryAcquireRelayLock: retries bounded up to depth 3 when busy", () => {
+ withSavedDiskState(() => {
+  const lock = `${RELAY_STATE_FILE}.lock`;
+  fs.writeFileSync(lock, String(process.pid), "utf8");
+  try {
+   const acquired = tryAcquireRelayLock();
+   assert.equal(acquired, false, "should return false when lock remains held after retries");
+  } finally {
+   fs.rmSync(lock, { force: true });
+  }
+ });
 });
 
 test("validateRelayUrl: accepts mesh-VPN peer addresses with http and custom ports", () => {

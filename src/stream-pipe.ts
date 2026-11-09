@@ -619,6 +619,7 @@ export function pipeUpstreamStream(
   sseDecoder = new StringDecoder("utf8");
   terminalScanCarry = Buffer.alloc(0);
   watch(next);
+  scheduleStallCut(next);
   try {
    if (!cut.destroyed) cut.destroy();
   } catch { }
@@ -939,6 +940,10 @@ export function pipeUpstreamStream(
     ensureTerminalEvent(false, errorMsg || "stream interrupted", false);
    } else {
     if (await tryRefire()) return;
+    if (cloakState && cloak) {
+     const flushed = flushBufferedToolArgs(cloakState, cloak);
+     if (flushed !== null) forwardText(flushed);
+    }
     sseBuffer = "";
     terminalScanCarry = Buffer.alloc(0);
     ensureTerminalEvent(!isSubstantial(totalChunks, totalBytes), errorMsg, true);
@@ -990,12 +995,17 @@ export function pipeUpstreamStream(
   if (sseBuffer.trim() !== "") {
    const tail = sseBuffer;
    sseBuffer = "";
-   if (checkTerminalEvent(tail)) {
+   const isCutTerminal =
+    (tail.includes("response.completed") ||
+     tail.includes("response.incomplete") ||
+     tail.includes("response.failed")) &&
+    !endsOnFinishedSseLine(tail);
+   if (!isCutTerminal && checkTerminalEvent(tail)) {
     if (cloakState && cloak) {
      const rewritten = rewriteSseBlock(tail, cloakState, cloak);
      if (rewritten !== null) forwardText(`${rewritten}\n\n`);
     } else {
-     forwardText(tail);
+     forwardText(tail.endsWith("\n") ? `${tail}\n` : `${tail}\n\n`);
     }
    } else if (endsOnFinishedSseLine(tail)) {
     // A complete final event that merely lost its trailing blank line: forward

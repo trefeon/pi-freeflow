@@ -37,7 +37,57 @@ export const CLINE_POOL_FILE = resolveClinePoolPath();
  * overridden from the backup.
  */
 export const CLINE_POOL_BACKUP_FILE = `${CLINE_POOL_FILE}.bak`;
+export const CLINE_POOL_LOCK_FILE = `${CLINE_POOL_FILE}.lock`;
+const CLINE_LOCK_STALE_MS = 30_000;
 
+export function tryAcquireClineLock(depth = 0): boolean {
+ if (depth >= 3) return false;
+ try {
+  fs.writeFileSync(CLINE_POOL_LOCK_FILE, String(process.pid), { flag: "wx" });
+  return true;
+ } catch (e) {
+  const code = (e as NodeJS.ErrnoException | null)?.code;
+  if (code !== "EEXIST") {
+   return false;
+  }
+  let stale = false;
+  try {
+   stale = Date.now() - fs.statSync(CLINE_POOL_LOCK_FILE).mtimeMs > CLINE_LOCK_STALE_MS;
+  } catch {
+   return tryAcquireClineLock(depth + 1);
+  }
+  if (!stale) {
+   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+   return tryAcquireClineLock(depth + 1);
+  }
+  try {
+   fs.rmSync(CLINE_POOL_LOCK_FILE, { force: true });
+  } catch {
+   return false;
+  }
+  return tryAcquireClineLock(depth + 1);
+ }
+}
+
+export function releaseClineLock(): void {
+ try { fs.rmSync(CLINE_POOL_LOCK_FILE, { force: true }); } catch { }
+}
+
+export function withClineLock<T>(fn: () => T): T {
+ const locked = tryAcquireClineLock();
+ if (!locked) {
+  logWarn("cline pool lock held — proceeding without lock", {
+   lock: CLINE_POOL_LOCK_FILE,
+  });
+ }
+ try {
+  return fn();
+ } finally {
+  if (locked) {
+   releaseClineLock();
+  }
+ }
+}
 /** One saved login slot. The token is only ever sent as an explicit bearer header. */
 export interface ClineAccount {
  slot: string;
@@ -336,8 +386,7 @@ export function keepLargestBackup(raw: string): void {
    backupCount = -1;
   }
   if (count <= backupCount) return;
-  fs.writeFileSync(CLINE_POOL_BACKUP_FILE, raw, { encoding: "utf8", mode: 0o600 });
-  try { fs.chmodSync(CLINE_POOL_BACKUP_FILE, 0o600); } catch { }
+  writeFileAtomic(CLINE_POOL_BACKUP_FILE, raw, { mode: 0o600 });
  } catch { }
 }
 
@@ -367,8 +416,7 @@ export function forgetAccountInBackup(removed: ClineAccount): void {
   });
   if (kept.length === doc.accounts.length) return;
   doc.accounts = kept;
-  fs.writeFileSync(CLINE_POOL_BACKUP_FILE, JSON.stringify(doc, null, 2), { encoding: "utf8", mode: 0o600 });
-  try { fs.chmodSync(CLINE_POOL_BACKUP_FILE, 0o600); } catch { }
+  writeFileAtomic(CLINE_POOL_BACKUP_FILE, JSON.stringify(doc, null, 2), { mode: 0o600 });
  } catch { }
 }
 
@@ -424,19 +472,23 @@ export function redactedToken(token: string): string {
  * slot that no longer exists is left alone rather than resurrected.
  */
 export function patchAccountOnDisk(slot: string, patch: Partial<ClineAccount>): void {
- const live = readPoolFile();
- const target = live.accounts.find((a) => a.slot === slot);
- if (!target) return;
- Object.assign(target, patch);
- savePool(live);
+ withClineLock(() => {
+  const live = readPoolFile();
+  const target = live.accounts.find((a) => a.slot === slot);
+  if (!target) return;
+  Object.assign(target, patch);
+  savePool(live);
+ });
 }
 
 /** Record which slot served a turn, without clobbering concurrent edits. */
 export function markActiveSlotOnDisk(slot: string): void {
- const live = readPoolFile();
- if (!live.accounts.some((a) => a.slot === slot)) return;
- live.activeSlot = slot;
- savePool(live);
+ withClineLock(() => {
+  const live = readPoolFile();
+  if (!live.accounts.some((a) => a.slot === slot)) return;
+  live.activeSlot = slot;
+  savePool(live);
+ });
 }
 
 /**
@@ -448,19 +500,21 @@ export function markActiveSlotOnDisk(slot: string): void {
  * resurrected. The row carries counters only — never token or identity.
  */
 export function recordClineUsageOnDisk(slot: string, modelId: string): void {
- const cleanSlot = (slot || "").trim();
- if (!cleanSlot) return;
- const live = readPoolFile();
- if (!live.accounts.some((a) => a.slot === cleanSlot)) return;
- const prev = live.usage?.[cleanSlot];
- const served = typeof prev?.served === "number" && Number.isFinite(prev.served) && prev.served >= 0
-  ? Math.floor(prev.served) + 1
-  : 1;
- live.usage = {
-  ...(live.usage ?? {}),
-  [cleanSlot]: { served, lastAt: Date.now(), lastModel: (modelId || "").trim() },
- };
- savePool(live);
+ withClineLock(() => {
+  const cleanSlot = (slot || "").trim();
+  if (!cleanSlot) return;
+  const live = readPoolFile();
+  if (!live.accounts.some((a) => a.slot === cleanSlot)) return;
+  const prev = live.usage?.[cleanSlot];
+  const served = typeof prev?.served === "number" && Number.isFinite(prev.served) && prev.served >= 0
+   ? Math.floor(prev.served) + 1
+   : 1;
+  live.usage = {
+   ...(live.usage ?? {}),
+   [cleanSlot]: { served, lastAt: Date.now(), lastModel: (modelId || "").trim() },
+  };
+  savePool(live);
+ });
 }
 
 /** The reset still in force for one slot+requested model, or null when free. */
@@ -477,30 +531,32 @@ export function activeLimitFor(pool: ClinePoolState, slot: string, model: string
  * would revert a login added or removed while the request was in flight.
  */
 export function recordLimitOnDisk(slot: string, model: string, resetAt: number): void {
- if (!model) return;
- const live = readPoolFile();
- if (!live.accounts.some((a) => a.slot === slot)) return;
- const known = live.limits?.[slot]?.[model];
- // Keep the later of the two: a fresh report must not shorten a window that is
- // already known, and repeating the same reset writes nothing.
- if (typeof known === "number" && known >= resetAt) return;
- const limits = live.limits ?? {};
- limits[slot] = { ...(limits[slot] ?? {}), [model]: resetAt };
- live.limits = limits;
- savePool(live);
+ withClineLock(() => {
+  if (!model) return;
+  const live = readPoolFile();
+  if (!live.accounts.some((a) => a.slot === slot)) return;
+  const known = live.limits?.[slot]?.[model];
+  if (typeof known === "number" && known >= resetAt) return;
+  const limits = live.limits ?? {};
+  limits[slot] = { ...(limits[slot] ?? {}), [model]: resetAt };
+  live.limits = limits;
+  savePool(live);
+ });
 }
 
 /** Drop one slot+model limit once that slot serves the model again. */
 export function clearLimitOnDisk(slot: string, model: string): void {
- if (!model) return;
- const live = readPoolFile();
- const limits = live.limits;
- const forSlot = limits?.[slot];
- if (!limits || !forSlot || typeof forSlot[model] !== "number") return;
- delete forSlot[model];
- if (Object.keys(forSlot).length === 0) delete limits[slot];
- if (Object.keys(limits).length === 0) delete live.limits;
- savePool(live);
+ withClineLock(() => {
+  if (!model) return;
+  const live = readPoolFile();
+  const limits = live.limits;
+  const forSlot = limits?.[slot];
+  if (!limits || !forSlot || typeof forSlot[model] !== "number") return;
+  delete forSlot[model];
+  if (Object.keys(forSlot).length === 0) delete limits[slot];
+  if (Object.keys(limits).length === 0) delete live.limits;
+  savePool(live);
+ });
 }
 
 /**
@@ -551,91 +607,85 @@ export function addAccount(
  token: string,
  extras?: { refreshToken?: string; expiresAt?: number; accountId?: string; email?: string },
 ): ClinePoolState {
- const cleanSlot = (slot || "").trim();
- if (!cleanSlot) throw new Error("Cline slot name cannot be empty");
- if (cleanSlot.length > 64) throw new Error("Cline slot name is too long (max 64 characters)");
- const cleanToken = (token || "").trim();
- if (!cleanToken.startsWith("workos:") && !isWorkosJwt(cleanToken) && !cleanToken.startsWith("clp_")) throw new Error("Cline token must be a workos: login grant or a clp_ API key");
- const pool = loadPool();
- const existing = pool.accounts.find((a) => a.slot === cleanSlot);
- const duplicate = findClineAccountSlot(pool, { token: cleanToken, accountId: extras?.accountId, email: extras?.email }, cleanSlot);
- if (duplicate) {
-  const who = extras?.email?.trim() || existing?.email?.trim() || "this account";
-  throw new Error(`That Cline account (${who}) is already saved as [${duplicate}] — log in with a different account, or use /freeflow cline logout ${duplicate} first`);
- }
- if (existing) {
-  existing.token = cleanToken;
-  // A fresh login is proof the grant works again: a quarantine recorded
-  // against the credential it replaces must never outlive it.
-  delete existing.deadUntil;
-  if (extras?.refreshToken) existing.refreshToken = extras.refreshToken;
-  if (extras?.expiresAt !== undefined) {
-   if (Number.isFinite(extras.expiresAt) && extras.expiresAt > 0) existing.expiresAt = extras.expiresAt;
-   else delete existing.expiresAt;
+ return withClineLock(() => {
+  const cleanSlot = (slot || "").trim();
+  if (!cleanSlot) throw new Error("Cline slot name cannot be empty");
+  if (cleanSlot.length > 64) throw new Error("Cline slot name is too long (max 64 characters)");
+  const cleanToken = (token || "").trim();
+  if (!cleanToken.startsWith("workos:") && !isWorkosJwt(cleanToken) && !cleanToken.startsWith("clp_")) throw new Error("Cline token must be a workos: login grant or a clp_ API key");
+  const pool = loadPool();
+  const existing = pool.accounts.find((a) => a.slot === cleanSlot);
+  const duplicate = findClineAccountSlot(pool, { token: cleanToken, accountId: extras?.accountId, email: extras?.email }, cleanSlot);
+  if (duplicate) {
+   const who = extras?.email?.trim() || existing?.email?.trim() || "this account";
+   throw new Error(`That Cline account (${who}) is already saved as [${duplicate}] — log in with a different account, or use /freeflow cline logout ${duplicate} first`);
   }
-  if (extras?.accountId !== undefined) {
-   if (extras.accountId.trim()) existing.accountId = extras.accountId.trim();
-   else delete existing.accountId;
+  if (existing) {
+   existing.token = cleanToken;
+   delete existing.deadUntil;
+   if (extras?.refreshToken) existing.refreshToken = extras.refreshToken;
+   if (extras?.expiresAt !== undefined) {
+    if (Number.isFinite(extras.expiresAt) && extras.expiresAt > 0) existing.expiresAt = extras.expiresAt;
+    else delete existing.expiresAt;
+   }
+   if (extras?.accountId !== undefined) {
+    if (extras.accountId.trim()) existing.accountId = extras.accountId.trim();
+    else delete existing.accountId;
+   }
+   if (extras?.email !== undefined) {
+    if (extras.email.trim()) existing.email = extras.email.trim();
+    else delete existing.email;
+   }
+  } else {
+   pool.accounts.push({
+    slot: cleanSlot,
+    token: cleanToken,
+    addedAt: new Date().toISOString(),
+    ...(extras?.refreshToken ? { refreshToken: extras.refreshToken } : {}),
+    ...(extras?.expiresAt !== undefined && Number.isFinite(extras.expiresAt) && extras.expiresAt > 0
+     ? { expiresAt: extras.expiresAt }
+     : {}),
+    ...(extras?.accountId?.trim() ? { accountId: extras.accountId.trim() } : {}),
+    ...(extras?.email?.trim() ? { email: extras.email.trim() } : {}),
+   });
   }
-  if (extras?.email !== undefined) {
-   if (extras.email.trim()) existing.email = extras.email.trim();
-   else delete existing.email;
+  if (!pool.activeSlot) pool.activeSlot = cleanSlot;
+  if (!savePool(pool)) {
+   let landed = false;
+   try {
+    landed = loadPool().accounts.some((a) => a.slot === cleanSlot && a.token === cleanToken);
+   } catch {
+    landed = false;
+   }
+   if (!landed) {
+    throw new Error(
+     `Cline login [${cleanSlot}] could not be saved to ${CLINE_POOL_FILE} — check that the directory is writable and log in again`,
+    );
+   }
   }
- } else {
-  pool.accounts.push({
-   slot: cleanSlot,
-   token: cleanToken,
-   addedAt: new Date().toISOString(),
-   ...(extras?.refreshToken ? { refreshToken: extras.refreshToken } : {}),
-   ...(extras?.expiresAt !== undefined && Number.isFinite(extras.expiresAt) && extras.expiresAt > 0
-    ? { expiresAt: extras.expiresAt }
-    : {}),
-   ...(extras?.accountId?.trim() ? { accountId: extras.accountId.trim() } : {}),
-   ...(extras?.email?.trim() ? { email: extras.email.trim() } : {}),
-  });
- }
- if (!pool.activeSlot) pool.activeSlot = cleanSlot;
- // A save that never reached the disk must not report success: the caller
- // prints "ready to use" on the strength of this return, and the login would
- // vanish on the next read. The write helper already logged the cause.
- if (!savePool(pool)) {
-  // Re-read the way the relay deploy path does before blaming the write.
-  let landed = false;
-  try {
-   landed = loadPool().accounts.some((a) => a.slot === cleanSlot && a.token === cleanToken);
-  } catch {
-   landed = false;
-  }
-  if (!landed) {
-   throw new Error(
-    `Cline login [${cleanSlot}] could not be saved to ${CLINE_POOL_FILE} — check that the directory is writable and log in again`,
-   );
-  }
- }
- return clonePool(pool);
+  return clonePool(pool);
+ });
 }
 
 /** Drop one login slot. Returns false when the slot was not saved. */
 export function removeAccount(slot: string): boolean {
- const cleanSlot = (slot || "").trim();
- const pool = loadPool();
- const idx = pool.accounts.findIndex((a) => a.slot === cleanSlot);
- if (idx < 0) return false;
- const [removed] = pool.accounts.splice(idx, 1);
- if (pool.usage?.[cleanSlot] !== undefined) {
-  delete pool.usage[cleanSlot];
-  if (Object.keys(pool.usage).length === 0) delete pool.usage;
- }
- // A cap belongs to the login that hit it: keeping it would outlive the slot
- // it names and key a later login of the same name into a stale window.
- if (pool.limits?.[cleanSlot] !== undefined) {
-  delete pool.limits[cleanSlot];
-  if (Object.keys(pool.limits).length === 0) delete pool.limits;
- }
- if (pool.activeSlot === cleanSlot) pool.activeSlot = pool.accounts[0]?.slot;
- savePool(pool);
- // A logout is explicit: the removed grant must not survive in the recovery
- // copy, or losing the main file would sign that account back in.
- forgetAccountInBackup(removed);
- return true;
+ return withClineLock(() => {
+  const cleanSlot = (slot || "").trim();
+  const pool = loadPool();
+  const idx = pool.accounts.findIndex((a) => a.slot === cleanSlot);
+  if (idx < 0) return false;
+  const [removed] = pool.accounts.splice(idx, 1);
+  if (pool.usage?.[cleanSlot] !== undefined) {
+   delete pool.usage[cleanSlot];
+   if (Object.keys(pool.usage).length === 0) delete pool.usage;
+  }
+  if (pool.limits?.[cleanSlot] !== undefined) {
+   delete pool.limits[cleanSlot];
+   if (Object.keys(pool.limits).length === 0) delete pool.limits;
+  }
+  if (pool.activeSlot === cleanSlot) pool.activeSlot = pool.accounts[0]?.slot;
+  savePool(pool);
+  forgetAccountInBackup(removed);
+  return true;
+ });
 }

@@ -10,6 +10,7 @@
  */
 
 import path from "node:path";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
  DAEMON_GC_MS,
@@ -35,11 +36,25 @@ import { getActiveRequests, startClineKeepAlive, startProxy } from "./proxy.ts";
 import { loadRelayState, setActiveRelayState } from "./relay-state.ts";
 
 /** True when this module was run as the entry script (not imported by tests). */
+function safeCanonicalPath(p: string): string {
+ try {
+  return fs.realpathSync.native(path.resolve(p));
+ } catch {
+  return path.resolve(p);
+ }
+}
+
+/** True when this module was run as the entry script (not imported by tests). */
 export function isDaemonMain(): boolean {
  try {
   const entry = process.argv[1];
   if (!entry) return false;
-  return path.resolve(entry) === fileURLToPath(import.meta.url);
+  const canonicalEntry = safeCanonicalPath(entry);
+  const canonicalSelf = safeCanonicalPath(fileURLToPath(import.meta.url));
+  if (process.platform === "win32") {
+   return canonicalEntry.toLowerCase() === canonicalSelf.toLowerCase();
+  }
+  return canonicalEntry === canonicalSelf;
  } catch {
   return false;
  }

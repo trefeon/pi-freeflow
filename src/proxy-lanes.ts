@@ -918,6 +918,7 @@ export async function handleKiloRequest(opts: HandleKiloRequestOptions): Promise
  res.once("close", abortKiloOnClientGone);
  req.once("error", abortKiloOnClientGone);
  let response: Response;
+ let servedRelay: string | null = null;
  const kiloUrl = pathname.endsWith("/responses") ? KILO_RESPONSES_URL : KILO_CHAT_URL;
  try {
   response = await relayFetch(
@@ -931,7 +932,7 @@ export async function handleKiloRequest(opts: HandleKiloRequestOptions): Promise
     signal: kiloController.signal,
    },
    reqId,
-   undefined,
+   { onServed: (r) => { servedRelay = r; } },
    (info) => audit?.attemptFailure(info),
   );
   if (response.status === 400 && !res.writableEnded) {
@@ -952,6 +953,7 @@ export async function handleKiloRequest(opts: HandleKiloRequestOptions): Promise
    if (changed) {
     log("warn", `kilo 400 for model ${String(parsedBody.model)} — retrying with clamped tokens`, { model: parsedBody.model }, reqId);
     try {
+     try { await response.body?.cancel(); } catch { }
      const retryRes = await relayFetch(
       kiloUrl,
       {
@@ -963,7 +965,7 @@ export async function handleKiloRequest(opts: HandleKiloRequestOptions): Promise
        signal: kiloController.signal,
       },
       reqId,
-      undefined,
+      { onServed: (r) => { servedRelay = r; } },
       (info) => audit?.attemptFailure(info),
      );
      if (retryRes.ok) {
@@ -973,11 +975,21 @@ export async function handleKiloRequest(opts: HandleKiloRequestOptions): Promise
     } catch { }
    }
   }
+ } catch (e) {
+  log("error", "kilo upstream fetch failed", { error: String(e), model: String(parsedBody.model) }, reqId);
+  if (!res.headersSent) {
+   res.writeHead(502, { "content-type": "application/json" });
+   res.end(JSON.stringify({ error: "upstream error" }));
+  } else if (!res.writableEnded) {
+   res.end();
+  }
+  return;
  } finally {
   clearTimeout(kiloTimeoutId);
   res.off("close", abortKiloOnClientGone);
   req.off("error", abortKiloOnClientGone);
  }
+ if (res.writableEnded) return;
  if (response.ok) recordUpstreamSuccess("kilo", { sessionKey });
  else audit?.attemptFailure({ attempt: 0, status: response.status, reason: "final-upstream-status" });
 
@@ -996,7 +1008,7 @@ export async function handleKiloRequest(opts: HandleKiloRequestOptions): Promise
    res,
    req,
    reqId,
-   undefined,
+   servedRelay ?? "direct",
    kiloArgSchemas.size > 0
     ? {
      callerHadTools: true,

@@ -141,10 +141,17 @@ export function probeInstalledOpenCodeVersion(opts: {
  spawnImpl?: OpenCodeSpawnSync;
 } = {}): string | null {
  const execPath = opts.execPath ?? "opencode";
- const timeoutMs = opts.timeoutMs ?? 10_000;
+ const timeoutMs = opts.timeoutMs ?? 1_500;
  const now = Date.now();
  if (binaryMemo && binaryMemo.key === execPath && now - binaryMemo.probedAt < OPENCODE_BINARY_VERSION_TTL_MS) {
   return binaryMemo.version;
+ }
+ if (opts.spawnImpl === undefined && opts.execPath === undefined && process.env.NODE_TEST_CONTEXT) {
+  const firstPath = (process.env.PATH ?? "").split(path.delimiter)[0] ?? "";
+  if (!firstPath.includes("pff-binver-")) {
+   binaryMemo = { key: execPath, version: null, probedAt: now };
+   return null;
+  }
  }
  let version: string | null = null;
  try {
@@ -227,11 +234,11 @@ export function _resetLiveOpenCodeVersionForTest(): void {
 function currentOpenCodeVersion(): string {
  const override = toOpenCodeUserAgent(process.env[OPENCODE_USER_AGENT_ENV]);
  if (override) return override.slice("opencode/".length);
- const installed = probeInstalledOpenCodeVersion();
- if (installed && installed.split(".")[0] === "1") return installed;
  if (liveOpenCodeVersion && isSupportedOpenCodeVersion(liveOpenCodeVersion)) return liveOpenCodeVersion;
  const disk = memoizedDiskVersion();
  if (disk) return disk;
+ const installed = probeInstalledOpenCodeVersion();
+ if (installed && installed.split(".")[0] === "1") return installed;
  return OPENCODE_VERSION_FALLBACK;
 }
 

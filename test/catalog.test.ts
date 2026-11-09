@@ -308,3 +308,27 @@ test("nemotron-3.5-super-vl-free repairs a reasoning-less dynamic entry (issue #
 	assert.equal(repaired.thinkingLevelMap?.xhigh, "xhigh");
 	assert.equal(repaired.maxTokens, 235_929);
 });
+
+test("enrichModelDef honors explicit contextWindow and max_tokens over id heuristics and ignores non-positive numbers", () => {
+	const explicit = enrichModelDef(
+		{
+			id: "custom-ultra-lightning-1m-free",
+			contextWindow: 128_000,
+			max_tokens: 16_384,
+		},
+		"opencode",
+	);
+	assert.equal(explicit.contextWindow, 128_000, "explicit contextWindow must not be overwritten by 1m/ultra heuristic");
+	assert.equal(explicit.maxTokens, 16_384, "raw.max_tokens must be honored and not overwritten by ultra/lightning heuristic");
+
+	const fallbackHeuristic = enrichModelDef(
+		{
+			id: "custom-ultra-1m-free",
+			contextWindow: 0,
+			maxTokens: -5,
+		},
+		"opencode",
+	);
+	assert.equal(fallbackHeuristic.contextWindow, 1_048_576, "non-positive contextWindow falls back to id heuristic");
+	assert.equal(fallbackHeuristic.maxTokens, 131_072, "non-positive maxTokens falls back to id heuristic");
+});

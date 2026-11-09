@@ -1,9 +1,9 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 32 verified free models (live-verified 2026-10-26):
- * - 8 OpenCode Zen models (all Chat Completions)
- * - 15 KiloCode Keyless Gateway models (OpenRouter format)
+ * Defines the 30 verified free models (live-verified 2026-11-09):
+ * - 11 OpenCode Zen models (all Chat Completions / Responses)
+ * - 10 KiloCode Keyless Gateway models (OpenRouter format)
  * - 1 Cline direct-only model (per-user pool; z-ai/glm-5.3-flash)
  * - 8 OVHcloud AI Endpoints models (keyless, direct-only)
  *
@@ -273,6 +273,64 @@ export const OPENCODE_MODELS: ModelDef[] = [
    max: "max",
   },
  },
+ {
+  // Added 2026-11-03: Stealth reasoning model on OpenCode Zen (/zen/v1/models: crouton-alpha-free).
+  // 1,048,576 context, 270,000 max output. Modalities: text and image.
+  id: "crouton-alpha-free",
+  name: "Crouton Alpha [OpenCode]",
+  reasoning: true,
+  contextWindow: 1_048_576,
+  maxTokens: 270_000,
+  input: ["text", "image"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: "minimal",
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: "max",
+  },
+ },
+ {
+  // Added 2026-11-06: Stealth model on OpenCode Zen (/zen/v1/models: iceman-free).
+  // 262,144 context, 131,072 max output. Modalities: text.
+  id: "iceman-free",
+  name: "Iceman Free [OpenCode]",
+  reasoning: true,
+  contextWindow: 262_144,
+  maxTokens: 131_072,
+  input: ["text"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: null,
+   low: "low",
+   medium: null,
+   high: "high",
+   xhigh: null,
+   max: "max",
+  },
+ },
+ {
+  // Added 2026-11-05: Thinking Machines Inkling 2 Small on OpenCode Zen (/zen/v1/models: inkling-2-small-free).
+  // 1,048,576 context, 131,072 max output. Modalities: text and image.
+  id: "inkling-2-small-free",
+  name: "Inkling 2 Small [OpenCode]",
+  reasoning: true,
+  requiresReasoningContentOnAssistantMessages: true,
+  contextWindow: 1_048_576,
+  maxTokens: 131_072,
+  input: ["text", "image"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: "minimal",
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "high",
+   max: "max",
+  },
+ },
 ];
 
 /**
@@ -360,36 +418,11 @@ export const KILO_MODELS: ModelDef[] = [
   thinkingLevelMap: KILO_REASONING_MAP,
  },
  {
-  id: "poolside/laguna-s-2.1:free",
-  name: "Laguna S 2.1 [Kilo]",
-  reasoning: true,
-  // Built-in catalog spec: 1,048,576 context. The free gateway's runtime cap
-  // is 262,144; the catalog follows the model's built-in highest spec and
-  // surfaces the upstream error above that cap.
-  contextWindow: 1_048_576,
-  maxTokens: 131_072,
-  input: ["text"],
-  thinkingFormat: "openrouter",
-  thinkingLevelMap: KILO_REASONING_MAP,
- },
- {
-  id: "poolside/laguna-xs-2.1:free",
-  name: "Laguna XS 2.1 [Kilo]",
+  id: "liquid/lfm-3-1.7b:free",
+  name: "Liquid LFM3 1.7B [Kilo]",
   reasoning: true,
   contextWindow: 262_144,
-  maxTokens: 32_768,
-  input: ["text"],
-  thinkingFormat: "openrouter",
-  thinkingLevelMap: KILO_REASONING_MAP,
- },
- {
-  id: "liquid/lfm-2.5-2.6b:free",
-  name: "Liquid LFM 2.5 [Kilo]",
-  reasoning: true,
-  // Raised 2026-10-20 to the 128,000 ctx the published twin advertises; the
-  // 32,768 output ceiling is unchanged.
-  contextWindow: 128_000,
-  maxTokens: 32_768,
+  maxTokens: 8_192,
   input: ["text"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
@@ -446,79 +479,6 @@ export const KILO_MODELS: ModelDef[] = [
   contextWindow: 1_000_000,
   maxTokens: 131_072,
   input: ["text", "image"],
-  thinkingFormat: "openrouter",
-  thinkingLevelMap: KILO_REASONING_MAP,
- },
- {
-  // Added 2026-10-22: this is the Kilo twin of the Zen `beam-free` entry
-  // (same Reflection AI weights). 1,048,576 / 131,072 agrees across the
-  // gateway, models.dev (kilo, vercel and opencode rows) and the vendor docs,
-  // so no reconciliation was needed. Tool call + agent loop verified on chat
-  // and /v1/responses.
-  // Always-on reasoning: the model thinks even with `none`/`off`, so the
-  // toggle cannot disable it and only the effort ladder is exposed. `minimal`
-  // is accepted but ignored upstream, hence null. `max` is a real level.
-  // Upstream echoes the bare model id `reflection/beam` without a provider
-  // field; the catalog keeps the `reflection/beam-free` listing id here so
-  // alongside `beam-kilo` routing stays unambiguous against the Zen `beam`.
-  id: "reflection/beam-free",
-  name: "Beam 1.0 [Kilo]",
-  reasoning: true,
-  contextWindow: 1_048_576,
-  maxTokens: 131_072,
-  input: ["text"],
-  thinkingFormat: "openrouter",
-  thinkingLevelMap: {
-   off: null,
-   minimal: null,
-   low: "low",
-   medium: "medium",
-   high: "high",
-   xhigh: "xhigh",
-   max: "max",
-  },
- },
- {
-  // Added 2026-10-22: exact gateway id, tool call + agent loop verified on
-  // both the chat and /v1/responses paths. Same weights as the Zen
-  // `flint-40b-free` entry, which publishes 65,536 output for them, so the
-  // declared output is the conservative published figure.
-  // Context: the vendor card says prompt and output SHARE the 262,144 window.
-  // The gateway reports 235,929 for this id, which is its 0.9x-window
-  // convention rather than a measured cap; the shared published window is the
-  // declared value.
-  // Thinking is mandatory: `none` answers 400, so `off` stays null. Reasoning
-  // is verbose — on a tight max_tokens budget the thinking can consume the
-  // whole allowance and end the turn with empty content, which is a budget
-  // symptom, not a dead model.
-  id: "recursive/flint-v1.0:free",
-  name: "Flint 40B [Kilo]",
-  reasoning: true,
-  contextWindow: 262_144,
-  maxTokens: 65_536,
-  input: ["text"],
-  thinkingFormat: "openrouter",
-  thinkingLevelMap: KILO_REASONING_MAP,
- },
- {
-  // Added 2026-10-22: exact gateway id, tool call + agent loop verified on
-  // both the chat and /v1/responses paths. 262,144 / 235,929 is the pair this
-  // lane publishes through the gateway `top_provider`, and no cross-lane cap
-  // exists for the id — there is no twin elsewhere to reconcile against.
-  // Both figures follow the same 0.9x-window convention: prompt and output
-  // share the 262,144 window, so 235,929 is the output budget that still
-  // leaves prompt headroom.
-  // `none` disables thinking and answers 200, but like `off` everywhere else
-  // it maps nowhere here, so the shared Kilo ladder is declared.
-  // Reliability: roughly 60 percent of attempts hit the shared Phala 429
-  // quota. A 429 means the model is alive and rate-limited — never prune on
-  // it; the same id answers 200 once the shared pool frees up.
-  id: "xingchen-agi/xing4.0-29b-a4b:free",
-  name: "Xing4.0 29B A4B [Kilo]",
-  reasoning: true,
-  contextWindow: 262_144,
-  maxTokens: 235_929,
-  input: ["text"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
  },
@@ -730,7 +690,7 @@ export const MODEL_ALIASES: Record<string, string> = {
  "nemotron-3-ultra-550b": "nvidia/nemotron-3-ultra-550b-a55b:free",
  "nemotron-3.5-lightning": "nvidia/nemotron-3.5-lightning:free",
  "north-mini-code": "cohere/north-mini-code:free",
- "lfm-2.5": "liquid/lfm-2.5-2.6b:free",
+ "lfm-3": "liquid/lfm-3-1.7b:free",
  "glm-5.3-flash": "glm-5.3-flash-free",
  "glyph-cluster": "stealth/glyph-cluster",
  "mimo-v2.6-flash": "mimo-v2.6-flash-free",
@@ -738,12 +698,10 @@ export const MODEL_ALIASES: Record<string, string> = {
  "beam": "beam-free",
  "deepseek-v4.1-flash": "deepseek-v4.1-flash-free",
  "flint": "flint-40b-free",
- "flint-kilo": "recursive/flint-v1.0:free",
- "beam-kilo": "reflection/beam-free",
- "xing4.0": "xingchen-agi/xing4.0-29b-a4b:free",
- // provider-prefixed short aliases (slash-normalized)
- "laguna-s-2.1:free": "poolside/laguna-s-2.1:free",
- "laguna-xs-2.1:free": "poolside/laguna-xs-2.1:free",
+ "crouton": "crouton-alpha-free",
+ "iceman": "iceman-free",
+ "inkling-2-small": "inkling-2-small-free",
+ "nemotron-3.5-super-vl-kilo": "nvidia/nemotron-3.5-super-vl:free",
  "kilo-auto": "kilo-auto/free",
  "openrouter": "openrouter/free",
  // OVHcloud AI Endpoints — slash-free spellings of the `ovh-free/` ids.
@@ -795,7 +753,7 @@ export const OVH_MODEL_IDS = new Set<string>([
   .map(([alias]) => alias),
 ]);
 /**
- * Combined list of all 32 static free models (canonical)
+ * Combined list of all 30 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS, ...OVH_MODELS];
 
