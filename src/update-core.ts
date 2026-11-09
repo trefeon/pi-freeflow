@@ -252,8 +252,11 @@ export function runUpdateStep(
    // unref is best-effort
   }
   const emit = (d: Buffer): void => {
-   const s = String(d).trim();
-   if (s) opts.onOutput?.(s);
+   const text = String(d);
+   for (const raw of text.split(/\r?\n/)) {
+    const s = raw.trim();
+    if (s) opts.onOutput?.(s);
+   }
   };
   child.stdout?.on("data", emit);
   child.stderr?.on("data", emit);
