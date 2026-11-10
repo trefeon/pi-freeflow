@@ -484,7 +484,7 @@ function promoteStringArray(
  * rejected the glued payload outright.
  *
  * Keyed by CALLER name, which is what arrives downstream after the casing and
- * find->glob restores. Injected fingerprint placeholders are absent by
+ * upstream-name restores. Injected fingerprint placeholders are absent by
  * construction, so they are never repaired.
  */
 export function buildArgRepairSchemas(tools: unknown[]): Map<string, Record<string, unknown>> {

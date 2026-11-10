@@ -599,10 +599,62 @@ export function upstreamToolNameFor(name: string): string {
  return isFindToolName(name) ? "glob" : name.trim();
 }
 /**
- * Restore records for the upstream-name rewrites: `find`->`glob` and the
- * sanitization of names upstream rejects. `renamed` maps every rewritten
- * upstream name (lowercased) back to the caller's original, so an emitted
- * call still resolves to the tool the caller actually registered.
+ * OpenCode free-tier gate disguises. The upstream gate answers 429
+ * FreeUsageLimitError when a request declares both OMP experimental context
+ * tools `context_notes` and `new_context`; changing either declared name
+ * clears it while the description/schema ride verbatim. Applied only on the
+ * fingerprint lane to the function declarations hosts send, and restored
+ * downstream by restoreToolNameForCaller. Renaming either name alone is
+ * harmless, so each is disguised independently of declaration order.
+ */
+const FINGERPRINT_TOOL_DISGUISE = new Map<string, string>([
+ ["context_notes", "notes_tool"],
+ ["new_context", "refresh_tool"],
+]);
+/**
+ * Rename a fingerprint-lane tool whose final upstream spelling trips the Zen
+ * free-tier gate. `reserved` holds every caller tool name (lowercased) and
+ * `taken` the names already emitted, so a disguise can never collide with a
+ * real tool or with an earlier sanitized spelling.
+ */
+function disguiseFingerprintToolName(
+ name: string,
+ reserved: ReadonlySet<string>,
+ taken: ReadonlySet<string>,
+): string {
+ const trimmed = name.trim();
+ const base = FINGERPRINT_TOOL_DISGUISE.get(trimmed.toLowerCase());
+ if (base === undefined) return trimmed;
+ let candidate = base;
+ let n = 2;
+ while (reserved.has(candidate.toLowerCase()) || taken.has(candidate.toLowerCase())) {
+  candidate = `${base}_${n}`;
+  n += 1;
+ }
+ return candidate;
+}
+/**
+ * Reserve every declared name a tool carries, function-wrapped or flat, before
+ * any disguise is allocated. Translation still keys on canonical function
+ * tools, but a disguise must never take a spelling that any caller tool
+ * declares.
+ */
+function reserveDeclaredNames(tool: unknown, reserved: Set<string>): void {
+ if (typeof tool !== "object" || tool === null || Array.isArray(tool)) return;
+ const rec = tool as Record<string, unknown>;
+ if (typeof rec.name === "string") reserved.add(rec.name.trim().toLowerCase());
+ const fn = rec.function;
+ if (typeof fn === "object" && fn !== null && !Array.isArray(fn)) {
+  const inner = (fn as Record<string, unknown>).name;
+  if (typeof inner === "string") reserved.add(inner.trim().toLowerCase());
+ }
+}
+/**
+ * Restore records for the upstream-name rewrites: `find`->`glob`, the
+ * free-tier gate disguises, and the sanitization of names upstream rejects.
+ * `renamed` maps every rewritten upstream name (lowercased) back to the
+ * caller's original, so an emitted call still resolves to the tool the caller
+ * actually registered.
  *
  * `renamedFindToGlob` is true only when the caller sent `find` (any case)
  * without also sending `glob`: the single upstream `glob` unambiguously stands
@@ -611,8 +663,10 @@ export function upstreamToolNameFor(name: string): string {
  */
 export interface FindGlobRestore {
  renamedFindToGlob: boolean;
- /** Sanitized upstream name (lowercased) -> caller name. Absent when every
-  * caller name was already upstream-legal, so nothing was rewritten. */
+ /** Rewritten upstream name (lowercased) -> caller name. Holds every wire
+  * spelling that differs from the caller's own: sanitized names and the
+  * fingerprint-lane context disguises. The find->glob fallback stays
+  * separate. */
  renamed?: Record<string, string>;
 }
 
@@ -651,7 +705,10 @@ export function sanitizeUpstreamToolName(name: string, taken: ReadonlySet<string
  return candidate;
 }
 /** Inspect the original caller tools (pre-translate) for the rewrite cases. */
-export function buildFindGlobRestore(callerTools: unknown[]): FindGlobRestore {
+export function buildFindGlobRestore(
+ callerTools: unknown[],
+ opts?: { forFingerprint?: boolean },
+): FindGlobRestore {
  // Same rule as translateToolsForPath: the find->glob rename fires only when
  // the caller left the `glob` slot empty. OMP declares both real tools, so
  // there the rename must not happen and `find` must keep its own name.
@@ -659,6 +716,12 @@ export function buildFindGlobRestore(callerTools: unknown[]): FindGlobRestore {
   const canon = canonicalizeTool(tool);
   return canon !== null && canon.name.trim().toLowerCase() === "glob";
  });
+ // Reserve every caller name before assigning any disguise so a renamed tool
+ // can never steal a name a later caller tool legitimately declares.
+ const disguiseReserved = new Set<string>();
+ for (const tool of callerTools) {
+  reserveDeclaredNames(tool, disguiseReserved);
+ }
  const nameFor = (name: string): string => (callerDeclaresGlob ? name.trim() : upstreamToolNameFor(name));
  const renamed: Record<string, string> = {};
  // Same first-seen-wins order and case rules as translateToolsForPath, so
@@ -677,12 +740,23 @@ export function buildFindGlobRestore(callerTools: unknown[]): FindGlobRestore {
   seen.add(dedupKey);
   const sanitized = sanitizeUpstreamToolName(upstreamName, seen);
   if (sanitized.toLowerCase() !== dedupKey) seen.add(sanitized.toLowerCase());
-  // Only character-folding rewrites belong in the sanitized map. The
-  // find->glob rename is a single-name fallback, so a name that came in
-  // as `find` must not be recorded here: upstream `glob` may be the
-  // caller's own glob.
-  if (sanitized !== callerName && !isFindToolName(callerName)) {
-   renamed[sanitized.toLowerCase()] = callerName;
+  // The disguise keys on the final upstream spelling, so a caller name that
+  // folds into a trigger token (`context notes` -> `context_notes`) is covered
+  // too, and the allocator skips every name already reserved or emitted.
+  let finalName = sanitized;
+  if (opts?.forFingerprint === true) {
+   const disguised = disguiseFingerprintToolName(sanitized, disguiseReserved, seen);
+   if (disguised !== sanitized) {
+    finalName = disguised;
+    seen.add(disguised.toLowerCase());
+    disguiseReserved.add(disguised.toLowerCase());
+   }
+  }
+  // Only name rewrites belong in the restore map. The find->glob rename is
+  // a single-name fallback, so a name that came in as `find` must not be
+  // recorded here: upstream `glob` may be the caller's own glob.
+  if (finalName !== callerName && !isFindToolName(callerName)) {
+   renamed[finalName.toLowerCase()] = callerName;
   }
  }
  const sawFind = callerTools.some((tool) => {
@@ -693,14 +767,15 @@ export function buildFindGlobRestore(callerTools: unknown[]): FindGlobRestore {
  return restored;
 }
 /**
- * Downstream name: undo the upstream rewrites. The sanitized map is checked
+ * Downstream name: undo the upstream rewrites. The rewrite map is checked
  * first because it is keyed by the exact name upstream saw; the find->glob
  * case stays as the single-name fallback.
  */
 export function restoreToolNameForCaller(name: string, restore: FindGlobRestore): string {
- const sanitized = restore.renamed?.[name.trim().toLowerCase()];
+ const key = name.trim().toLowerCase();
+ const sanitized = restore.renamed !== undefined && Object.hasOwn(restore.renamed, key) ? restore.renamed[key] : undefined;
  if (sanitized !== undefined) return sanitized;
- if (restore.renamedFindToGlob && name.trim().toLowerCase() === "glob") return "find";
+ if (restore.renamedFindToGlob && key === "glob") return "find";
  return name;
 }
 /** Extra top-level caller fields survive cross-shape conversion verbatim. */
@@ -736,9 +811,10 @@ function carryExtraFields(
  *
  * Names ride the caller's own unless `forFingerprint` is set — that flag exists
  * for the OpenCode free tier alone, whose gate expects the sextet name `glob`
- * and therefore needs Pi's `find` renamed into it. On every other lane the
- * rename is pure loss: the upstream would have accepted `find`, and the host
- * gets `find` back and dispatches it natively.
+ * (so Pi's `find` is renamed into it) and rejects the two OMP experimental
+ * context tool names when both are declared (so each is disguised). On every
+ * other lane the rename is pure loss: the upstream would have accepted the
+ * caller's names, and the host gets them back and dispatches them natively.
  */
 export function translateToolsForPath(tools: unknown[], pathname: string, opts?: { forFingerprint?: boolean }): Record<string, unknown>[] {
  const api = apiForPathname(pathname);
@@ -753,12 +829,11 @@ export function translateToolsForPath(tools: unknown[], pathname: string, opts?:
  // (semantic search, reference/oh-my-pi tools/jfind/index.ts:54), and renaming
  // there would collapse two real tools into one under the other's schema.
  let callerDeclaresGlob = false;
+ const disguiseReserved = new Set<string>();
  for (const tool of tools) {
+  reserveDeclaredNames(tool, disguiseReserved);
   const canon = canonicalizeTool(tool);
-  if (canon && canon.name.trim().toLowerCase() === "glob") {
-   callerDeclaresGlob = true;
-   break;
-  }
+  if (canon && canon.name.trim().toLowerCase() === "glob") callerDeclaresGlob = true;
  }
  const renameFind = opts?.forFingerprint === true && !callerDeclaresGlob;
  const upstreamNameFor = (name: string): string => (renameFind ? upstreamToolNameFor(name) : name.trim());
@@ -778,13 +853,25 @@ export function translateToolsForPath(tools: unknown[], pathname: string, opts?:
  // and runs on the pre-sanitization name: the emitted name keeps the caller's
  // casing, and the sanitizer only ever folds characters the upstream shape
  // forbids.
- const dedupKey = upstreamNameFor(canon.name).toLowerCase();
+ const mappedName = upstreamNameFor(canon.name);
+ const dedupKey = mappedName.toLowerCase();
  if (seen.has(dedupKey)) continue;
  seen.add(dedupKey);
- // The find->glob rename and the name sanitization share one upstream name,
- // so a caller tool needing either is emitted under a single new name.
- const upstreamName = sanitizeUpstreamToolName(upstreamNameFor(canon.name), seen);
+ // The find->glob rename, the free-tier gate disguise, and the name
+ // sanitization share one upstream name, so a caller tool needing any is
+ // emitted under a single new name. Sanitize first so a caller spelling that
+ // folds into a trigger token is disguised too; the allocator skips every
+ // reserved or already-emitted name.
+ let upstreamName = sanitizeUpstreamToolName(mappedName, seen);
  if (upstreamName.toLowerCase() !== dedupKey) seen.add(upstreamName.toLowerCase());
+ if (opts?.forFingerprint === true) {
+  const disguisedName = disguiseFingerprintToolName(upstreamName, disguiseReserved, seen);
+  if (disguisedName !== upstreamName) {
+   upstreamName = disguisedName;
+   seen.add(disguisedName.toLowerCase());
+   disguiseReserved.add(disguisedName.toLowerCase());
+  }
+ }
  const needsRename = upstreamName !== canon.name;
  if (!needsRename && alreadyTargetShape(rec, api)) {
   out.push(rec);

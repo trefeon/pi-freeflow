@@ -543,6 +543,119 @@ test("translateToolsForPath: Pi find renames to glob on all shapes, OMP glob unt
 	const none = buildFindGlobRestore([{ type: "function", name: "read", description: "r", parameters: { type: "object" } }]);
 	assert.equal(none.renamedFindToGlob, false);
 });
+test("translateToolsForPath: fingerprint lane disguises OMP context tools, off-lane verbatim", () => {
+	const styles = ["chat", "responses", "anthropic"] as const;
+	const notesParams = { type: "object", properties: { i: { type: "string" }, text: { type: "string" } } };
+	const refreshParams = { type: "object", properties: { i: { type: "string" } } };
+	const toolsFor = (style: (typeof styles)[number]): Record<string, unknown>[] => {
+		if (style === "chat") {
+			return [
+				{ type: "function", function: { name: "context_notes", description: "notes", parameters: notesParams } },
+				{ type: "function", function: { name: "new_context", description: "refresh", parameters: refreshParams } },
+			];
+		}
+		if (style === "responses") {
+			return [
+				{ type: "function", name: "context_notes", description: "notes", parameters: notesParams },
+				{ type: "function", name: "new_context", description: "refresh", parameters: refreshParams },
+			];
+		}
+		return [
+			{ name: "context_notes", description: "notes", input_schema: notesParams },
+			{ name: "new_context", description: "refresh", input_schema: refreshParams },
+		];
+	};
+	for (const style of styles) {
+		for (const path of PATHS) {
+			const [notes, refresh] = translateToolsForPath(toolsFor(style), path, { forFingerprint: true });
+			assert.equal(upstreamNameOf(notes), "notes_tool", `${style} -> ${path}: context_notes disguised on the fingerprint lane`);
+			assert.equal(upstreamNameOf(refresh), "refresh_tool", `${style} -> ${path}: new_context disguised on the fingerprint lane`);
+			assert.equal(upstreamDescOf(notes), "notes", `${style} -> ${path}: notes description verbatim`);
+			assert.equal(upstreamDescOf(refresh), "refresh", `${style} -> ${path}: refresh description verbatim`);
+			assert.deepEqual(upstreamParamsOf(notes), notesParams, `${style} -> ${path}: notes schema verbatim`);
+			assert.deepEqual(upstreamParamsOf(refresh), refreshParams, `${style} -> ${path}: refresh schema verbatim`);
+
+			const plain = translateToolsForPath(toolsFor(style), path);
+			assert.deepEqual(plain.map(upstreamNameOf), ["context_notes", "new_context"], `${style} -> ${path}: off-lane names verbatim`);
+		}
+	}
+	const caller = toolsFor("chat");
+	const restore = buildFindGlobRestore(caller, { forFingerprint: true });
+	assert.equal(restore.renamedFindToGlob, false, "context disguises never mark a find rename");
+	assert.deepEqual(restore.renamed, { notes_tool: "context_notes", refresh_tool: "new_context" });
+	assert.equal(restoreToolNameForCaller("notes_tool", restore), "context_notes");
+	assert.equal(restoreToolNameForCaller("refresh_tool", restore), "new_context");
+	assert.equal(restoreToolNameForCaller("read", restore), "read", "unrelated names restore to themselves");
+	assert.deepEqual(buildFindGlobRestore(caller).renamed, {}, "off-lane keeps no restore entry");
+});
+
+test("translateToolsForPath: context disguises never collide with declared names", () => {
+	const caller = [
+		{ type: "function", function: { name: "context_notes", description: "notes", parameters: { type: "object" } } },
+		{ type: "function", function: { name: "new_context", description: "refresh", parameters: { type: "object" } } },
+		{ type: "function", function: { name: "notes_tool", description: "own notes", parameters: { type: "object" } } },
+		{ type: "function", function: { name: "Refresh_Tool", description: "own refresh", parameters: { type: "object" } } },
+	];
+	for (const path of PATHS) {
+		const out = translateToolsForPath(caller, path, { forFingerprint: true });
+		const names = out.map(upstreamNameOf);
+		assert.deepEqual(names, ["notes_tool_2", "refresh_tool_2", "notes_tool", "Refresh_Tool"], `${path}: caller names are reserved before disguises`);
+		assert.equal(new Set(names.map((n) => n.toLowerCase())).size, names.length, `${path}: no duplicate wire names`);
+	}
+	const restore = buildFindGlobRestore(caller, { forFingerprint: true });
+	assert.deepEqual(restore.renamed, { notes_tool_2: "context_notes", refresh_tool_2: "new_context" });
+	assert.equal(restoreToolNameForCaller("notes_tool", restore), "notes_tool", "a caller-owned name restores to itself");
+	assert.equal(restoreToolNameForCaller("Refresh_Tool", restore), "Refresh_Tool", "case survives the reserved check");
+	assert.equal(restoreToolNameForCaller("notes_tool_2", restore), "context_notes");
+	assert.equal(restoreToolNameForCaller("refresh_tool_2", restore), "new_context");
+
+	// A caller spelling that folds into a disguise base is emitted first as
+	// the sanitized name; the disguise then takes the next free suffix.
+	const folded = [
+		{ type: "function", function: { name: "notes tool", description: "folded", parameters: { type: "object" } } },
+		{ type: "function", function: { name: "context_notes", description: "notes", parameters: { type: "object" } } },
+	];
+	for (const path of PATHS) {
+		const names = translateToolsForPath(folded, path, { forFingerprint: true }).map(upstreamNameOf);
+		assert.equal(new Set(names.map((n) => n.toLowerCase())).size, 2, `${path}: folded name and disguise stay distinct`);
+		assert.ok(!names.some((n) => n.toLowerCase() === "context_notes"), `${path}: the trigger name never reaches upstream`);
+	}
+	const foldedRestore = buildFindGlobRestore(folded, { forFingerprint: true });
+	assert.deepEqual(foldedRestore.renamed, { notes_tool: "notes tool", notes_tool_2: "context_notes" });
+	const reverseRestore = buildFindGlobRestore([folded[1], folded[0]], { forFingerprint: true });
+	assert.deepEqual(reverseRestore.renamed, { notes_tool: "context_notes", notes_tool_2: "notes tool" }, "reverse order stays injective");
+});
+
+test("translateToolsForPath: prototype-like caller names never crash the disguise", () => {
+	const caller = [
+		{ type: "function", function: { name: "constructor", description: "c", parameters: { type: "object" } } },
+		{ type: "function", function: { name: "__proto__", description: "p", parameters: { type: "object" } } },
+	];
+	for (const path of PATHS) {
+		const out = translateToolsForPath(caller, path, { forFingerprint: true });
+		assert.deepEqual(out.map(upstreamNameOf), ["constructor", "__proto__"], `${path}: prototype-like names ride verbatim`);
+	}
+	const restore = buildFindGlobRestore(caller, { forFingerprint: true });
+	assert.deepEqual(restore.renamed, {});
+	assert.equal(restoreToolNameForCaller("constructor", restore), "constructor");
+	assert.doesNotThrow(() => enforceOpencodeFingerprint({ tools: caller.map((tool) => ({ ...tool })) }, "/v1/chat/completions"));
+});
+
+test("translateToolsForPath: folded spellings of the gate pair are disguised too", () => {
+	const caller = [
+		{ type: "function", function: { name: "context notes", description: "notes", parameters: { type: "object" } } },
+		{ type: "function", function: { name: "new:context", description: "refresh", parameters: { type: "object" } } },
+	];
+	for (const path of PATHS) {
+		const names = translateToolsForPath(caller, path, { forFingerprint: true }).map(upstreamNameOf);
+		assert.deepEqual(names, ["notes_tool", "refresh_tool"], `${path}: folded trigger names disguised`);
+	}
+	const restore = buildFindGlobRestore(caller, { forFingerprint: true });
+	assert.deepEqual(restore.renamed, { notes_tool: "context notes", refresh_tool: "new:context" });
+	assert.equal(restoreToolNameForCaller("notes_tool", restore), "context notes");
+	assert.equal(restoreToolNameForCaller("refresh_tool", restore), "new:context");
+});
+
 test("translateToolsForPath: dup collapse case-insensitive, second translate adds zero", () => {
 	const dupes = [
 		{ type: "function", function: { name: "bash", description: "a", parameters: { type: "object" } } },

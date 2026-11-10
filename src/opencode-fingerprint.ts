@@ -50,6 +50,8 @@
 import {
  FULL11_TOOL_NAMES,
  buildFindGlobRestore,
+ canonicalizeTool,
+ restoreToolNameForCaller,
  translateToolsForPath,
  upstreamToolNameFor,
  type FindGlobRestore,
@@ -78,6 +80,29 @@ export * from "./fingerprint-tools.ts";
 export * from "./fingerprint-env.ts";
 export * from "./sse-aggregator.ts";
 export type { FindGlobRestore } from "./tool-translation.ts";
+
+/**
+ * The messages lane keeps Anthropic named choices. A choice naming a caller
+ * tool whose wire spelling was rewritten (find->glob, gate disguise, folded
+ * name) must follow the rename, or upstream sees a choice for a tool the
+ * request no longer declares.
+ */
+function retargetMessagesToolChoice(body: Record<string, unknown>, findGlob: FindGlobRestore): void {
+ const choice = body.tool_choice;
+ if (typeof choice !== "object" || choice === null || Array.isArray(choice)) return;
+ const rec = choice as Record<string, unknown>;
+ if (rec.type !== "tool" || typeof rec.name !== "string") return;
+ const wanted = rec.name.trim().toLowerCase();
+ const tools = Array.isArray(body.tools) ? body.tools : [];
+ for (const tool of tools) {
+  const canon = canonicalizeTool(tool);
+  if (!canon) continue;
+  if (restoreToolNameForCaller(canon.name, findGlob).trim().toLowerCase() === wanted) {
+   rec.name = canon.name.trim();
+   return;
+  }
+ }
+}
 
 /**
  * Enforce the full OpenCode free-tier client fingerprint on a parsed request body.
@@ -130,10 +155,9 @@ export function enforceOpencodeFingerprint(
  // effort clamp, store default): Kilo/Cline bodies never reach here.
  if (pathname.endsWith("/responses")) normalizeResponsesBody(body);
  else if (pathname.endsWith("/chat/completions")) clampChatReasoningEffort(body);
- // Chat path mirrors the responses drop: Zen free tier accepts only auto, so a
- // caller "none" (string or { type: "none" }) would 400 upstream. The Zen
- // messages lane keeps its own choice semantics: Anthropic names choices with
- // `any` / `{ type: "tool", name: ... }`, and the drop would delete them.
+ // Chat and responses drop every non-"auto" choice (Zen accepts only "auto").
+ // The messages lane keeps Anthropic choices, so a named choice follows any
+ // wire-name rewrite after translation (find->glob, gate disguise, folding).
  if (!pathname.endsWith("/messages")) enforceAutoToolChoice(body);
  // Agent turns carry no sampling knobs: the live CLI's agent calls send
  // neither temperature nor reasoning_effort, while its title calls
@@ -158,10 +182,11 @@ export function enforceOpencodeFingerprint(
 
  const caseRestore = normalizePlaceholderCase(body);
 
- // No tool_choice retargeting here: enforceAutoToolChoice above already
- // deleted every non-"auto" choice (Zen accepts only "auto"), so the only
- // survivor is the string "auto" — nothing to rename, no choice to carry.
- const findGlob = buildFindGlobRestore(Array.isArray(body.tools) ? body.tools : []);
+ // No tool_choice retargeting on chat or responses: enforceAutoToolChoice
+ // above already deleted every non-"auto" choice (Zen accepts only "auto"),
+ // so the only survivor is the string "auto" — nothing to rename. The
+ // messages lane keeps its choices and retargets named ones after translation.
+ const findGlob = buildFindGlobRestore(Array.isArray(body.tools) ? body.tools : [], { forFingerprint: true });
  // Captured before translation and injection: the map is keyed by CALLER tool
  // name (what arrives downstream), and injected placeholders must not be
  // repairable.
@@ -194,6 +219,7 @@ export function enforceOpencodeFingerprint(
   // Every other lane accepts the caller's own names untouched.
   if (Array.isArray(body.tools)) {
    body.tools = translateToolsForPath(body.tools, pathname, { forFingerprint: true });
+   if (pathname.endsWith("/messages")) retargetMessagesToolChoice(body, findGlob);
   }
 
   const before = Array.isArray(body.tools) ? body.tools.length : 0;
