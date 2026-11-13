@@ -116,15 +116,15 @@ export function normalizePlaceholderCase(body: Record<string, unknown>): CaseRes
 /** Restore caller casing on one downstream tool name (bounded map, else verbatim). */
 export function restoreName(name: string, restore?: CaseRestoreMap): string {
  if (restore) {
-  const hit = restore[name.toLowerCase()];
-  if (hit !== undefined) return hit;
+  const key = name.toLowerCase();
+  if (Object.hasOwn(restore, key)) return restore[key];
  }
  return name;
 }
 
 /**
  * Full downstream restore: caller casing first, then the translator's
- * find->glob mapping (upstream glob back to caller find when renamed).
+ * upstream-name rewrites (find->glob, gate disguises, sanitized spellings).
  */
 export function restoreCallerName(name: string, caseRestore?: CaseRestoreMap, findGlob?: FindGlobRestore): string {
  const cased = restoreName(name, caseRestore);
