@@ -474,8 +474,11 @@ test("daemon seed helpers move disk relay state and catalog cache into process s
 			id: "seed-sentinel-free",
 			name: "seed sentinel",
 			api: "openai-completions",
+			reasoning: false,
+			contextWindow: 64_000,
+			maxTokens: 8_000,
 			source: "opencode",
-		} as unknown as RegisteredModel;
+		} satisfies RegisteredModel;
 		writeCatalogCache({
 			timestamp: Date.now(),
 			opencode: [sentinel.id],

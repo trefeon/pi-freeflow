@@ -72,12 +72,45 @@ export interface RawModelItem {
  [key: string]: unknown;
 }
 
-export interface CatalogCacheData {
+export type DynamicCatalogSource = "opencode" | "kilo";
+
+/** One independently refreshed upstream catalog snapshot. */
+export interface CatalogSourceCacheData {
  timestamp: number;
- opencode: string[];
- kilo: string[];
+ ids: string[];
+ models: RegisteredModel[];
+ etag?: string;
+}
+
+/**
+ * Versioned catalog cache. The optional top-level fields are the legacy v1
+ * schema and remain readable so existing installations migrate in place.
+ */
+export interface CatalogCacheData {
+ version?: 2;
+ sources?: Partial<Record<DynamicCatalogSource, CatalogSourceCacheData>>;
+ timestamp?: number;
+ opencode?: string[];
+ kilo?: string[];
  models?: RegisteredModel[];
  etag?: string;
+}
+
+export type CatalogRefreshOutcome = "updated" | "not-modified" | "fresh-cache" | "failed";
+
+/** Observable result for one source in the latest catalog refresh. */
+export interface CatalogSourceRefreshStatus {
+ outcome: CatalogRefreshOutcome;
+ usedCache: boolean;
+ detail?: string;
+}
+
+/** Observable result for the latest two-source catalog refresh. */
+export interface CatalogRefreshStatus {
+ timestamp: number;
+ forced: boolean;
+ opencode: CatalogSourceRefreshStatus;
+ kilo: CatalogSourceRefreshStatus;
 }
 
 // ── Extension API & UI Types (compatible with @earendil-works/pi-coding-agent) ──

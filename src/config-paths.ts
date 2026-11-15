@@ -188,6 +188,7 @@ export function resolveSessionPinPath(): string {
 export const RELAY_STATE_FILE = resolveRelayStatePath();
 export const LOG_FILE = resolveLogFilePath();
 export const CATALOG_CACHE_FILE = resolveCatalogCachePath();
+export const CATALOG_CACHE_LOCK_FILE = `${CATALOG_CACHE_FILE}.lock`;
 export const DEBUG_STATE_FILE = resolveDebugStatePath();
 export const UPDATE_CACHE_FILE = resolveUpdateCachePath();
 export const ONBOARDED_FLAG_FILE = resolveOnboardedFlagPath();

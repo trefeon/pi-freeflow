@@ -4,24 +4,32 @@
  * Provides 24-hour atomic disk caching with safe offline fallback to verified static definitions.
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "./atomic-write.ts";
 import {
  CATALOG_CACHE_FILE,
+ CATALOG_CACHE_LOCK_FILE,
  CATALOG_CACHE_TTL_MS,
  CATALOG_REFRESH_TIMEOUT_MS,
+ KILO_CATALOG_URL,
  OPENCODE_API_URL,
  opencodeHeaders,
 } from "./config.ts";
-import { log, logDebug, logWarn } from "./logger.ts";
+import { logDebug, logWarn } from "./logger.ts";
 import {
  ALL_MODELS,
  MODEL_MAP,
  getModelUpstream,
+ resolveCanonicalModelId,
 } from "./models.ts";
 import type {
  CatalogCacheData,
+ CatalogRefreshStatus,
+ CatalogSourceCacheData,
+ CatalogSourceRefreshStatus,
+ DynamicCatalogSource,
  RawModelItem,
  RegisteredModel,
  Upstream,
@@ -216,80 +224,139 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "xingchen-agi/xing4.0-29b-a4b:free",
 ]);
 /**
- * Free-tier allowlist for anything entering the picker via network or stale disk.
- * Upstream lists paid models alongside free ones (e.g. claude-fable-5-1,
- * claude-opus-4-*, gemini-3-*) so a bare upstream merge leaks paid entries that
- * fail with 401 Missing API key. Known static IDs without a free suffix
- * (e.g. big-pickle, inclusionai/ling-3.1-flash) stay allowed via MODEL_MAP.
+ * Free-tier allowlist for Zen network rows and legacy cache entries. Kilo live
+ * admission deliberately does not use this suffix heuristic; parseKiloCatalogResponse
+ * validates the authoritative pricing and capability metadata instead.
  */
 export function isFreeCatalogId(id: string): boolean {
  if (typeof id !== "string" || id.length === 0) return false;
  if (DEAD_MODEL_IDS.has(id)) return false;
  return id.includes("-free") || id.includes(":free") || id.includes("/free") || MODEL_MAP.has(id);
 }
-/**
- * Purge paid/dead entries from a catalog list and repair known models against
- * the static definitions. Stale disk caches predate the paid filter and the
- * responses-api entries (the last one, Cline's Muse Spark 1.3, retired on
- * 2026-10-22), so loading them verbatim replays a wrong api (chat/completions
- * for a responses-only model -> upstream 500) until the 24h TTL expires.
- * Repairing here self-heals on the next refresh without a reinstall.
- */
-export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredModel[] {
- const out: RegisteredModel[] = [];
- for (const m of models) {
-  if (!m || typeof m.id !== "string" || !isFreeCatalogId(m.id)) continue;
-  const known = MODEL_MAP.get(m.id);
-  if (known) {
-   // A known id's upstream is a static fact: a stale cache entry must never
-   // relabel it (a Cline model advertised as opencode would register with the
-   // wrong compat settings).
-   out.push({ ...known, source: getModelUpstream(m.id) });
-  } else {
-   out.push(m);
-  }
- }
- return out;
+
+function staticCatalog(): RegisteredModel[] {
+ return ALL_MODELS.map((m) => ({ ...m, source: getModelUpstream(m.id) }));
 }
-/**
- * In-memory cache of currently active/available free models.
- * Initialized with all 32 verified models for 0ms instant availability.
- */
-let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
- ...m,
- source: getModelUpstream(m.id),
-}));
-/**
- * Get current in-memory alive catalog
- */
-export function getAliveCatalog(): RegisteredModel[] {
- return aliveCatalog;
+
+function isUsableRegisteredModel(model: unknown): model is RegisteredModel {
+ if (model === null || typeof model !== "object" || Array.isArray(model)) return false;
+ const row = model as Record<string, unknown>;
+ return typeof row.id === "string" && row.id.length > 0 &&
+  typeof row.name === "string" && row.name.length > 0 &&
+  typeof row.contextWindow === "number" && Number.isFinite(row.contextWindow) && row.contextWindow > 0 &&
+  typeof row.maxTokens === "number" && Number.isFinite(row.maxTokens) && row.maxTokens > 0;
 }
 
 /**
- * Set in-memory alive catalog
+ * Purge paid/dead entries from a generic catalog list and repair known models
+ * against reviewed static definitions. Versioned Kilo snapshots use their own
+ * stricter network-boundary validation and are merged separately.
  */
-export function setAliveCatalog(catalog: RegisteredModel[]): void {
- aliveCatalog = catalog;
+export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredModel[] {
+ const out: RegisteredModel[] = [];
+ for (const model of models) {
+  if (!isUsableRegisteredModel(model) || !isFreeCatalogId(model.id)) continue;
+  const known = MODEL_MAP.get(model.id);
+  out.push(known ? { ...known, source: getModelUpstream(model.id) } : model);
+ }
+ return out;
+}
+
+function sanitizeSourceSnapshot(
+ models: RegisteredModel[],
+ source: DynamicCatalogSource,
+ legacy: boolean,
+): RegisteredModel[] {
+ const out: RegisteredModel[] = [];
+ const seen = new Set<string>();
+ for (const model of models) {
+  if (!isUsableRegisteredModel(model) || DEAD_MODEL_IDS.has(model.id) || seen.has(model.id)) continue;
+  if (resolveCanonicalModelId(model.id) !== model.id) continue;
+  const known = MODEL_MAP.get(model.id);
+  if (known) {
+   if (getModelUpstream(model.id) !== source) continue;
+   out.push({ ...known, source });
+  } else {
+   if (source === "opencode" && !isFreeCatalogId(model.id)) continue;
+   if (source === "kilo" && legacy && !isFreeCatalogId(model.id)) continue;
+   out.push({ ...model, source });
+  }
+  seen.add(model.id);
+ }
+ return out;
+}
+
+function mergeSourceSnapshots(
+ opencode: RegisteredModel[],
+ kilo: RegisteredModel[],
+): RegisteredModel[] {
+ const base = staticCatalog();
+ const knownIds = new Set(base.map((m) => m.id));
+ const zenIds = new Set(opencode.map((m) => m.id));
+ const kiloIds = new Set(kilo.map((m) => m.id));
+ const collisions = new Set(
+  [...zenIds].filter((id) => !knownIds.has(id) && kiloIds.has(id)),
+ );
+ for (const id of collisions) {
+  logWarn("Catalog rejected an unknown id claimed by both Zen and Kilo", { model: id });
+ }
+ const byId = new Map(base.map((m) => [m.id, m]));
+ for (const model of [...opencode, ...kilo]) {
+  if (!knownIds.has(model.id) && !collisions.has(model.id)) byId.set(model.id, model);
+ }
+ return [...byId.values()].filter((m) => !DEAD_MODEL_IDS.has(m.id));
 }
 
 /**
  * Overlay a refreshed model list onto a base list without dropping base entries.
- * Fresh entries win on id collision; unknown fresh ids are appended after the base.
- * Guards the background refresh against a partial upstream cache removing
- * verified static models from provider registration.
- * Filters pruned dead IDs so they never re-enter via fresh upstream data.
+ * Reviewed static definitions remain authoritative for known IDs; unknown free
+ * entries are appended after the base.
  */
 export function mergeCatalog(
  base: RegisteredModel[],
  fresh: RegisteredModel[],
 ): RegisteredModel[] {
- const filteredFresh = fresh.filter((m) => m && typeof m.id === "string" && isFreeCatalogId(m.id));
  const byId = new Map(base.map((m) => [m.id, m]));
- for (const m of filteredFresh) byId.set(m.id, m);
- // Sanitize the merged result so stale paid entries in a pre-fix base and
- // stale api fields on known models never survive the merge.
+ for (const model of sanitizeCatalogModels(fresh)) byId.set(model.id, model);
  return sanitizeCatalogModels([...byId.values()]);
+}
+
+let aliveCatalog: RegisteredModel[] = staticCatalog();
+let activeSourceById = new Map(aliveCatalog.map((m) => [m.id, m.source]));
+let lastCatalogCacheMtimeMs = -1;
+
+/** Return the current in-memory active catalog. */
+export function getAliveCatalog(): RegisteredModel[] {
+ return aliveCatalog;
+}
+
+/** Replace the active catalog and rebuild its runtime ID-to-source routing map. */
+export function setAliveCatalog(catalog: RegisteredModel[]): void {
+ aliveCatalog = catalog;
+ activeSourceById = new Map(catalog.map((m) => [m.id, m.source]));
+}
+
+/**
+ * Resolve a requested model against active catalog provenance. Static aliases
+ * are canonicalized first; only IDs absent from the active map fall back to the
+ * reviewed static routing table.
+ */
+export function getActiveModelUpstream(id: string): Upstream {
+ const clean = typeof id === "string" ? id.trim() : "";
+ const canonical = resolveCanonicalModelId(clean);
+ return activeSourceById.get(canonical) ?? getModelUpstream(canonical);
+}
+
+/**
+ * Resolve a request to an active canonical ID. Dynamic IDs must match exactly;
+ * only reviewed static aliases may rewrite to a different wire ID.
+ */
+export function resolveActiveModelId(id: string): string | null {
+ const clean = typeof id === "string" ? id.trim() : "";
+ if (!clean) return null;
+ if (activeSourceById.has(clean)) return clean;
+ const canonical = resolveCanonicalModelId(clean);
+ return canonical !== clean && MODEL_MAP.has(canonical) ? canonical : null;
 }
 
 /**
@@ -402,188 +469,524 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
  };
 }
 
+function rawCatalogList(body: unknown): unknown[] {
+ if (Array.isArray(body)) return body;
+ if (body !== null && typeof body === "object" && !Array.isArray(body) && "data" in body) {
+  const data = (body as Record<string, unknown>).data;
+  return Array.isArray(data) ? data : [];
+ }
+ return [];
+}
+
+function positiveNumber(value: unknown): number | null {
+ return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function zeroPrice(value: unknown): boolean {
+ if (typeof value === "number") return Number.isFinite(value) && value === 0;
+ if (typeof value !== "string" || value.trim() === "") return false;
+ const parsed = Number(value);
+ return Number.isFinite(parsed) && parsed === 0;
+}
+
 /**
- * Read cached catalog data from disk if valid and unexpired.
- * Filters out pruned dead IDs so stale disk entries never repopulate the catalog.
- * Preserves etag for conditional If-None-Match requests.
+ * Parse the authoritative Kilo listing. Unknown rows enter only when Kilo
+ * explicitly marks them free, prices both directions at zero, advertises text
+ * output and tool use, and supplies positive context/output limits.
  */
-export function readCatalogCache(): CatalogCacheData | null {
+export function parseKiloCatalogResponse(body: unknown): RegisteredModel[] {
+ const parsed: RegisteredModel[] = [];
+ for (const item of rawCatalogList(body)) {
+  if (item === null || typeof item !== "object" || Array.isArray(item)) continue;
+  const row = item as Record<string, unknown>;
+  const id = typeof row.id === "string" ? row.id.trim() : "";
+  const name = typeof row.name === "string" ? row.name.trim() : "";
+  if (!id || !name || DEAD_MODEL_IDS.has(id) || row.isFree !== true) continue;
+  const pricing = row.pricing !== null && typeof row.pricing === "object" && !Array.isArray(row.pricing)
+   ? row.pricing as Record<string, unknown>
+   : null;
+  if (!pricing || !zeroPrice(pricing.prompt) || !zeroPrice(pricing.completion)) continue;
+  const architecture = row.architecture !== null && typeof row.architecture === "object" && !Array.isArray(row.architecture)
+   ? row.architecture as Record<string, unknown>
+   : null;
+  const outputModalities = architecture && Array.isArray(architecture.output_modalities)
+   ? architecture.output_modalities
+   : [];
+  if (!outputModalities.includes("text")) continue;
+  const supported = Array.isArray(row.supported_parameters) ? row.supported_parameters : [];
+  if (!supported.includes("tools")) continue;
+  const topProvider = row.top_provider !== null && typeof row.top_provider === "object" && !Array.isArray(row.top_provider)
+   ? row.top_provider as Record<string, unknown>
+   : null;
+  const contextWindow = positiveNumber(row.context_length) ?? positiveNumber(topProvider?.context_length);
+  const maxTokens = positiveNumber(topProvider?.max_completion_tokens);
+  if (contextWindow === null || maxTokens === null) continue;
+
+  const inputModalities = architecture && Array.isArray(architecture.input_modalities)
+   ? architecture.input_modalities.filter((v): v is "text" | "image" => v === "text" || v === "image")
+   : [];
+  const opencode = row.opencode !== null && typeof row.opencode === "object" && !Array.isArray(row.opencode)
+   ? row.opencode as Record<string, unknown>
+   : null;
+  const reasoningOptions = opencode && Array.isArray(opencode.reasoning_options)
+   ? opencode.reasoning_options
+   : [];
+  const advertised = new Set<string>();
+  for (const option of reasoningOptions) {
+   if (option === null || typeof option !== "object" || Array.isArray(option)) continue;
+   const rec = option as Record<string, unknown>;
+   if (rec.type !== "effort" || !Array.isArray(rec.values)) continue;
+   for (const value of rec.values) if (typeof value === "string") advertised.add(value);
+  }
+  const thinkingLevelMap: NonNullable<RegisteredModel["thinkingLevelMap"]> = { off: null };
+  for (const level of ["minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+   if (advertised.has(level)) thinkingLevelMap[level] = level;
+  }
+  const reasoning = advertised.size > 0 || supported.includes("reasoning") || supported.includes("reasoning_effort");
+  const known = MODEL_MAP.get(id);
+  parsed.push(known ? { ...known, source: "kilo" } : {
+   id,
+   name,
+   source: "kilo",
+   reasoning,
+   contextWindow,
+   maxTokens,
+   input: inputModalities.length > 0 ? inputModalities : ["text"],
+   thinkingFormat: "openrouter",
+   thinkingLevelMap: Object.keys(thinkingLevelMap).length > 1 ? thinkingLevelMap : undefined,
+  });
+ }
+ return sanitizeSourceSnapshot(parsed, "kilo", false);
+}
+
+function parseZenCatalogResponse(body: unknown): RegisteredModel[] {
+ const rows = rawCatalogList(body).filter((item): item is RawModelItem =>
+  item !== null && typeof item === "object" && !Array.isArray(item) &&
+  typeof (item as Record<string, unknown>).id === "string"
+ );
+ return sanitizeSourceSnapshot(
+  rows.filter((row) => isFreeCatalogId(row.id)).map((row) => enrichModelDef(row, "opencode")),
+  "opencode",
+  false,
+ );
+}
+
+interface LoadedCatalogCache {
+ data: CatalogCacheData;
+ opencode: CatalogSourceCacheData;
+ kilo: CatalogSourceCacheData;
+}
+
+function emptySourceCache(): CatalogSourceCacheData {
+ return { timestamp: 0, ids: [], models: [] };
+}
+
+function normalizeSourceCache(
+ raw: unknown,
+ source: DynamicCatalogSource,
+ legacy: boolean,
+): CatalogSourceCacheData {
+ if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return emptySourceCache();
+ const rec = raw as Record<string, unknown>;
+ const models = Array.isArray(rec.models)
+  ? sanitizeSourceSnapshot(rec.models as RegisteredModel[], source, legacy)
+  : [];
+ return {
+  timestamp: typeof rec.timestamp === "number" && Number.isFinite(rec.timestamp) ? rec.timestamp : 0,
+  ids: models.map((m) => m.id),
+  models,
+  etag: typeof rec.etag === "string" && rec.etag ? rec.etag : undefined,
+ };
+}
+
+function normalizeCatalogCache(raw: unknown): LoadedCatalogCache | null {
+ if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+ const cache = raw as CatalogCacheData;
+ let opencode: CatalogSourceCacheData;
+ let kilo: CatalogSourceCacheData;
+ const legacy = cache.version !== 2 || cache.sources === undefined;
+ if (!legacy) {
+  opencode = normalizeSourceCache(cache.sources?.opencode, "opencode", false);
+  kilo = normalizeSourceCache(cache.sources?.kilo, "kilo", false);
+ } else {
+  if (!Array.isArray(cache.models)) return null;
+  const timestamp = typeof cache.timestamp === "number" && Number.isFinite(cache.timestamp) ? cache.timestamp : 0;
+  const zenIds = new Set(Array.isArray(cache.opencode) ? cache.opencode : []);
+  const kiloIds = new Set(Array.isArray(cache.kilo) ? cache.kilo : []);
+  const zenRows: RegisteredModel[] = [];
+  const kiloRows: RegisteredModel[] = [];
+  for (const model of cache.models) {
+   if (!isUsableRegisteredModel(model) || DEAD_MODEL_IDS.has(model.id)) continue;
+   const knownSource = MODEL_MAP.has(model.id) ? getModelUpstream(model.id) : undefined;
+   const claims = new Set<DynamicCatalogSource>();
+   if (model.source === "opencode" || model.source === "kilo") claims.add(model.source);
+   if (zenIds.has(model.id)) claims.add("opencode");
+   if (kiloIds.has(model.id)) claims.add("kilo");
+   const source = knownSource === "opencode" || knownSource === "kilo"
+    ? knownSource
+    : claims.size === 1
+     ? [...claims][0]
+     : undefined;
+   if (source === "opencode") zenRows.push(model);
+   if (source === "kilo") kiloRows.push(model);
+  }
+  opencode = {
+   timestamp,
+   ids: [],
+   models: sanitizeSourceSnapshot(zenRows, "opencode", true),
+   etag: typeof cache.etag === "string" && cache.etag ? cache.etag : undefined,
+  };
+  kilo = {
+   timestamp,
+   ids: [],
+   models: sanitizeSourceSnapshot(kiloRows, "kilo", true),
+  };
+  opencode.ids = opencode.models.map((m) => m.id);
+  kilo.ids = kilo.models.map((m) => m.id);
+ }
+ const models = mergeSourceSnapshots(opencode.models, kilo.models);
+ const timestamp = Math.max(opencode.timestamp, kilo.timestamp);
+ return {
+  data: {
+   version: 2,
+   sources: { opencode, kilo },
+   timestamp,
+   opencode: opencode.ids,
+   kilo: kilo.ids,
+   models,
+   etag: opencode.etag,
+  },
+  opencode,
+  kilo,
+ };
+}
+
+function readAnyCatalogCache(): LoadedCatalogCache | null {
  try {
-  if (!fs.existsSync(CATALOG_CACHE_FILE)) {
-   return null;
-  }
-  const raw = fs.readFileSync(CATALOG_CACHE_FILE, "utf8");
-  const data = JSON.parse(raw) as CatalogCacheData;
-  if (!Array.isArray(data.models)) {
-   return null;
-  }
-  data.models = sanitizeCatalogModels(data.models);
-  if (Date.now() - data.timestamp < CATALOG_CACHE_TTL_MS) {
-   return data;
-  }
+  if (!fs.existsSync(CATALOG_CACHE_FILE)) return null;
+  return normalizeCatalogCache(JSON.parse(fs.readFileSync(CATALOG_CACHE_FILE, "utf8")));
  } catch (err) {
   logDebug("Failed reading catalog cache", { error: String(err) });
+  return null;
+ }
+}
+
+/** Read the versioned catalog cache when at least one source snapshot is fresh. */
+export function readCatalogCache(): CatalogCacheData | null {
+ const loaded = readAnyCatalogCache();
+ if (!loaded) return null;
+ const freshest = Math.max(loaded.opencode.timestamp, loaded.kilo.timestamp);
+ return Date.now() - freshest < CATALOG_CACHE_TTL_MS ? loaded.data : null;
+}
+
+function tryWriteCatalogCache(data: CatalogCacheData): boolean {
+ try {
+  const dir = path.dirname(CATALOG_CACHE_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  writeFileAtomic(CATALOG_CACHE_FILE, JSON.stringify(data, null, 2));
+  return true;
+ } catch (err) {
+  logWarn("Could not persist catalog cache to disk", { error: String(err) });
+  return false;
+ }
+}
+
+/** Atomically write catalog cache data to disk without surfacing disk errors. */
+export function writeCatalogCache(data: CatalogCacheData): void {
+ tryWriteCatalogCache(data);
+}
+
+const CATALOG_LOCK_STALE_MS = 30_000;
+const CATALOG_LOCK_ATTEMPTS = 100;
+
+function removeCatalogLock(owner: string): boolean {
+ try {
+  if (fs.readFileSync(CATALOG_CACHE_LOCK_FILE, "utf8") !== owner) return false;
+  fs.rmSync(CATALOG_CACHE_LOCK_FILE);
+  return true;
+ } catch {
+  return false;
+ }
+}
+
+function hasLiveOwner(owner: string): boolean {
+ const match = /^([1-9]\d*):/.exec(owner);
+ if (!match) return false;
+ const pid = Number(match[1]);
+ if (!Number.isSafeInteger(pid)) return false;
+ try {
+  process.kill(pid, 0);
+  return true;
+ } catch (err) {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return code === "EPERM" || code === "EACCES";
+ }
+}
+
+async function acquireCatalogLock(): Promise<string | null> {
+ const dir = path.dirname(CATALOG_CACHE_LOCK_FILE);
+ try {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+ } catch {
+  return null;
+ }
+ for (let attempt = 0; attempt < CATALOG_LOCK_ATTEMPTS; attempt++) {
+  const owner = `${process.pid}:${randomUUID()}`;
+  try {
+   fs.writeFileSync(CATALOG_CACHE_LOCK_FILE, owner, { flag: "wx" });
+   return owner;
+  } catch (err) {
+   if ((err as NodeJS.ErrnoException | null)?.code !== "EEXIST") return null;
+   try {
+    const staleOwner = fs.readFileSync(CATALOG_CACHE_LOCK_FILE, "utf8");
+    if (
+     Date.now() - fs.statSync(CATALOG_CACHE_LOCK_FILE).mtimeMs > CATALOG_LOCK_STALE_MS &&
+     !hasLiveOwner(staleOwner)
+    ) {
+     removeCatalogLock(staleOwner);
+     continue;
+    }
+   } catch {
+    continue;
+   }
+   await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
  }
  return null;
 }
 
-/**
- * Atomically write catalog cache data to disk (temp file + rename, see
- * src/atomic-write.ts).
- * Persists etag alongside models for subsequent If-None-Match conditional requests.
- * Note: fsync not needed — rename is atomic on same filesystem; crash leaves either old or new file intact.
- */
-export function writeCatalogCache(data: CatalogCacheData): void {
+function newestSource(
+ current: CatalogSourceCacheData,
+ latest: CatalogSourceCacheData,
+ status: CatalogSourceRefreshStatus,
+): CatalogSourceCacheData {
+ if (status.outcome === "updated" || status.outcome === "not-modified") {
+  return latest.timestamp > current.timestamp ? latest : current;
+ }
+ return latest.models.length > 0 || latest.timestamp > current.timestamp ? latest : current;
+}
+
+async function persistSourceCaches(
+ opencode: CatalogSourceCacheData,
+ kilo: CatalogSourceCacheData,
+ zenStatus: CatalogSourceRefreshStatus,
+ kiloStatus: CatalogSourceRefreshStatus,
+): Promise<{ opencode: CatalogSourceCacheData; kilo: CatalogSourceCacheData } | null> {
+ const owner = await acquireCatalogLock();
+ if (owner === null) {
+  logWarn("Could not acquire catalog cache lock; retaining durable catalog");
+  return null;
+ }
  try {
-  const dir = path.dirname(CATALOG_CACHE_FILE);
-  if (!fs.existsSync(dir)) {
-   fs.mkdirSync(dir, { recursive: true });
-  }
-  writeFileAtomic(CATALOG_CACHE_FILE, JSON.stringify(data, null, 2));
- } catch (err) {
-  logWarn("Could not persist catalog cache to disk", { error: String(err) });
+  const latest = readAnyCatalogCache();
+  const committed = {
+   opencode: newestSource(opencode, latest?.opencode ?? emptySourceCache(), zenStatus),
+   kilo: newestSource(kilo, latest?.kilo ?? emptySourceCache(), kiloStatus),
+  };
+  return tryWriteCatalogCache({ version: 2, sources: committed }) ? committed : null;
+ } finally {
+  removeCatalogLock(owner);
  }
 }
 
 /**
- * Refresh the free model catalog from the OpenCode Zen listing. Only Zen is
- * fetched — Kilo ids stay static (merged from ALL_MODELS; the cache's kilo
- * field is preserved but never re-fetched), so Kilo entries change only in
- * src/models.ts.
- * Uses ETag conditional requests (If-None-Match) to avoid re-merging unchanged
- * catalogs; a 304 Not Modified response skips merge and returns the in-memory
- * catalog unchanged. Falls back gracefully to cached or static models if network
- * requests fail.
+ * Pull a newer cache written by the host process into the detached proxy. The
+ * mtime guard keeps steady-state requests to one stat and rebuilds provenance
+ * only after a successful catalog write.
  */
-export async function refreshCatalog(force = false): Promise<RegisteredModel[]> {
- // Thin provider: serve fresh disk cache instantly when valid. The cache is
- // overlayed on the static base rather than replacing it, so a cache written
- // before a model was added to the catalog (or pruned from it) cannot drop
- // models the host still registers.
- const staticBase: RegisteredModel[] = ALL_MODELS.map((m) => ({ ...m, source: getModelUpstream(m.id) }));
- const disk = readCatalogCache();
- if (disk && Array.isArray(disk.models) && disk.models.length > 0) {
-  const age = Date.now() - (disk.timestamp ?? 0);
-  if (!force && age < CATALOG_CACHE_TTL_MS) {
-   aliveCatalog = mergeCatalog(staticBase, sanitizeCatalogModels(disk.models));
-   return aliveCatalog;
-  }
- }
-
- // Resolve etag from fresh or stale cache for conditional request
- let cachedEtag: string | undefined = disk?.etag;
- let staleForEtag: CatalogCacheData | null = disk;
- if (!cachedEtag) {
-  try {
-   if (fs.existsSync(CATALOG_CACHE_FILE)) {
-    const raw = fs.readFileSync(CATALOG_CACHE_FILE, "utf8");
-    const stale = JSON.parse(raw) as CatalogCacheData;
-    cachedEtag = stale.etag;
-    staleForEtag = stale;
-   }
-  } catch (err) {
-   logDebug("Failed reading stale catalog cache for etag", { error: String(err) });
-  }
- }
-
- // Attempt a fetch whenever there is cache material to revalidate: conditional
- // with If-None-Match when we have an etag, plain otherwise. A pre-fix cache
- // file with no etag must still go live (acquiring an etag and discovering
- // new free models) instead of serving stale indefinitely. Corrupt/missing
- // caches (staleForEtag null) skip the network and fall through to static.
- if (cachedEtag || force || staleForEtag) {
-  try {
-   const headers: Record<string, string> = { ...opencodeHeaders() };
-   if (cachedEtag) {
-    headers["If-None-Match"] = cachedEtag;
-   }
-   const res = await fetch(`${OPENCODE_API_URL}/models`, {
-    headers,
-    // A hung upstream must not freeze /freeflow refresh: abort after
-    // CATALOG_REFRESH_TIMEOUT_MS and fall back to cache below.
-    signal: AbortSignal.timeout(CATALOG_REFRESH_TIMEOUT_MS),
-   });
-   if (res.status === 304) {
-    // Not modified upstream, but the cached list is still the only record of
-    // dynamically discovered ids this process never merged (a 304 revalidates
-    // before any 200 merge), so overlay it exactly like the stale-cache paths
-    // below instead of returning the untouched in-memory catalog.
-    if (staleForEtag && Array.isArray(staleForEtag.models) && staleForEtag.models.length > 0) {
-     aliveCatalog = mergeCatalog(aliveCatalog, sanitizeCatalogModels(staleForEtag.models));
-    }
-    // Extend the timestamp to avoid a tight loop on the same 304
-    if (staleForEtag && Array.isArray(staleForEtag.models)) {
-     try {
-      writeCatalogCache({ ...staleForEtag, timestamp: Date.now() });
-     } catch { }
-    }
-    return aliveCatalog;
-   }
-   if (res.ok) {
-    const newEtag = res.headers.get("etag") ?? res.headers.get("ETag") ?? cachedEtag;
-    const body: unknown = await res.json();
-    let rawList: RawModelItem[] = [];
-    if (Array.isArray(body)) {
-     rawList = body as RawModelItem[];
-    } else if (body !== null && typeof body === "object" && "data" in body) {
-     const dataVal = body.data as unknown;
-     if (Array.isArray(dataVal)) {
-      rawList = dataVal as RawModelItem[];
-     }
-    }
-    if (rawList.length > 0) {
-     const freeRawList = rawList.filter((r) => r && typeof r.id === "string" && isFreeCatalogId(r.id));
-     const fresh = freeRawList.map((r) => enrichModelDef(r, "opencode"));
-     const merged = mergeCatalog(aliveCatalog, fresh);
-     aliveCatalog = merged;
-     writeCatalogCache({
-      timestamp: Date.now(),
-      opencode: fresh.map((m) => m.id),
-      kilo: staleForEtag?.kilo ?? [],
-      models: merged,
-      etag: newEtag ?? cachedEtag,
-     });
-     return aliveCatalog;
-    }
-    // Empty payload but 200 — treat as no-op, return current
-    if (newEtag && newEtag !== cachedEtag && staleForEtag) {
-     writeCatalogCache({ ...staleForEtag, timestamp: Date.now(), etag: newEtag });
-    }
-    return aliveCatalog;
-   }
-  } catch (err) {
-   if ((err as Error)?.name === "AbortError") {
-    logWarn("Catalog refresh timed out — using cached/static fallback", {
-     timeoutMs: CATALOG_REFRESH_TIMEOUT_MS,
-    });
-   } else {
-    logDebug("Conditional catalog fetch failed, falling back to cache", { error: String(err) });
-   }
-  }
- }
-
- // Stale cache still better than empty — overlay it on the static base rather
- // than returning it as the catalog. A cache written before an id existed in
- // the static list can hold as many entries as the static set while missing
- // ids we ship today, so no "the cache is big enough" guard can be trusted;
- // the overlay keeps the static ids and adds whatever the cache knows.
- if (disk && Array.isArray(disk.models) && disk.models.length > 0) {
-  aliveCatalog = mergeCatalog(staticBase, sanitizeCatalogModels(disk.models));
-  return aliveCatalog;
- }
- // No valid fresh cache — try stale disk cache directly (readCatalogCache returns null when expired)
+export function syncAliveCatalogFromCache(): boolean {
  try {
-  if (fs.existsSync(CATALOG_CACHE_FILE)) {
-   const raw = fs.readFileSync(CATALOG_CACHE_FILE, "utf8");
-   const stale = JSON.parse(raw) as CatalogCacheData;
-   if (Array.isArray(stale.models) && stale.models.length > 0) {
-    aliveCatalog = mergeCatalog(staticBase, sanitizeCatalogModels(stale.models));
-    return aliveCatalog;
+  const mtimeMs = fs.statSync(CATALOG_CACHE_FILE).mtimeMs;
+  if (mtimeMs === lastCatalogCacheMtimeMs) return false;
+  lastCatalogCacheMtimeMs = mtimeMs;
+  const loaded = readAnyCatalogCache();
+  if (!loaded) return false;
+  setAliveCatalog(mergeSourceSnapshots(loaded.opencode.models, loaded.kilo.models));
+  return true;
+ } catch {
+  return false;
+ }
+}
+
+const emptyRefreshSourceStatus = (snapshot = emptySourceCache()): CatalogSourceRefreshStatus => ({
+ outcome: "fresh-cache",
+ usedCache: snapshot.models.length > 0,
+});
+
+let lastRefreshStatus: CatalogRefreshStatus = {
+ timestamp: 0,
+ forced: false,
+ opencode: emptyRefreshSourceStatus(),
+ kilo: emptyRefreshSourceStatus(),
+};
+
+/** Return a copy of the most recent per-source catalog refresh result. */
+export function getLastCatalogRefreshStatus(): CatalogRefreshStatus {
+ return {
+  ...lastRefreshStatus,
+  opencode: { ...lastRefreshStatus.opencode },
+  kilo: { ...lastRefreshStatus.kilo },
+ };
+}
+
+interface SourceRefreshResult {
+ snapshot: CatalogSourceCacheData;
+ status: CatalogSourceRefreshStatus;
+}
+
+async function refreshSource(
+ source: DynamicCatalogSource,
+ previous: CatalogSourceCacheData,
+): Promise<SourceRefreshResult> {
+ const headers: Record<string, string> = source === "opencode"
+  ? { ...opencodeHeaders() }
+  : { Accept: "application/json" };
+ if (previous.etag) headers["If-None-Match"] = previous.etag;
+ const url = source === "opencode" ? `${OPENCODE_API_URL}/models` : KILO_CATALOG_URL;
+ try {
+  const response = await fetch(url, {
+   headers,
+   signal: AbortSignal.timeout(CATALOG_REFRESH_TIMEOUT_MS),
+  });
+  if (response.status === 304) {
+   if (previous.models.length === 0) {
+    return {
+     snapshot: previous,
+     status: { outcome: "failed", usedCache: false, detail: "304 without a cached snapshot" },
+    };
+   }
+   const etag = response.headers.get("etag") ?? previous.etag;
+   return {
+    snapshot: { ...previous, timestamp: Date.now(), etag },
+    status: { outcome: "not-modified", usedCache: true },
+   };
+  }
+  if (!response.ok) {
+   return {
+    snapshot: previous,
+    status: { outcome: "failed", usedCache: previous.models.length > 0, detail: `HTTP ${response.status}` },
+   };
+  }
+  const body: unknown = await response.json();
+  const models = source === "opencode" ? parseZenCatalogResponse(body) : parseKiloCatalogResponse(body);
+  if (models.length === 0) {
+   return {
+    snapshot: previous,
+    status: { outcome: "failed", usedCache: previous.models.length > 0, detail: "empty or malformed listing" },
+   };
+  }
+  const etag = response.headers.get("etag") ?? undefined;
+  return {
+   snapshot: {
+    timestamp: Date.now(),
+    ids: models.map((m) => m.id),
+    models,
+    etag: etag ?? undefined,
+   },
+   status: { outcome: "updated", usedCache: false },
+  };
+ } catch (err) {
+  const name = (err as Error)?.name;
+  const timedOut = name === "AbortError" || name === "TimeoutError";
+  return {
+   snapshot: previous,
+   status: {
+    outcome: "failed",
+    usedCache: previous.models.length > 0,
+    detail: timedOut ? `timeout after ${CATALOG_REFRESH_TIMEOUT_MS}ms` : String(err),
+   },
+  };
+ }
+}
+
+/**
+ * Refresh Zen and Kilo independently. Fresh snapshots short-circuit by source;
+ * stale sources fetch concurrently, and any failed source retains only its own
+ * cached rows while the other can update normally.
+ */
+async function refreshCatalogOnce(force: boolean): Promise<RegisteredModel[]> {
+ const loaded = readAnyCatalogCache();
+ let opencode = loaded?.opencode ?? emptySourceCache();
+ let kilo = loaded?.kilo ?? emptySourceCache();
+ const durableCatalog = mergeSourceSnapshots(opencode.models, kilo.models);
+ setAliveCatalog(durableCatalog);
+
+ const now = Date.now();
+ const zenFresh = now - opencode.timestamp < CATALOG_CACHE_TTL_MS;
+ const kiloFresh = now - kilo.timestamp < CATALOG_CACHE_TTL_MS;
+ const work: Promise<void>[] = [];
+ let zenStatus = emptyRefreshSourceStatus(opencode);
+ let kiloStatus = emptyRefreshSourceStatus(kilo);
+ if (force || !zenFresh) {
+  work.push(refreshSource("opencode", opencode).then((result) => {
+   opencode = result.snapshot;
+   zenStatus = result.status;
+  }));
+ }
+ if (force || !kiloFresh) {
+  work.push(refreshSource("kilo", kilo).then((result) => {
+   kilo = result.snapshot;
+   kiloStatus = result.status;
+  }));
+ }
+ await Promise.all(work);
+
+ const succeeded = [zenStatus, kiloStatus].some((status) =>
+  status.outcome === "updated" || status.outcome === "not-modified"
+ );
+ if (succeeded) {
+  const committed = await persistSourceCaches(opencode, kilo, zenStatus, kiloStatus);
+  if (committed) {
+   opencode = committed.opencode;
+   kilo = committed.kilo;
+   if (zenStatus.outcome === "failed" || zenStatus.outcome === "fresh-cache") {
+    zenStatus = { ...zenStatus, usedCache: opencode.models.length > 0 };
+   }
+   if (kiloStatus.outcome === "failed" || kiloStatus.outcome === "fresh-cache") {
+    kiloStatus = { ...kiloStatus, usedCache: kilo.models.length > 0 };
+   }
+   setAliveCatalog(mergeSourceSnapshots(opencode.models, kilo.models));
+  } else {
+   const persistenceFailure = (status: CatalogSourceRefreshStatus, cached: CatalogSourceCacheData): CatalogSourceRefreshStatus =>
+    status.outcome === "updated" || status.outcome === "not-modified"
+     ? { outcome: "failed", usedCache: cached.models.length > 0, detail: "catalog cache persistence failed" }
+     : status;
+   zenStatus = persistenceFailure(zenStatus, loaded?.opencode ?? emptySourceCache());
+   kiloStatus = persistenceFailure(kiloStatus, loaded?.kilo ?? emptySourceCache());
+    setAliveCatalog(durableCatalog);
+   }
+  } else {
+   const latest = readAnyCatalogCache();
+   if (latest) {
+    if (latest.opencode.timestamp > opencode.timestamp) opencode = latest.opencode;
+    if (latest.kilo.timestamp > kilo.timestamp) kilo = latest.kilo;
+    zenStatus = { ...zenStatus, usedCache: opencode.models.length > 0 };
+    kiloStatus = { ...kiloStatus, usedCache: kilo.models.length > 0 };
+    setAliveCatalog(mergeSourceSnapshots(opencode.models, kilo.models));
    }
   }
- } catch (err) {
-  logDebug("Failed reading stale catalog cache", { error: String(err) });
+ lastRefreshStatus = {
+  timestamp: Date.now(),
+  forced: force,
+  opencode: zenStatus,
+  kilo: kiloStatus,
+ };
+ for (const [source, status] of [["Zen", zenStatus], ["Kilo", kiloStatus]] as const) {
+  if (status.outcome === "failed") {
+   logWarn(`${source} catalog refresh failed; retaining its cached/static rows`, { detail: status.detail });
+  }
  }
- // No usable cache — return the in-memory static-backed catalog (host will refresh if needed)
  return aliveCatalog;
+}
+
+let refreshQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Refresh the catalog without allowing overlapping callers in this process to
+ * race. Cross-process commits are separately locked and merged from disk.
+ */
+export function refreshCatalog(force = false): Promise<RegisteredModel[]> {
+ const result = refreshQueue.then(() => refreshCatalogOnce(force));
+ refreshQueue = result.then(() => undefined, () => undefined);
+ return result;
 }

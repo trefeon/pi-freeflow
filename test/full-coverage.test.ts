@@ -232,9 +232,9 @@ test("catalog ETag 304 extends timestamp", async () => {
   globalThis.fetch = (async () => new Response(null, { status: 304, headers: { etag: "etag-1" } })) as unknown as typeof fetch;
   try {
    const { refreshCatalog } = await import("../src/catalog.ts");
-   const before = readCatalogCache()!.timestamp;
+   const before = readCatalogCache()!.timestamp ?? 0;
    await refreshCatalog(false);
-   const after = readCatalogCache()!.timestamp;
+   const after = readCatalogCache()!.timestamp ?? 0;
    assert.ok(after >= before);
   } finally {
    globalThis.fetch = orig;

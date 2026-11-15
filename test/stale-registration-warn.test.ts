@@ -2,8 +2,8 @@
  * Stale provider-registration guard (src/proxy.ts): a model whose catalog
  * entry declares an `api` flavor but arrives on the wrong path means the
  * host still holds a pre-fix provider registration. The proxy logs a
- * "stale provider registration" warning and still proxies the request
- * (warn-only, never blocked). A model on its matching path warns nothing.
+ * "stale provider registration" warning and still proxies an active request
+ * (warn-only for catalog entries). A model on its matching path warns nothing.
  *
  * NOTE: only models with a declared `api` can reach that branch, and since
  * 2026-10-22 the static catalog declares none — the Zen muse-spark contributor
@@ -24,9 +24,8 @@ import { ALL_MODELS } from "../src/models.ts";
 import { authHeaders } from "./_auth.ts";
 
 const CHAT_MODEL = "mimo-v2.6-flash-free";
-// A host that upgraded from a pre-2026-10-22 build still holds this retired
-// Cline id in its provider registration; the proxy sees an id it has no
-// definition for and must neither warn nor block it.
+// A host that upgraded from a pre-2026-10-22 build can still hold this retired
+// Cline id in its provider registration. It is no longer in the active catalog.
 const RETIRED_CLINE_MODEL = "cline-free/muse-spark-1.3-contributor";
 
 const CHAT_SSE = 'data: {"id":"chatcmpl-1","model":"x","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}\n\ndata: [DONE]\n\n';
@@ -99,12 +98,14 @@ test("stale registration guard is dormant: no static model declares a non-chat a
 
  await withProxy(async (port) => {
   const before = warnCount();
-  // A stale host still holding the retired Cline id: no definition, so the
-  // request is proxied and never warned about.
-  const chat = await post(port, "/v1/chat/completions", { model: RETIRED_CLINE_MODEL, messages: [{ role: "user", content: "hi" }], stream: false });
-  assert.equal(chat.status, 200, "a retired id must still proxy instead of being rejected by the proxy itself");
-  const messages = await post(port, "/v1/messages", { model: RETIRED_CLINE_MODEL, messages: [{ role: "user", content: "hi" }] });
-  assert.notEqual(messages.status, 400, "a retired id on /v1/messages must not be rejected by the proxy itself");
+   // A stale host still holding the retired Cline id receives the same local
+   // catalog rejection as every other unknown model, without a stale-path warning.
+   const chat = await post(port, "/v1/chat/completions", { model: RETIRED_CLINE_MODEL, messages: [{ role: "user", content: "hi" }], stream: false });
+   assert.equal(chat.status, 400);
+   assert.equal(JSON.parse(chat.text).error.code, "model_not_found");
+   const messages = await post(port, "/v1/messages", { model: RETIRED_CLINE_MODEL, messages: [{ role: "user", content: "hi" }] });
+   assert.equal(messages.status, 400);
+   assert.equal(JSON.parse(messages.text).error.code, "model_not_found");
   assert.equal(newWarnsSince(before).length, 0, "an id with no catalog definition must never warn");
  });
 });

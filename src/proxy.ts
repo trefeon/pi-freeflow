@@ -16,7 +16,12 @@ import {
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
-import { getAliveCatalog } from "./catalog.ts";
+import {
+ getActiveModelUpstream,
+ getAliveCatalog,
+ resolveActiveModelId,
+ syncAliveCatalogFromCache,
+} from "./catalog.ts";
 import {
  ALLOWED_METHODS,
  ALLOWED_PATH_PATTERN,
@@ -44,14 +49,7 @@ import {
  type FindGlobRestore,
 } from "./opencode-fingerprint.ts";
 import { isDebugEnabled, log } from "./logger.ts";
-import {
- getModelUpstream,
- isClineModel,
- isOvhModel,
- KILO_MODEL_IDS,
- MODEL_MAP,
- resolveCanonicalModelId,
-} from "./models.ts";
+import { MODEL_MAP } from "./models.ts";
 import { fetchZenDirectViaSidecar, resolveZenSidecarScript, resolveZenTransport } from "./zen-transport.ts";
 import type { ZenTransportMode } from "./zen-transport.ts";
 import { relayFetch } from "./relay.ts";
@@ -564,6 +562,7 @@ export function startProxy(
    const realPort = addr && typeof addr === "object" ? (addr as { port: number }).port : basePort;
    if (handleHealthRequest(req, res, realPort, getActiveRequests())) return;
   }
+  syncAliveCatalogFromCache();
   if (req.method === "GET" && (reqPathname === "/v1/models" || reqPathname === "/v1/models/")) {
    const alive = getAliveCatalog();
    const body = JSON.stringify({
@@ -654,18 +653,31 @@ export function startProxy(
    try {
     parsedBody = JSON.parse(bodyStr);
     if (typeof parsedBody?.model === "string") {
-     const canonical = resolveCanonicalModelId(parsedBody.model);
+     const requested = parsedBody.model;
+     const canonical = resolveActiveModelId(requested);
+     if (canonical === null) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+       error: {
+        message: `Model '${requested}' is not in the active free catalog`,
+        type: "invalid_request_error",
+        code: "model_not_found",
+       },
+      }));
+      return;
+     }
      if (canonical !== parsedBody.model) {
       parsedBody.model = canonical;
       bodyModified = true;
      } else {
       parsedBody.model = canonical;
      }
-     if (isClineModel(canonical)) {
+     const source = getActiveModelUpstream(canonical);
+     if (source === "cline") {
       isCline = true;
-     } else if (isOvhModel(canonical)) {
+     } else if (source === "ovh") {
       isOvh = true;
-     } else if (KILO_MODEL_IDS.has(canonical)) {
+     } else if (source === "kilo") {
       isKilo = true;
      }
     }

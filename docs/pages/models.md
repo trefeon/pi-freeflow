@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **32 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
+pi-freeflow provides a **30-model bundled, verified baseline** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**. Compatible free Kilo models can increase the live picker count without a package update.
 
 ## Upstream Protocol Distinction
 
@@ -22,7 +22,7 @@ pi-freeflow provides unified access to **32 curated free models** across four up
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: keyless — no `Authorization` header at all (the gateway rejects a placeholder credential with `401 INVALID_TOKEN`; 200 req/hr per IP)
-- **Models**: 10 models with OpenRouter-style thinking format
+- **Models**: 10 bundled baseline models with OpenRouter-style thinking format, plus compatible free models discovered from Kilo's authoritative listing
 
 ### Cline (`/api/v1/chat/completions`)
 - **Endpoint**: `https://api.cline.bot/api/v1/chat/completions`
@@ -37,7 +37,7 @@ pi-freeflow provides unified access to **32 curated free models** across four up
 - **Routing**: direct or through the relay pool (`https://oai.endpoints.kepler.ai.cloud.ovh.net` allowlisted)
 - **Config**: `api: "openai-completions"`. Chat is the only upstream shape: OVH's responses endpoint rejects every array `input` with `422 input: data did not match any variant of untagged enum ResponseInput` and accepts only a bare string, so a responses-path request is translated to chat upstream and the answer mapped back — the same shape mapping the Cline lane uses.
 
-## 30 Model Specifications
+## Bundled 30 Model Specifications
 
 ### OpenCode Zen (11 models)
 | Model ID | Context | Max Output | Thinking | Vision |
@@ -54,7 +54,9 @@ pi-freeflow provides unified access to **32 curated free models** across four up
 | `iceman-free` | 262,144 | 131,072 | low, high, max | ❌ |
 | `inkling-2-small-free` | 1,048,576 | 131,072 | minimal..max | ✅ |
 
-### KiloCode Gateway (10 models)
+### KiloCode Gateway (10-model bundled baseline)
+
+The table below is the reviewed offline baseline. Every 24 hours, and whenever `/freeflow refresh` runs, pi-freeflow independently checks Kilo's authoritative model listing. A new row is added dynamically only when Kilo explicitly marks it free, reports zero prompt and completion prices, advertises text output and tool use, and supplies positive context and output limits. Dynamic rows use their canonical Kilo IDs and upstream names; no aliases or inferred capabilities are invented. A failed or malformed Kilo refresh keeps its previous snapshot, while a successful listing removes dynamic rows Kilo has withdrawn. Bundled rows remain authoritative until a package update deliberately retires them.
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -106,6 +108,7 @@ pi-freeflow configures models using a rigorous multi-source validation pipeline 
 | **OpenRouter** | [`https://openrouter.ai/api/v1/models`](https://openrouter.ai/api/v1/models) | Sibling-lane cross-validation for gateway specifications, input modalities, and token pricing floors. |
 | **OMP Built-in Catalog** | `reference/oh-my-pi/packages/catalog/src/models.json` | Authoritative coding-agent catalog grounding tested specifications across 75+ active providers. |
 | **Live Upstream Probing** | Active gateway endpoints (`/inference/v1`, `/gateway/chat/completions`) | Protocol/tool-support and runtime-cap verification. A lower measured cap does not lower a published spec; it is surfaced as the authentic upstream error. |
+| **Kilo Gateway Listing** | `https://api.kilo.ai/api/gateway/models` | Dynamic Kilo admission from explicit free/pricing/tool/modality/limit metadata. Discovery does not send inference probes. |
 
 ### Highest-Published-Spec Twin Configuration Policy
 
@@ -121,7 +124,7 @@ When a model is available under multiple twin names (e.g. `deepseek-v4.1-flash-f
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :---: | :--- | :--- | :--- |
 | **OpenCode Zen** | 11 | `opencode.ai/inference` | `/inference/v1` (Chat; the Responses lane is wired for future ids) | `Bearer public` |
-| **KiloCode Gateway** | 10 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
+| **KiloCode Gateway** | 10 baseline + discovered | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
 | **Cline** | 1 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 | **OVHcloud AI Endpoints** | 8 | `oai.endpoints.kepler.ai.cloud.ovh.net` | `/v1/chat/completions` (responses path translated) | Keyless, anonymous |
 ## Stealth previews

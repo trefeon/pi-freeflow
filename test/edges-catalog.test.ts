@@ -10,16 +10,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
- enrichModelDef,
- isFreeCatalogId,
- mergeCatalog,
- sanitizeCatalogModels,
- readCatalogCache,
- refreshCatalog,
- setAliveCatalog,
- writeCatalogCache,
+	enrichModelDef,
+	getAliveCatalog,
+	isFreeCatalogId,
+	mergeCatalog,
+	sanitizeCatalogModels,
+	readCatalogCache,
+	refreshCatalog,
+	setAliveCatalog,
+	writeCatalogCache,
 } from "../src/catalog.ts";
-import { CATALOG_CACHE_FILE, CATALOG_CACHE_TTL_MS } from "../src/config.ts";
+import { CATALOG_CACHE_FILE, CATALOG_CACHE_LOCK_FILE, CATALOG_CACHE_TTL_MS } from "../src/config.ts";
 import { ALL_MODELS, OVH_MODELS } from "../src/models.ts";
 import type { RegisteredModel } from "../src/types.ts";
 
@@ -37,16 +38,22 @@ async function withCacheFileIsolation(
 ): Promise<void> {
  const existed = fs.existsSync(CATALOG_CACHE_FILE);
  const backup = existed ? fs.readFileSync(CATALOG_CACHE_FILE, "utf8") : "";
+	const lockExisted = fs.existsSync(CATALOG_CACHE_LOCK_FILE);
+	const lockBackup = lockExisted ? fs.readFileSync(CATALOG_CACHE_LOCK_FILE, "utf8") : "";
+	const catalogBefore = getAliveCatalog();
  const realFetch = globalThis.fetch;
  try {
   await fn();
  } finally {
   globalThis.fetch = realFetch;
+		setAliveCatalog(catalogBefore);
   if (existed) {
    fs.writeFileSync(CATALOG_CACHE_FILE, backup, "utf8");
   } else {
    fs.rmSync(CATALOG_CACHE_FILE, { force: true });
   }
+		if (lockExisted) fs.writeFileSync(CATALOG_CACHE_LOCK_FILE, lockBackup, "utf8");
+		else fs.rmSync(CATALOG_CACHE_LOCK_FILE, { force: true });
  }
 }
 
@@ -229,7 +236,7 @@ test("stale cache without etag drops the retired Cline Muse Spark entry (issue #
    throw new Error("offline fallback");
   };
   const result = await refreshCatalog(false);
-  assert.equal(calls, 1, "etagless stale cache must attempt one plain revalidation fetch");
+   assert.equal(calls, 2, "etagless stale cache must revalidate Zen and Kilo independently");
   const spark = result.find((m) => m.id === "cline-free/muse-spark-1.3-contributor");
   assert.equal(spark, undefined, "the retired Cline entry must not survive a stale cache");
   assert.ok(
@@ -399,5 +406,100 @@ test("readCatalogCache purges paid ids persisted by pre-fix refreshes (issue #6)
   const cached = readCatalogCache();
   assert.ok(cached);
   assert.equal((cached.models ?? []).some((m) => m.id === "claude-fable-5-1"), false);
+ });
+});
+
+test("a successful refresh migrates the legacy cache to per-source version 2 snapshots", async () => {
+ await withCacheFileIsolation(async () => {
+  const zen = {
+   id: "legacy-zen-free",
+   name: "Legacy Zen",
+   reasoning: false,
+   contextWindow: 64_000,
+   maxTokens: 8_000,
+   source: "opencode" as const,
+  };
+  const kilo = { ...zen, id: "legacy-kilo:free", name: "Legacy Kilo", source: "kilo" as const };
+  fs.writeFileSync(CATALOG_CACHE_FILE, JSON.stringify({
+   timestamp: Date.now() - 2 * CATALOG_CACHE_TTL_MS,
+   etag: "legacy-zen-etag",
+   opencode: [zen.id],
+   kilo: [kilo.id],
+   models: [zen, kilo],
+  }));
+  globalThis.fetch = async (url) => {
+   if (String(url).includes("api.kilo.ai")) {
+    return new Response(JSON.stringify({ data: [{
+     id: "particle-ai/particle-1:free",
+     name: "Particle AI: Particle-1 (free)",
+     isFree: true,
+     pricing: { prompt: "0", completion: "0" },
+     architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] },
+     context_length: 1_048_576,
+     top_provider: { max_completion_tokens: 131_072 },
+     supported_parameters: ["tools", "reasoning"],
+    }] }), { status: 200, headers: { etag: "kilo-new" } });
+   }
+   return new Response(null, { status: 304 });
+  };
+  const result = await refreshCatalog(true);
+  assert.ok(result.some((entry) => entry.id === zen.id), "Zen 304 retains its classified legacy row");
+  assert.ok(result.some((entry) => entry.id === "particle-ai/particle-1:free"));
+  const persisted = JSON.parse(fs.readFileSync(CATALOG_CACHE_FILE, "utf8")) as Record<string, unknown>;
+  assert.equal(persisted.version, 2);
+  assert.ok(persisted.sources && typeof persisted.sources === "object");
+  assert.equal("models" in persisted, false, "the rewritten disk schema no longer uses a merged top-level snapshot");
+ });
+});
+
+test("malformed and suspiciously empty listings preserve each source snapshot", async () => {
+ await withCacheFileIsolation(async () => {
+  const timestamp = Date.now() - 2 * CATALOG_CACHE_TTL_MS;
+  const zen = {
+   id: "cached-zen-free",
+   name: "Cached Zen",
+   reasoning: false,
+   contextWindow: 64_000,
+   maxTokens: 8_000,
+   source: "opencode" as const,
+  };
+  const kilo = { ...zen, id: "cached-kilo:free", name: "Cached Kilo", source: "kilo" as const };
+  fs.writeFileSync(CATALOG_CACHE_FILE, JSON.stringify({
+   version: 2,
+   sources: {
+    opencode: { timestamp, ids: [zen.id], models: [zen] },
+    kilo: { timestamp, ids: [kilo.id], models: [kilo] },
+   },
+  }));
+  globalThis.fetch = async (url) => String(url).includes("api.kilo.ai")
+   ? new Response(JSON.stringify({ data: [] }), { status: 200 })
+   : new Response("not json", { status: 200 });
+  const result = await refreshCatalog(true);
+  assert.ok(result.some((entry) => entry.id === zen.id));
+  assert.ok(result.some((entry) => entry.id === kilo.id));
+ });
+});
+
+test("legacy cache rejects unknown rows with ambiguous or conflicting source provenance", async () => {
+ await withCacheFileIsolation(() => {
+  const conflicting = {
+   id: "legacy-conflict-free",
+   name: "Legacy Conflict",
+   reasoning: false,
+   contextWindow: 64_000,
+   maxTokens: 8_000,
+   source: "opencode",
+  };
+  const ambiguous = { ...conflicting, id: "legacy-ambiguous-free", source: undefined };
+  fs.writeFileSync(CATALOG_CACHE_FILE, JSON.stringify({
+   timestamp: Date.now(),
+   opencode: [ambiguous.id],
+   kilo: [conflicting.id, ambiguous.id],
+   models: [conflicting, ambiguous],
+  }));
+  const cached = readCatalogCache();
+  assert.ok(cached);
+  assert.equal(cached.models?.some((entry) => entry.id === conflicting.id), false);
+  assert.equal(cached.models?.some((entry) => entry.id === ambiguous.id), false);
  });
 });

@@ -15,8 +15,10 @@ import {
 	UPDATE_CACHE_FILE,
 	DEBUG_STATE_FILE,
 	CATALOG_CACHE_FILE,
+	CATALOG_CACHE_LOCK_FILE,
 	resolveSessionPinPath,
 } from "../src/config.ts";
+import { getAliveCatalog, setAliveCatalog } from "../src/catalog.ts";
 
 export const BAK_FILE = `${RELAY_STATE_FILE}.bak`;
 const LOCK_FILE = `${RELAY_STATE_FILE}.lock`;
@@ -30,6 +32,7 @@ const TOUCHED = [
 	UPDATE_CACHE_FILE,
 	DEBUG_STATE_FILE,
 	CATALOG_CACHE_FILE,
+	CATALOG_CACHE_LOCK_FILE,
 	resolveSessionPinPath(),
 ];
 
@@ -51,6 +54,7 @@ export async function withIsolatedSandboxFiles(fn: () => Promise<void>): Promise
 	const read = (p: string): string | null =>
 		fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
 	const before = TOUCHED.map((p) => [p, read(p)] as const);
+	const catalogBefore = getAliveCatalog();
 	try {
 		await fn();
 	} finally {
@@ -63,6 +67,7 @@ export async function withIsolatedSandboxFiles(fn: () => Promise<void>): Promise
 				}
 			} catch {}
 		}
+		setAliveCatalog(catalogBefore);
 	}
 }
 
