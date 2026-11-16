@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.46.0
+
+### Minor Changes
+
+- Discover compatible free Kilo models dynamically and route them keylessly without requiring package updates.
+- Install and update from GitHub release assets instead of the npm registry. `/freeflow update` and the background update check now read the newest GitHub release tag, download that release's tarball, and install it with npm or bun — so neither installation nor updates need an npm account, a registry session, or a working publish path. npm 12 refuses remote and git specifiers by default, which is why the tarball is downloaded and installed as a local file. Each release publishes the verified tarball as an asset, including a stable `pi-freeflow.tgz` name for the latest-release download link.
+
+### Patch Changes
+
+- Requests that declare both experimental context tools no longer receive a false free-usage-limit error from the OpenCode Zen free tier. The tools are sent under neutral names and restored in replies, so the host still dispatches them normally.
+- Stop the local proxy restart storm in hosts that run many sessions in one long-lived process, such as a web UI. Every session used to keep its own connection to the proxy, its own health checks and its own restart logic, and closed sessions kept them running. After a short stall dozens of them restarted the proxy at once, shut down each other's fresh proxies, and drove system load up. Now one process keeps one connection and one set of health checks, closed sessions release it, the last closed session disconnects, a recovery check that finds the proxy healthy again reconnects instead of restarting it, and the process exit cleanup is registered once instead of once per session.
+- Recover from a frozen local proxy back to a proper background proxy. When the proxy stopped answering but still held its port, recovery started a new proxy first; that proxy moved to the next port, where nothing ever connected to it, and the session ended up running the proxy inside its own process until restart. Now recovery clears the frozen proxy before starting a new one, a new proxy that cannot get its usual port exits instead of moving to another one, and when a fresh start freezes too, the port is cleared and the proxy is started one more time.
+- Retire deprecated OpenCode Zen model crouton-alpha-free (HTTP 410 upstream) and add live OpenCode Zen models longcat-2.5-free and hy4-flash-free.
+
 ## 1.45.0
 
 ### Minor Changes
