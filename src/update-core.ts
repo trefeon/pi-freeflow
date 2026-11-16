@@ -12,11 +12,79 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { unlink, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { logWarn } from "./logger.ts";
 
-const REGISTRY_URL = "https://registry.npmjs.org/pi-freeflow/latest";
+const PACKAGE_NAME = "pi-freeflow";
+const RELEASE_OWNER = "trefeon";
+/** Repo that hosts the release assets; also the package name, so the two stay in step. */
+const RELEASE_REPO = "pi-freeflow";
+export const RELEASES_PAGE_URL = `https://github.com/${RELEASE_OWNER}/${RELEASE_REPO}/releases/latest`;
+const RELEASE_TAG_MARKER = "/releases/tag/";
+const VERSION_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * Download URL of the tarball asset attached to the v<version> GitHub release.
+ *
+ * The asset is fetched to a local file before installing: npm 12 refuses
+ * remote and git specifiers by default (`allow-remote`/`allow-git` = none),
+ * while a local tarball installs everywhere without extra flags.
+ */
+export function releaseTarballUrl(version: string): string {
+ return `https://github.com/${RELEASE_OWNER}/${RELEASE_REPO}/releases/download/v${version}/${PACKAGE_NAME}-${version}.tgz`;
+}
+
+const TARBALL_TIMEOUT_MS = 60_000;
+/** Sanity ceiling for the asset; the real tarball is a few hundred KB. */
+const TARBALL_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Fetch the release tarball to a temp file and return its path, or null.
+ *
+ * The local path is what every install step takes, so installation never
+ * depends on the npm registry or on a manager accepting a remote specifier.
+ */
+export async function downloadReleaseTarball(version: string): Promise<string | null> {
+ const url = releaseTarballUrl(version);
+ try {
+  const res = await fetch(url, {
+   redirect: "follow",
+   signal: AbortSignal.timeout(TARBALL_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+   logWarn(`release tarball download failed: HTTP ${res.status} ${url}`);
+   return null;
+  }
+  const declared = Number(res.headers?.get?.("content-length") ?? Number.NaN);
+  if (Number.isFinite(declared) && declared > TARBALL_MAX_BYTES) {
+   logWarn(`release tarball is larger than expected (${declared} bytes) — refusing`);
+   return null;
+  }
+  const bytes = Buffer.from(await res.arrayBuffer());
+  if (bytes.length === 0 || bytes.length > TARBALL_MAX_BYTES) {
+   logWarn(`release tarball has an unexpected size (${bytes.length} bytes) — refusing`);
+   return null;
+  }
+  const file = path.join(os.tmpdir(), `${PACKAGE_NAME}-${version}.tgz`);
+  await writeFile(file, bytes);
+  return file;
+ } catch (e) {
+  logWarn(`release tarball download failed: ${(e as Error).message}`);
+  return null;
+ }
+}
+
+/** Remove a downloaded tarball; best-effort, the temp file is harmless. */
+export async function removeReleaseTarball(file: string): Promise<void> {
+ try {
+  await unlink(file);
+ } catch {
+  // already gone
+ }
+}
 
 /** Strict semver shape: major.minor.patch with optional -prerelease or +build suffix. */
 export const SEMVER_PATTERN = /^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$/;
@@ -130,21 +198,42 @@ export function formatVersionDetail(local: string | null, latest: string | null)
  return line;
 }
 
+/** Version named by a `…/releases/tag/v1.2.3` reference, or null. */
+function versionFromReleaseReference(text: string): string | null {
+ const index = text.lastIndexOf(RELEASE_TAG_MARKER);
+ if (index === -1) return null;
+ const raw = (text.slice(index + RELEASE_TAG_MARKER.length).split(/[\s"'?#<>]/, 1)[0] ?? "").trim();
+ const version = raw.startsWith("v") ? raw.slice(1) : raw;
+ return SEMVER_PATTERN.test(version) ? version : null;
+}
+
+/**
+ * Latest published version, read from the GitHub releases channel.
+ *
+ * `releases/latest` answers with a redirect to the newest tag, so the version
+ * is already in the response URL: no API request, and none of the
+ * unauthenticated API rate limit. The page body is a second reading of the
+ * same fact for proxies that drop or rewrite the redirect — it links to the
+ * same `/releases/tag/v…` path.
+ */
 export async function fetchLatestVersion(): Promise<string | null> {
  try {
-  const res = await fetch(REGISTRY_URL, {
-   signal: AbortSignal.timeout(3000),
-   headers: { Accept: "application/json" },
+  const res = await fetch(RELEASES_PAGE_URL, {
+   redirect: "follow",
+   signal: AbortSignal.timeout(VERSION_PROBE_TIMEOUT_MS),
+   headers: { Accept: "text/html" },
   });
   if (!res.ok) return null;
-  const json = (await res.json()) as { version?: string };
-  const v = json?.version;
-  if (typeof v === "string" && v.trim().length > 0) {
-   const version = v.trim();
-   if (SEMVER_PATTERN.test(version)) return version;
-   logWarn(`registry returned invalid latest version: ${version}`);
+  const fromRedirect = versionFromReleaseReference(res.url);
+  if (fromRedirect !== null) return fromRedirect;
+  try {
+   const fromPage = versionFromReleaseReference(await res.text());
+   if (fromPage !== null) return fromPage;
+  } catch {
+   // Body unreadable (aborted or non-text): the redirect already had its turn.
    return null;
   }
+  logWarn("releases page did not name a version");
   return null;
  } catch {
   return null;

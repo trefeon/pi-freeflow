@@ -24,7 +24,14 @@ import {
 	isLinkedInstall,
 	checkForUpdateInBackground,
 } from "../src/update-checker.ts";
-import { compareVersions, fetchLatestVersion } from "../src/update-core.ts";
+import {
+	compareVersions,
+	downloadReleaseTarball,
+	fetchLatestVersion,
+	getLocalVersion,
+	releaseTarballUrl,
+	removeReleaseTarball,
+} from "../src/update-core.ts";
 import { createCommandSpec } from "../src/commands.ts";
 import { UPDATE_CACHE_FILE, UPDATE_CHECK_TTL_MS } from "../src/config.ts";
 import type { ExtensionAPI, ExtensionContext } from "../src/types.ts";
@@ -135,63 +142,103 @@ test("setCachedUpdate ignores malformed versions", () => {
 
 // ── 3. Mocked Registry Fetcher (Zero Real Network Dependency) ─────────────────
 
-test("fetchLatestVersion handles valid response, non-200 status, and network rejections", async () => {
+test("fetchLatestVersion reads the GitHub release tag from the redirect or the page", async () => {
 	const realFetch = globalThis.fetch;
 
+	/** A `releases/latest` response whose redirect landed on v<version>. */
+	const redirected = (version: string): Response => {
+		const res = new Response("<html></html>", { status: 200 });
+		Object.defineProperty(res, "url", {
+			value: `https://github.com/trefeon/pi-freeflow/releases/tag/v${version}`,
+		});
+		return res;
+	};
+
 	try {
-		// Scenario A: Registry returns 200 OK with version string
-		globalThis.fetch = async () =>
-			new Response(JSON.stringify({ version: "1.4.99" }), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			});
-		const verA = await fetchLatestVersion();
-		assert.equal(verA, "1.4.99");
+		// Scenario A: the redirect URL names the tag (the normal path).
+		globalThis.fetch = async () => redirected("1.4.99");
+		assert.equal(await fetchLatestVersion(), "1.4.99");
 
-		// Scenario B: Registry returns 200 OK with empty/whitespace version
-		globalThis.fetch = async () =>
-			new Response(JSON.stringify({ version: "   " }), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			});
-		const verB = await fetchLatestVersion();
-		assert.equal(verB, null);
+		// Scenario A2: no `v` prefix on the tag still yields the bare version.
+		globalThis.fetch = async () => redirected("2.0.0");
+		assert.equal(await fetchLatestVersion(), "2.0.0");
 
-		// Scenario C: Registry returns 404 or 500 error
+		// Scenario B: a proxy stripped the redirect — the page body links the tag.
 		globalThis.fetch = async () =>
-			new Response(JSON.stringify({ error: "Not found" }), {
-				status: 404,
-				headers: { "Content-Type": "application/json" },
-			});
-		const verC = await fetchLatestVersion();
-		assert.equal(verC, null);
+			new Response('<a href="/trefeon/pi-freeflow/releases/tag/v1.4.99">latest</a>', { status: 200 });
+		assert.equal(await fetchLatestVersion(), "1.4.99", "page body must be a second source for the tag");
 
-		// Scenario C2: Registry returns 200 OK with a malformed (non-semver) version
+		// Scenario C: releases page missing (or GitHub down).
+		globalThis.fetch = async () => new Response("Not found", { status: 404 });
+		assert.equal(await fetchLatestVersion(), null);
+
+		// Scenario C2: a tag that is not a semver version.
 		globalThis.fetch = async () =>
-			new Response(JSON.stringify({ version: "not-a-version" }), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			});
-		const verC2 = await fetchLatestVersion();
-		assert.equal(verC2, null, "malformed version must be treated as no-update");
+			new Response('<a href="/releases/tag/nightly">x</a>', { status: 200 });
+		assert.equal(await fetchLatestVersion(), null, "malformed tag must be treated as no-update");
 
-		// Scenario C3: Registry returns 200 OK with a partial (major.minor only) version
-		globalThis.fetch = async () =>
-			new Response(JSON.stringify({ version: "1.4" }), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			});
-		const verC3 = await fetchLatestVersion();
-		assert.equal(verC3, null, "partial version must be treated as no-update");
+		// Scenario C3: a partial (major.minor only) tag.
+		globalThis.fetch = async () => new Response('<a href="/releases/tag/v1.4">x</a>', { status: 200 });
+		assert.equal(await fetchLatestVersion(), null, "partial version must be treated as no-update");
 
-		// Scenario D: Network failure or timeout (fetch rejects)
+		// Scenario D: network failure or timeout (fetch rejects).
 		globalThis.fetch = async () => {
 			throw new Error("Network timeout (ETIMEDOUT)");
 		};
-		const verD = await fetchLatestVersion();
-		assert.equal(verD, null, "Network error must return null without throwing");
+		assert.equal(await fetchLatestVersion(), null, "Network error must return null without throwing");
 	} finally {
 		globalThis.fetch = realFetch;
+	}
+});
+
+test("releaseTarballUrl points at the tagged release asset", () => {
+	assert.equal(
+		releaseTarballUrl("1.46.0"),
+		"https://github.com/trefeon/pi-freeflow/releases/download/v1.46.0/pi-freeflow-1.46.0.tgz",
+		"the install specifier must be the asset attached to the release tag",
+	);
+});
+
+test("downloadReleaseTarball writes the asset to a file and rejects failures", async () => {
+	const realFetch = globalThis.fetch;
+	const version = "9.9.8";
+	const target = path.join(os.tmpdir(), `pi-freeflow-${version}.tgz`);
+	fs.rmSync(target, { force: true });
+	try {
+		// 200 with bytes: the bytes land in a temp file, because npm 12 refuses
+		// remote specifiers and every install step takes a local path.
+		const payload = new Uint8Array([31, 139, 8, 0, 1, 2]);
+		globalThis.fetch = (async () => ({
+			ok: true,
+			headers: { get: () => String(payload.length) },
+			arrayBuffer: async () => payload.buffer,
+		})) as unknown as typeof fetch;
+		assert.equal(await downloadReleaseTarball(version), target);
+		assert.deepEqual(new Uint8Array(fs.readFileSync(target)), payload);
+		await removeReleaseTarball(target);
+		assert.equal(fs.existsSync(target), false, "cleanup must remove the downloaded tarball");
+
+		// Missing release asset.
+		globalThis.fetch = (async () => ({ ok: false, status: 404 })) as unknown as typeof fetch;
+		assert.equal(await downloadReleaseTarball(version), null, "a 404 must not produce a file");
+		assert.equal(fs.existsSync(target), false);
+
+		// Empty body.
+		globalThis.fetch = (async () => ({
+			ok: true,
+			headers: { get: () => "0" },
+			arrayBuffer: async () => new ArrayBuffer(0),
+		})) as unknown as typeof fetch;
+		assert.equal(await downloadReleaseTarball(version), null, "an empty asset must be refused");
+
+		// Network failure.
+		globalThis.fetch = (async () => {
+			throw new Error("ETIMEDOUT");
+		}) as unknown as typeof fetch;
+		assert.equal(await downloadReleaseTarball(version), null, "a network error must not throw");
+	} finally {
+		globalThis.fetch = realFetch;
+		fs.rmSync(target, { force: true });
 	}
 });
 
@@ -330,12 +377,16 @@ test("/freeflow update and status commands handle up-to-date, offline, and updat
 	const cmd = createCommandSpec(mockPi, () => {});
 
 	try {
-		// Scenario A: When already on latest version
-		globalThis.fetch = async () =>
-			new Response(JSON.stringify({ version: "1.4.12" }), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
+		// Scenario A: When already on latest version — the releases redirect
+		// names the tag this checkout already carries.
+		const localVersion = getLocalVersion() ?? "0.0.0";
+		globalThis.fetch = async () => {
+			const res = new Response("<html></html>", { status: 200 });
+			Object.defineProperty(res, "url", {
+				value: `https://github.com/trefeon/pi-freeflow/releases/tag/v${localVersion}`,
 			});
+			return res;
+		};
 
 		notifications.length = 0;
 		await cmd.handler("update", mockCtx);

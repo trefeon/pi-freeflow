@@ -291,10 +291,10 @@ test("command spec: /freeflow logs does not treat a prototype key as a log level
 
 /**
  * Make the /freeflow update environment deterministic for one test: package
- * managers on PATH, the registry version and the three restart dependencies.
+ * managers on PATH, the release version and the three restart dependencies.
  * The update command probes the real PATH for host/global managers, so omp/pi/
  * npm shims go first on PATH — they are never executed (the step runner is
- * injected), they only answer the availability probe. The registry fetch is
+ * injected), they only answer the availability probe. The releases fetch is
  * stubbed, and _setUpdateRestartDepsForTest swaps the step runner, the
  * attached-port lookup and the killer, which the suite cannot stub as direct
  * imports. Everything is restored on the way out.
@@ -315,10 +315,16 @@ async function withDeterministicUpdateEnv(
 			}
 		}
 		process.env["PATH"] = dir + path.delimiter + (prevPath ?? "");
-		globalThis.fetch = (async () => ({
-			ok: true,
-			json: async () => ({ version: "99.0.0" }),
-		})) as unknown as typeof fetch;
+		globalThis.fetch = (async (input: unknown) => {
+			const url = String(input);
+			if (url.includes("/releases/latest")) {
+				// The releases check reads the tag the redirect landed on.
+				return { ok: true, url: "https://github.com/trefeon/pi-freeflow/releases/tag/v99.0.0" };
+			}
+			// The tarball download: any non-empty body is enough here, because
+			// the install step itself is injected.
+			return { ok: true, arrayBuffer: async () => new Uint8Array([31, 139, 8, 0]).buffer };
+		}) as unknown as typeof fetch;
 		_setUpdateRestartDepsForTest({ ensureDaemon: () => Promise.resolve(PORT), ...deps });
 		await fn();
 	} finally {

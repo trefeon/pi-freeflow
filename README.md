@@ -4,8 +4,7 @@
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
-[![npm version](https://img.shields.io/npm/v/pi-freeflow?style=flat-square&color=00E5FF)](https://www.npmjs.com/package/pi-freeflow)
-[![npm downloads](https://img.shields.io/npm/dm/pi-freeflow?style=flat-square)](https://www.npmjs.com/package/pi-freeflow)
+[![release](https://img.shields.io/github/v/release/trefeon/pi-freeflow?style=flat-square&color=00E5FF)](https://github.com/trefeon/pi-freeflow/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 [![Pi](https://img.shields.io/badge/Powered%20by-Pi-7c3aed?style=flat-square)](https://github.com/earendil-works/pi)
 [![Oh My Pi](https://img.shields.io/badge/Compatible-OMP-black?style=flat-square)](https://github.com/can1357/oh-my-pi)
@@ -28,21 +27,30 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 ### Install
 
-**On Oh My Pi (OMP):**
+pi-freeflow ships as a GitHub release tarball — the same asset `/freeflow update`
+installs, so no registry account or npm session is involved.
+
+**As a host plugin (OMP / Pi):**
 ```bash
-omp plugin install pi-freeflow
-# or local dev (repo checkout)
-omp plugin link /path/to/pi-freeflow
+omp plugin install pi-freeflow            # OMP, from its registry
+omp plugin link /path/to/pi-freeflow      # OMP, local dev checkout
+pi install npm:pi-freeflow                # Pi
 ```
 
-**On Pi:**
+**From a release tarball** (one release ahead of whatever the registry serves):
 ```bash
-pi install npm:pi-freeflow
+curl -fL -o pi-freeflow.tgz https://github.com/trefeon/pi-freeflow/releases/latest/download/pi-freeflow.tgz
+tar -xzf pi-freeflow.tgz                  # extracts package/
+omp plugin install ./package              # or: pi install ./package
+# global install instead: npm i -g ./pi-freeflow.tgz  (or bun add -g ./pi-freeflow.tgz)
 ```
 
-> Both commands fetch the same npm package from the registry. pi-freeflow
-> is an extension loaded by the host, not a standalone CLI. It works on OMP
-> and Pi only (they share the extension API).
+> npm 12 refuses remote and git specifiers by default (`allow-remote`,
+> `allow-git` = none), so every path above installs a **local file**.
+> `/freeflow update` follows the same rule: it reads the newest GitHub release
+> tag, downloads that release's tarball, and installs it with npm or bun.
+> pi-freeflow is an extension loaded by the host, not a standalone CLI; it works
+> on OMP and Pi only (they share the extension API).
 
 ### Pick a model
 
@@ -353,12 +361,13 @@ To stop it manually, run `/freeflow kill`. The next freeflow use starts it again
 **Why did my long session stop with a "reasoning was not issued to this caller" error?**
 The upstream backend signs each thinking block so only the backend that produced it can read it back. When a later turn reaches a different backend, the old blocks get rejected and the session stalls. pi-freeflow keeps each conversation on the relay that produced its thinking while that relay is healthy. When the relay has to change anyway (rate limit, relay removed, direct-mode switch), that turn is sent without the old thinking blocks so the new backend accepts it, and only the rejected blocks are dropped afterwards. Messages, tool calls, and tool results are always kept.
 
-**Why is it installed via npm?**
-The npm package is the distribution channel only. Both hosts resolve it internally:
-`omp plugin install pi-freeflow` and `pi install npm:pi-freeflow` install the same
-package from the npm registry. pi-freeflow is an extension, not a standalone CLI.
-The host (OMP or Pi) loads and runs it. A plain `npm install` just downloads the
-files; it is not a supported way to run the extension.
+**Why is it installed from a GitHub release?**
+The release tarball is the distribution channel: it is the file you install and
+the file `/freeflow update` installs. pi-freeflow is an extension, not a
+standalone CLI, so the host (OMP or Pi) loads and runs it; a plain `npm install`
+only downloads the files. No registry account or npm session is needed at any
+point, and npm 12's default refusal of remote specifiers is why the tarball is
+downloaded first and installed as a local file.
 
 **Which hosts can use it?**
 Oh My Pi (OMP) and Pi only. They share the same extension API, so one
@@ -415,7 +424,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ├── deploy.ts                # guided relay deploy (vercel/cloudflare/deno)
 ├── cline-accounts.ts        # per-slot Cline key pool with failover
 ├── cline-device-auth.ts     # Cline WorkOS device-flow login
-├── update-checker.ts        # npm registry version check, cached
+├── update-checker.ts        # GitHub release version check, cached
 ├── update-core.ts           # version facts and update step runner
 ├── updater.ts               # package-manager choice for /freeflow update
 ├── atomic-write.ts          # temp-file + rename writes, retried across Windows locks

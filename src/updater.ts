@@ -10,15 +10,21 @@
  * Every install runs through the asynchronous step runner in update-core.ts:
  * auto-update is triggered from extension activation, so a blocking
  * spawnSync install (minutes on npm/bun) would freeze the host TUI.
+ *
+ * Every step installs the tarball attached to the latest GitHub release
+ * (releaseTarballUrl), so an update never depends on the npm registry.
  */
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
 import { getClientPort } from "./client.ts";
 import {
+ RELEASES_PAGE_URL,
  compareVersions,
+ downloadReleaseTarball,
  fetchLatestVersion,
  getLocalVersion,
+ removeReleaseTarball,
  runUpdateStep,
 } from "./update-core.ts";
 import { PORT } from "./config.ts";
@@ -32,22 +38,26 @@ interface GlobalUpdatePlan {
  manual: string;
 }
 
-const NPM_MANUAL = "npm i -g pi-freeflow@latest";
-const BUN_MANUAL = "bun add -g pi-freeflow@latest";
+const npmManual = (spec: string): string => `npm i -g ${spec}`;
+const bunManual = (spec: string): string => `bun add -g ${spec}`;
 
 /**
  * Pick the global update step. npm wins when present; bun covers machines
  * where npm is missing. Returns null when neither manager is on PATH, in
  * which case the caller keeps the previous manual-install hint.
+ *
+ * `spec` is the release tarball URL (see releaseTarballUrl): installs read
+ * the GitHub release asset, never the npm registry.
  */
 export function selectGlobalUpdatePlan(opts: {
  npmAvailable: boolean;
  bunAvailable: boolean;
+ spec: string;
 }): GlobalUpdatePlan | null {
  if (opts.npmAvailable)
-  return { cmd: "npm", args: ["i", "-g", "pi-freeflow@latest"], manual: NPM_MANUAL };
+  return { cmd: "npm", args: ["i", "-g", opts.spec], manual: npmManual(opts.spec) };
  if (opts.bunAvailable)
-  return { cmd: "bun", args: ["add", "-g", "pi-freeflow@latest"], manual: BUN_MANUAL };
+  return { cmd: "bun", args: ["add", "-g", opts.spec], manual: bunManual(opts.spec) };
  return null;
 }
 
@@ -58,30 +68,6 @@ interface HostUpdateStep {
  args: string[];
  /** Exact command the user can run by hand if the automated step fails. */
  manual: string;
-}
-
-/**
- * Host plugin-manager steps in try-order; the caller runs them and stops at
- * the first exit 0. Neither host offers an `update` action for registry
- * plugins — omp updates by reinstall (`plugin install pkg@latest`) and pi
- * updates the named package (`update <source>`) — so those are the steps.
- * No reliable signal names the host running this extension, hence the fixed
- * omp → pi order.
- */
-export function selectHostUpdateSteps(opts: {
- ompAvailable: boolean;
- piAvailable: boolean;
-}): HostUpdateStep[] {
- const steps: HostUpdateStep[] = [];
- if (opts.ompAvailable)
-  steps.push({
-   cmd: "omp",
-   args: ["plugin", "install", "pi-freeflow@latest"],
-   manual: "omp plugin install pi-freeflow@latest",
-  });
- if (opts.piAvailable)
-  steps.push({ cmd: "pi", args: ["update", "pi-freeflow"], manual: "pi update pi-freeflow" });
- return steps;
 }
 
 /**
@@ -194,45 +180,42 @@ export async function performAutoUpdate(
   return { code, tail };
  };
 
- // Probe concurrently and off the event loop: four sequential 10s spawnSync
- // probes could stall activation for the better part of a minute.
- const [ompAvailable, piAvailable, npmAvailable, bunAvailable] = await probeCommandsAvailable([
-  "omp",
-  "pi",
-  "npm",
-  "bun",
- ]);
- const manuals: string[] = [];
- let outcome = { code: 1, tail: "" };
- for (const step of selectHostUpdateSteps({ ompAvailable, piAvailable })) {
-  manuals.push(step.manual);
-  outcome = await runStep(step.cmd, step.args, step.manual);
-  if (outcome.code === 0) break;
- }
- if (outcome.code !== 0) {
-  const plan = selectGlobalUpdatePlan({ npmAvailable, bunAvailable });
-  if (plan) {
-   manuals.push(plan.manual);
-   outcome = await runStep(plan.cmd, plan.args, plan.manual);
-  }
- }
- if (outcome.code === 0) {
-  onProgress?.(`pi-freeflow auto-updated to v${latest} — restarting proxy daemon…`);
-  // Restart the proxy that is actually attached: a walked port (base busy)
-  // must not leave the live daemon serving the old build.
-  const port = getClientPort() || PORT;
-  // Lazy edge: proxy.ts is the heavy serving sibling and the updater only
-  // needs its port killer after a successful install.
-  const { killPortHolder } = await import("./proxy.ts");
-  await killPortHolder(port);
-  return { ok: true, version: latest };
- }
- const detail = outcome.tail.trim() ? `: ${outcome.tail.trim()}` : "";
- if (manuals.length === 0) {
+ // The release tarball is downloaded first: npm 12 refuses remote and git
+ // specifiers by default, so only a local file installs everywhere.
+ const tarball = await downloadReleaseTarball(latest);
+ if (tarball === null) {
   return {
    ok: false,
-   error: `no update manager found (omp, pi, npm, bun) — install manually: npm i -g pi-freeflow@latest${detail}`,
+   error: `could not download the v${latest} release tarball — see ${RELEASES_PAGE_URL}`,
   };
  }
- return { ok: false, error: `update command failed (exit code ${outcome.code}) — tried: ${manuals.join(", ")}${detail}` };
+
+ // Probe concurrently and off the event loop: two sequential 10s spawnSync
+ // probes would stall activation for the better part of a minute.
+ const [npmAvailable, bunAvailable] = await probeCommandsAvailable(["npm", "bun"]);
+ const plan = selectGlobalUpdatePlan({ npmAvailable, bunAvailable, spec: tarball });
+ if (plan === null) {
+  return {
+   ok: false,
+   error: `no package manager found (npm, bun) — install ${tarball} by hand or see ${RELEASES_PAGE_URL}`,
+  };
+ }
+ const outcome = await runStep(plan.cmd, plan.args, plan.manual);
+ if (outcome.code === 0) {
+  await removeReleaseTarball(tarball);
+ } else {
+  return {
+   ok: false,
+   error: `update command failed (exit code ${outcome.code}) — ${plan.manual}${outcome.tail.trim() ? `: ${outcome.tail.trim()}` : ""}`,
+  };
+ }
+ onProgress?.(`pi-freeflow auto-updated to v${latest} — restarting proxy daemon…`);
+ // Restart the proxy that is actually attached: a walked port (base busy)
+ // must not leave the live daemon serving the old build.
+ const port = getClientPort() || PORT;
+ // Lazy edge: proxy.ts is the heavy serving sibling and the updater only
+ // needs its port killer after a successful install.
+ const { killPortHolder } = await import("./proxy.ts");
+ await killPortHolder(port);
+ return { ok: true, version: latest };
 }

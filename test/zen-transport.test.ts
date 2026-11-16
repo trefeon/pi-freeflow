@@ -295,12 +295,12 @@ describe("sidecar framing (offline, no bun required)", () => {
 			const late = writeScript(dir, "late.mjs", [
 				"process.stdin.resume();",
 				"process.stdout.write(JSON.stringify({ status: 200, headers: { \"content-type\": \"text/event-stream\" } }) + \"\\n\");",
-				"setTimeout(() => { process.stdout.write(\"data: late\\n\\n\"); }, 400);",
-				"setTimeout(() => { process.exit(0); }, 600);",
+				"setTimeout(() => { process.stdout.write(\"data: late\\n\\n\"); }, 3000);",
+				"setTimeout(() => { process.exit(0); }, 3400);",
 			].join("\n") + "\n");
 			const res = await fetchZenDirectViaSidecar(
 				"https://example.invalid/x",
-				{ method: "POST", headers: {}, body: Buffer.from("{}"), headerTimeoutMs: 150 },
+				{ method: "POST", headers: {}, body: Buffer.from("{}"), headerTimeoutMs: 2000 },
 				{ runtimePath: process.execPath, scriptPath: late },
 			);
 			assert.equal(res.status, 200);

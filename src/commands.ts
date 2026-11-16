@@ -10,14 +10,17 @@ import { getLastCatalogRefreshStatus, refreshCatalog, setAliveCatalog } from "./
 import { DATA_DIR_ENV, DEBUG_STATE_FILE, HOST, LOG_FILE, PORT, RELAY_STATE_FILE, ZEN_TRANSPORT_ENV } from "./config.ts";
 import { getCachedUpdate, isLinkedInstall } from "./update-checker.ts";
 import {
+ RELEASES_PAGE_URL,
  compareVersions,
+ downloadReleaseTarball,
  fetchLatestVersion,
  formatVersionDetail,
  formatVersionLine,
  getLocalVersion,
+ removeReleaseTarball,
  runUpdateStep,
 } from "./update-core.ts";
-import { isCommandAvailable, selectGlobalUpdatePlan, selectHostUpdateSteps } from "./updater.ts";
+import { isCommandAvailable, selectGlobalUpdatePlan } from "./updater.ts";
 import { tokenAuthHeaders } from "./token.ts";
 import {
  deployCloudflareWorker,
@@ -703,52 +706,52 @@ export function createCommandSpec(
         ctx.ui.notify(`Already on latest (v${local})`, "info");
        } else {
         ctx.ui.notify(`Update available: v${local ?? "unknown"} → v${latest} — updating…`, "info");
-        // Host plugin managers first (neither host has an `update` action for
-        // registry plugins: omp updates by reinstall, pi updates the named
-        // package). Global npm/bun is the last resort, not the default.
-        let code = 1;
-        let manual = "npm i -g pi-freeflow@latest";
-        let lastStep = "";
-        for (const step of selectHostUpdateSteps({
-         ompAvailable: isCommandAvailable("omp"),
-         piAvailable: isCommandAvailable("pi"),
-        })) {
-         if (lastStep !== "") ctx.ui.notify(`${lastStep} exited ${code} — trying ${step.manual}…`, "info");
-         code = await updateStepRunner(step.cmd, step.args, ctx);
-         manual = step.manual;
-         lastStep = step.manual;
-         if (code === 0) break;
-        }
-        if (code !== 0) {
+        // Install the tarball attached to the v<latest> GitHub release, so an
+        // update never needs the npm registry. The download comes first: npm 12
+        // refuses remote and git specifiers by default, and only a local file
+        // installs everywhere without extra flags.
+        const tarball = await downloadReleaseTarball(latest);
+        if (tarball === null) {
+         ctx.ui.notify(
+          `Could not download the v${latest} release tarball — see ${RELEASES_PAGE_URL}`,
+          "warning",
+         );
+        } else {
          const plan = selectGlobalUpdatePlan({
           npmAvailable: isCommandAvailable("npm"),
           bunAvailable: isCommandAvailable("bun"),
+          spec: tarball,
          });
-         if (plan !== null) {
+         let code = 1;
+         let manual = `install ${tarball}`;
+         if (plan === null) {
           ctx.ui.notify(
-           `${lastStep === "" ? "no host plugin manager found" : `${lastStep} exited ${code}`} — trying ${plan.manual}…`,
-           "info",
+           `No package manager found (npm, bun) — install ${tarball} by hand or see ${RELEASES_PAGE_URL}`,
+           "warning",
           );
+         } else {
+          ctx.ui.notify(`Running ${plan.manual}…`, "info");
           manual = plan.manual;
           code = await updateStepRunner(plan.cmd, plan.args, ctx);
          }
-        }
-        if (code === 0) {
-         // Restart the daemon that is actually attached — a walked port must
-         // not leave the old build serving after a successful update.
-         try { await attachedPortKiller(attachedPortResolver()); } catch { }
-         try { await daemonEnsurer(); } catch { }
-         ctx.ui.notify(`Updated to ${latest} and restarted proxy daemon`, "info");
-        } else {
-         ctx.ui.notify(
-          `Update failed (exit ${code}) — try manually: ${manual}`,
-          "warning",
-         );
+         if (code === 0) {
+          await removeReleaseTarball(tarball);
+          // Restart the daemon that is actually attached — a walked port must
+          // not leave the old build serving after a successful update.
+          try { await attachedPortKiller(attachedPortResolver()); } catch { }
+          try { await daemonEnsurer(); } catch { }
+          ctx.ui.notify(`Updated to ${latest} and restarted proxy daemon`, "info");
+         } else if (plan !== null) {
+          ctx.ui.notify(`Update failed (exit ${code}) — try manually: ${manual}`, "warning");
+         }
         }
        }
       }
      } catch (e) {
-      ctx.ui.notify(`Update failed: ${(e as Error).message} — try manually: npm i -g pi-freeflow@latest`, "warning");
+      ctx.ui.notify(
+       `Update failed: ${(e as Error).message} — download the latest release from ${RELEASES_PAGE_URL}`,
+       "warning",
+      );
      }
     }
    } else if (sub === "debug") {

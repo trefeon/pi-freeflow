@@ -21,6 +21,18 @@ const portMatch = /process\.env\.([A-Z0-9_]+)_PORT/.exec(configSrc);
 if (!portMatch) throw new Error("test/setup.mjs: src/config.ts must read a *_PORT env var");
 process.env[`${portMatch[1]}_PORT`] = "29752";
 
+// Daemon startup strips types and loads the whole proxy before it can answer
+// /_health. A cold first run on a small VPS can outlast the 5s default, which
+// reads as "spawn failed" and pushes the client onto the in-process fallback.
+// The env name is derived exactly like src/config-paths.ts derives it, from
+// the DATA_DIR constant read out of the source text.
+const pathsSrc = fs.readFileSync(new URL("../src/config-paths.ts", import.meta.url), "utf8");
+const dataDirEnv = /export const DATA_DIR_ENV = "([A-Z0-9_]+)"/.exec(pathsSrc)?.[1];
+if (dataDirEnv) {
+	const readyEnv = dataDirEnv.replace("_DATA_DIR", "_DAEMON_READY_TIMEOUT_MS");
+	process.env[readyEnv] = process.env[readyEnv] ?? "12000";
+}
+
 process.on("exit", () => {
 	try {
 		fs.rmSync(sandbox, { recursive: true, force: true });

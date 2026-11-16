@@ -57,8 +57,8 @@ type RegistryMode = "reject" | { version: string };
  * URL-aware fetch mock. The activation "reuses" an already-running daemon
  * (instead of binding a real server) by answering the /health identity probe
  * with our service+port body, /v1/models with a catalog and /_health with the
- * current PKG_VERSION; the registry is the only other endpoint consulted and
- * can be made to reject (offline) or answer.
+ * current PKG_VERSION; the GitHub releases channel is the only other endpoint
+ * consulted and can be made to reject (offline) or answer.
  */
 function makeFetchHandler(registry: RegistryMode = "reject") {
 	return async (input: RequestInfo | URL): Promise<unknown> => {
@@ -85,16 +85,16 @@ function makeFetchHandler(registry: RegistryMode = "reject") {
 				json: async () => ({ port: PORT, version: PKG_VERSION, activeRequests: 0 }),
 			};
 		}
-		if (url.includes("registry.npmjs.org")) {
+		if (url.includes("/releases/latest")) {
 			if (registry === "reject") throw new Error("mocked offline");
 			const v = registry.version;
 			if (!/^\d+\.\d+\.\d+/.test(v)) throw new Error("mocked offline");
-			return {
-				ok: true,
-				status: 200,
-				headers: { get: () => "application/json" },
-				json: async () => ({ version: v }),
-			};
+			// GitHub answers releases/latest with a redirect to the newest tag.
+			const res = new Response("<html></html>", { status: 200 });
+			Object.defineProperty(res, "url", {
+				value: `https://github.com/trefeon/pi-freeflow/releases/tag/v${v}`,
+			});
+			return res;
 		}
 		throw new Error("mocked offline");
 	};
@@ -468,8 +468,8 @@ test("G: package.json satisfies the install/distribution contract", () => {
 
 // ── H. Wrapper fire-and-forget ────────────────────────────────────────────────
 
-test("H: extensions/index.ts wrapper never blocks activation and only writes the update cache when the registry answers", async (t) => {
-	// H1 — registry rejects (offline): activation completes but the cache is not written.
+test("H: extensions/index.ts wrapper never blocks activation and only writes the update cache when the releases channel answers", async (t) => {
+	// H1 — releases fetch rejects (offline): activation completes but the cache is not written.
 	t.mock.method(globalThis, "fetch", makeFetchHandler("reject"));
 	fs.rmSync(UPDATE_CACHE_FILE, { force: true });
 	const h1 = makeCapture();

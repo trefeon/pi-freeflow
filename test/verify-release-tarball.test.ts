@@ -1,27 +1,28 @@
 /**
- * Focused tests for the published-tarball gate (scripts/verify-published-tarball.mjs).
+ * Focused tests for the release-tarball gate (scripts/verify-release-tarball.mjs).
  *
- * The gate is driven end to end offline: a PATH-resolved `npm` stub hands the
- * CLI a fixture tarball and the tree's dry-run file list, so both comparison
- * directions are observed on the real CLI — exit code and stderr — instead of
- * on a reimplementation. `tar` is required for the fixture (Git Bash and
- * ubuntu both ship it); the pure comparison test needs nothing.
+ * The gate packs the checkout and compares the result against the tree, so a
+ * stale, dirty, or wrongly named asset can never be attached to a release.
+ * The npm calls are stubbed: these tests never touch a registry.
  */
+
+import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
 	compareFileLists,
-	// @ts-expect-error: verify-published-tarball.mjs is an executable script without generated d.ts
-} from "../scripts/verify-published-tarball.mjs";
+	// @ts-expect-error: verify-release-tarball.mjs is an executable script without generated d.ts
+} from "../scripts/verify-release-tarball.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SCRIPT = path.join(ROOT, "scripts", "verify-published-tarball.mjs");
+const SCRIPT = path.join(ROOT, "scripts", "verify-release-tarball.mjs");
 const IS_WINDOWS = process.platform === "win32";
+const REPO_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
+const ASSET = `pi-freeflow-${REPO_VERSION}.tgz`;
 
 const probe = (command: string, args: string[]): boolean => {
 	try {
@@ -44,9 +45,9 @@ function withTempDir(run: (dir: string) => void): void {
 
 /**
  * Installs a PATH-resolved `npm` stub that replays the fixture staged in the
- * environment: `pack --dry-run --json` prints the tree list, and
- * `pack pi-freeflow@<version> --pack-destination <dir>` copies the fixture
- * tarball into that directory. cmd.exe resolves extensionless scripts only
+ * environment: `pack --dry-run --json` prints the tree list, and plain `pack`
+ * copies the fixture tarball into the `--pack-destination` directory,
+ * preserving its file name. cmd.exe resolves extensionless scripts only
  * through PATHEXT, so Windows gets a .cmd twin with the same behavior.
  */
 function makeNpmStub(dir: string): Record<string, string> {
@@ -57,7 +58,7 @@ function makeNpmStub(dir: string): Record<string, string> {
 		`#!/bin/sh
 printf '%s\\n' "$*" >> "$NPM_STUB_DIR/argv.log"
 if [ "$1" = "pack" ] && [ "$2" = "--dry-run" ]; then cat "$NPM_STUB_TREE_JSON"; exit 0; fi
-if [ "$1" = "pack" ]; then cp "$NPM_STUB_TARBALL" "$4/"; exit 0; fi
+if [ "$1" = "pack" ]; then cp "$NPM_STUB_TARBALL" "$3/"; exit 0; fi
 exit 0
 `,
 	);
@@ -68,7 +69,7 @@ exit 0
 			`@echo off\r
 echo %* >> "%NPM_STUB_DIR%\\argv.log"\r
 if "%2"=="--dry-run" (type "%NPM_STUB_TREE_JSON%" & exit /b 0)\r
-if "%1"=="pack" (copy /y "%NPM_STUB_TARBALL%" "%~4" >nul & exit /b 0)\r
+if "%1"=="pack" (copy /y "%NPM_STUB_TARBALL%" "%~3" >nul & exit /b 0)\r
 exit /b 0\r
 `,
 		);
@@ -77,7 +78,7 @@ exit /b 0\r
 }
 
 /** Builds a real tgz whose members are `package/<relative>` entries. */
-function buildTarball(dir: string, members: Record<string, string | Buffer>): string {
+function buildTarball(dir: string, members: Record<string, string | Buffer>, name = ASSET): string {
 	const work = path.join(dir, "work");
 	fs.mkdirSync(path.join(work, "package"), { recursive: true });
 	for (const [relative, content] of Object.entries(members)) {
@@ -85,12 +86,12 @@ function buildTarball(dir: string, members: Record<string, string | Buffer>): st
 		fs.mkdirSync(path.dirname(target), { recursive: true });
 		fs.writeFileSync(target, content);
 	}
-	const packed = spawnSync("tar", ["-czf", "fixture.tgz", "-C", "work", "package"], {
+	const packed = spawnSync("tar", ["-czf", name, "-C", "work", "package"], {
 		cwd: dir,
 		encoding: "utf8",
 	});
 	assert.equal(packed.status, 0, `${packed.stdout ?? ""}${packed.stderr ?? ""}`);
-	return path.join(dir, "fixture.tgz");
+	return path.join(dir, name);
 }
 
 /** Runs the shipped CLI against the fixture in `dir`; returns status + output. */
@@ -100,7 +101,7 @@ function runGate(
 ): { status: number | null; output: string } {
 	const treeJson = path.join(dir, "tree.json");
 	fs.writeFileSync(treeJson, JSON.stringify([{ files: fixture.treeFiles.map((file) => ({ path: file })) }]));
-	const result = spawnSync(process.execPath, [SCRIPT, "1.2.3-fixture"], {
+	const result = spawnSync(process.execPath, [SCRIPT], {
 		cwd: dir,
 		encoding: "utf8",
 		env: {
@@ -135,6 +136,7 @@ test("gate passes a tarball that matches the tree file list exactly", { skip: SK
 		const run = runGate(dir, { tarball, treeFiles: ["package.json", "README.md"] });
 		assert.equal(run.status, 0, run.output);
 		assert.match(run.output, /2 files, 0 mismatches/);
+		assert.match(run.output, new RegExp(`asset dist/${ASSET.replace(/\./g, "\\.")} sha256 [0-9a-f]{64}`));
 	});
 });
 
@@ -150,7 +152,7 @@ test("gate fails on a local file the tarball does not carry", { skip: SKIP_NO_TA
 	});
 });
 
-test("gate fails on a published file this tree does not carry", { skip: SKIP_NO_TAR }, () => {
+test("gate fails on a tarball file this tree does not carry", { skip: SKIP_NO_TAR }, () => {
 	withTempDir((dir) => {
 		const tarball = buildTarball(dir, {
 			"package.json": fs.readFileSync(path.join(ROOT, "package.json")),
@@ -166,7 +168,7 @@ test("gate fails on a published file this tree does not carry", { skip: SKIP_NO_
 	});
 });
 
-test("gate fails on a published file whose bytes differ from the tree", { skip: SKIP_NO_TAR }, () => {
+test("gate fails on a tarball file whose bytes differ from the tree", { skip: SKIP_NO_TAR }, () => {
 	withTempDir((dir) => {
 		const tarball = buildTarball(dir, {
 			"package.json": fs.readFileSync(path.join(ROOT, "package.json")),
@@ -178,7 +180,23 @@ test("gate fails on a published file whose bytes differ from the tree", { skip: 
 	});
 });
 
-test("gate exits 1 when npm cannot produce the published tarball (CLI entry)", () => {
+test("gate fails when the asset name does not match the package version", { skip: SKIP_NO_TAR }, () => {
+	withTempDir((dir) => {
+		const tarball = buildTarball(
+			dir,
+			{
+				"package.json": fs.readFileSync(path.join(ROOT, "package.json")),
+				"README.md": fs.readFileSync(path.join(ROOT, "README.md")),
+			},
+			"pi-freeflow-0.0.0-other.tgz",
+		);
+		const run = runGate(dir, { tarball, treeFiles: ["package.json", "README.md"] });
+		assert.equal(run.status, 1, run.output);
+		assert.match(run.output, /does not match pi-freeflow-.*\.tgz/);
+	});
+});
+
+test("gate exits 1 when npm cannot produce the release tarball (CLI entry)", () => {
 	withTempDir((dir) => {
 		const treeJson = path.join(dir, "tree.json");
 		fs.writeFileSync(treeJson, JSON.stringify([{ files: [{ path: "package.json" }] }]));
@@ -198,6 +216,6 @@ test("gate exits 1 when npm cannot produce the published tarball (CLI entry)", (
 			},
 		});
 		assert.equal(result.status, 1, `${result.stdout ?? ""}${result.stderr ?? ""}`);
-		assert.match(`${result.stdout ?? ""}${result.stderr ?? ""}`, /is not published \(or npm pack failed\)/);
+		assert.match(`${result.stdout ?? ""}${result.stderr ?? ""}`, /npm pack did not produce exactly one tarball/);
 	});
 });

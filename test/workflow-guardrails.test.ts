@@ -330,10 +330,20 @@ test("release.yml never publishes to npm and proves the tarball before releasing
 	// publish on its own is the regression this guards.
 	assert.doesNotMatch(steps.map((step) => step.run ?? "").join("\n"), /(npm publish|changeset publish)/);
 
-	const verifyIndex = steps.findIndex((step) => (step.run ?? "").includes("scripts/verify-published-tarball.mjs"));
+	const verifyIndex = steps.findIndex((step) => (step.run ?? "").includes("scripts/verify-release-tarball.mjs"));
 	const releaseIndex = steps.findIndex((step) => step.name === RELEASE_STEP);
-	assert.ok(verifyIndex >= 0, `expected the published-tarball verification step: ${steps.map((step) => step.name).join(", ")}`);
+	assert.ok(verifyIndex >= 0, `expected the release-tarball verification step: ${steps.map((step) => step.name).join(", ")}`);
 	assert.ok(releaseIndex > verifyIndex, "the tarball verification must run before the GitHub Release is created");
+	// The verified tarball is what the release publishes; without it on the
+	// release, the download URL every install and update uses returns 404.
+	const releaseStep = stepOf(loadWorkflow("release.yml"), RELEASE_JOB, RELEASE_STEP) as {
+		with?: Record<string, unknown>;
+	};
+	assert.match(
+		String(releaseStep.with?.["files"] ?? ""),
+		/dist\/\*\.tgz/,
+		"the GitHub Release must carry the verified tarball as an asset",
+	);
 });
 
 test("release.yml tag validation rejects a tag that disagrees with the version", { skip: SKIP_NO_YAML ?? SKIP_NO_SHELL }, () => {

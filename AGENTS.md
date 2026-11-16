@@ -40,8 +40,9 @@ Requires Node >= 22.19.0, ESM (`"type": "module"`).
 ## Versioning and releases
 
 - Changesets workflow (`.changeset/`): `major` = breaking, `minor` = new compatible capability, `patch` = fix. Changelog headings follow suit (`### Minor Changes`).
-- `npm publish` is always run by the maintainer in their own terminal (2FA). Agents never publish, never push/tag before the maintainer confirms the publish landed.
-- The Release workflow re-verifies the published tarball against the tagged tree (`scripts/verify-published-tarball.mjs`); a tag whose content does not match what npm serves fails the run.
+- The release asset is the distribution channel: the Release workflow packs the tagged tree and attaches `pi-freeflow-<version>.tgz` to the GitHub release. Every install and update path takes that asset's URL, so a release needs no registry.
+- `npm publish` is optional and always run by the maintainer in their own terminal (2FA). Agents never publish, never push/tag before the maintainer confirms. A tag whose `package.json` disagrees with the release tag fails the workflow.
+- The Release workflow proves the tarball before attaching it (`scripts/verify-release-tarball.mjs`): exactly the files this tree ships, byte for byte, under the name the download URL is built from.
 
 ## Repo metadata (About panel)
 

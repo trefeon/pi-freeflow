@@ -154,7 +154,14 @@ test("cline pool: a non-transient rename error is not retried", async () => {
  });
 });
 
-test("cline pool: a write-protected pool reports the failure instead of claiming a save", async () => {
+test("cline pool: a write-protected pool reports the failure instead of claiming a save", async (t) => {
+ // POSIX file/dir write bits do not restrict uid 0: on a root-run host chmod
+ // 444/555 cannot make a write fail, so this fixture cannot exercise the
+ // guard. The Windows EPERM path is covered by the rename-error tests above.
+ if (process.platform !== "win32" && typeof process.getuid === "function" && process.getuid() === 0) {
+  t.skip("root bypasses POSIX write bits — chmod cannot simulate a read-only pool");
+  return;
+ }
  await withIsolatedPool(() => {
   addAccount("a", SLOT_A);
   // Both halves of the protection: the file's own write bit (which blocks the

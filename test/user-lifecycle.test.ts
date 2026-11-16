@@ -636,7 +636,7 @@ test("update checker [h1] linked install skips the registry fetch", async (t: Te
 	});
 });
 
-test("update checker [h2] unlinked install performs the registry fetch", async () => {
+test("update checker [h2] unlinked install performs the release fetch", async () => {
 	await withIsolatedSandboxFiles(async () => {
 		clearSandboxFiles();
 		// Ensure the unlinked state (the repo's real non-symlink entry) and no cache.
@@ -644,11 +644,13 @@ test("update checker [h2] unlinked install performs the registry fetch", async (
 
 		const fetchMock = test.mock.method(globalThis, "fetch", async (url: unknown) => {
 			const u = String(url);
-			if (u.includes("registry.npmjs.org")) {
-				return new Response(JSON.stringify({ version: "9.9.9" }), {
-					status: 200,
-					headers: { "content-type": "application/json" },
+			if (u.includes("/releases/latest")) {
+				// GitHub answers releases/latest with a redirect to the newest tag.
+				const res = new Response("<html></html>", { status: 200 });
+				Object.defineProperty(res, "url", {
+					value: "https://github.com/trefeon/pi-freeflow/releases/tag/v9.9.9",
 				});
+				return res;
 			}
 			throw new Error(`unexpected fetch: ${u}`);
 		});
@@ -658,9 +660,9 @@ test("update checker [h2] unlinked install performs the registry fetch", async (
 			assert.equal(
 				getCachedUpdate()?.latest,
 				"9.9.9",
-				"unlinked install must fetch the registry and cache the latest version",
+				"unlinked install must fetch the latest release and cache its version",
 			);
-			assert.ok(fetchMock.mock.calls.length >= 1, "unlinked install must perform the registry fetch");
+			assert.ok(fetchMock.mock.calls.length >= 1, "unlinked install must perform the release fetch");
 		} finally {
 			fetchMock.mock.restore();
 		}

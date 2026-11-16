@@ -440,7 +440,7 @@ test("user flow [4/6] /freeflow deploy vercel adds a relay, activates it, and pr
 
 // ── 5. Update ───────────────────────────────────────────────────────────────
 
-test("user flow [5/6] newer registry version writes the cache and reports the update; identical stays silent", async () => {
+test("user flow [5/6] newer release version writes the cache and reports the update; identical stays silent", async () => {
  await withIsolatedSandboxFiles(async () => {
   clearSandboxFiles();
   const notifications: NotifyRecord[] = [];
@@ -449,14 +449,16 @@ test("user flow [5/6] newer registry version writes the cache and reports the up
 
   const realFetch = globalThis.fetch;
   try {
-   // 1. Mocked registry returns a newer version.
-   globalThis.fetch = (async () =>
-    new Response(JSON.stringify({ version: "9.9.9" }), {
-     status: 200,
-     headers: { "content-type": "application/json" },
-    })) as typeof fetch;
+   // 1. Mocked releases page redirects to a newer tag.
+   globalThis.fetch = (async () => {
+    const res = new Response("<html></html>", { status: 200 });
+    Object.defineProperty(res, "url", {
+     value: "https://github.com/trefeon/pi-freeflow/releases/tag/v9.9.9",
+    });
+    return res;
+   }) as typeof fetch;
 
-   assert.equal(await fetchLatestVersion(), "9.9.9", "registry must report the newer version");
+   assert.equal(await fetchLatestVersion(), "9.9.9", "releases channel must report the newer version");
 
    // Background notifier writes the version into the sandbox cache.
    checkForUpdateInBackground(makeCommandUi([]));
@@ -472,18 +474,20 @@ test("user flow [5/6] newer registry version writes the cache and reports the up
     "status must report the cached update",
    );
 
-   // 2. Registry returns the identical version -> "already on latest".
+   // 2. Releases channel names the same version -> "already on latest".
    notifications.length = 0;
    const local = getLocalVersion();
-   globalThis.fetch = (async () =>
-    new Response(JSON.stringify({ version: local }), {
-     status: 200,
-     headers: { "content-type": "application/json" },
-    })) as typeof fetch;
+   globalThis.fetch = (async () => {
+    const res = new Response("<html></html>", { status: 200 });
+    Object.defineProperty(res, "url", {
+     value: `https://github.com/trefeon/pi-freeflow/releases/tag/v${local}`,
+    });
+    return res;
+   }) as typeof fetch;
    await cmd.handler("update", ctx);
    assert.ok(
     notifications.some((n) => n.msg.includes("Already on latest")),
-    "identical registry must report already on latest",
+    "identical release version must report already on latest",
    );
   } finally {
    globalThis.fetch = realFetch;
