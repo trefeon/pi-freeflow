@@ -222,11 +222,15 @@ function callerTool(name: string): Record<string, unknown> {
  * character-for-character and restored downstream. Every other name rides
  * verbatim — the model sees the same name it always saw.
  */
-function upstreamNameFor(caller: string, name: string): string {
+function upstreamNameFor(caller: string, name: string, forFingerprint = false): string {
 	// Names ride verbatim everywhere except the OpenCode fingerprint lane, so
 	// the audit runs the translation the fingerprint actually performs.
 	const declaresGlob = (INVENTORY_NAMES[caller] ?? []).includes("glob");
 	if (name === "find" && !declaresGlob) return "glob";
+	// The fingerprint lane disguises the two OMP experimental context tools;
+	// the free-tier gate rejects a declaration carrying both exact names.
+	if (forFingerprint && name === "context_notes") return "notes_tool";
+	if (forFingerprint && name === "new_context") return "refresh_tool";
 	return name.replace(/[^a-zA-Z0-9_.-]/g, "_");
 }
 
@@ -241,7 +245,7 @@ test("every host tool name survives translation on every wire shape", () => {
 			const tools = fingerprinted(caller, path);
 			const seen = new Set(tools.map((t) => canon(t).name));
 			for (const name of names) {
-				assert.ok(seen.has(upstreamNameFor(caller, name)), `${caller} ${path}: tool ${name} lost during translation`);
+				assert.ok(seen.has(upstreamNameFor(caller, name, true)), `${caller} ${path}: tool ${name} lost during translation`);
 			}
 		}
 	}
@@ -253,8 +257,8 @@ test("every host tool schema is forwarded byte-identically", () => {
 			const tools = fingerprinted(caller, path);
 			for (const name of names) {
 				const sent = callerTool(name).function as Record<string, unknown>;
-				const got = canon(pick(tools, upstreamNameFor(caller, name)));
-				assert.equal(got.name, upstreamNameFor(caller, name), `${caller} ${path}/${name}: name changed`);
+				const got = canon(pick(tools, upstreamNameFor(caller, name, true)));
+				assert.equal(got.name, upstreamNameFor(caller, name, true), `${caller} ${path}/${name}: name changed`);
 				assert.equal(got.description, sent.description, `${caller} ${path}/${name}: description not verbatim`);
 				// Byte-identical, not merely deep-equal: key order and every keyword survive.
 				assert.equal(

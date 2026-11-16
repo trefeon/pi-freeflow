@@ -6,13 +6,14 @@
  * the host ever sees them. Raw SSE passthrough would leak those placeholders
  * on the streamed path, so this section mirrors the aggregate semantics
  * event-by-event: function_call deltas whose name is in this request's
- * injected list are dropped, surviving names get caller casing (Bash) and the
- * Pi find->glob rename restored. Completed tool arguments are additionally
- * repaired against `argSchemas` on the terminal events that carry the whole
- * payload. State is per-stream (no globals); the non-stream path is untouched.
+ * injected list are dropped, surviving names get caller casing (Bash) and
+ * every upstream-name rewrite restored. Completed tool arguments are
+ * additionally repaired against `argSchemas` on the terminal events that carry
+ * the whole payload. State is per-stream (no globals); the non-stream path is
+ * untouched.
  */
 
-import type { CaseRestoreMap } from "./fingerprint-tools.ts";
+import { restoreName, type CaseRestoreMap } from "./fingerprint-tools.ts";
 import { restoreToolNameForCaller, type FindGlobRestore } from "./tool-translation.ts";
 import { repairToolArguments } from "./tool-args.ts";
 import type { ToolcallRepairSink } from "./toolcall-audit.ts";
@@ -213,7 +214,7 @@ export function flushBufferedToolArgs(
 
 /**
  * True when the stream needs no rewrite and must flow byte-identical:
- * nothing injected, no casing to restore, no find->glob rename, and the
+ * nothing injected, no casing to restore, no upstream-name rewrite, and the
  * caller declared tools. Tool-less callers must still cloak on every path
  * when the injected record exists (legacy direct calls keep everything).
  */
@@ -244,9 +245,9 @@ export function isRepairableTool(
  return schemas !== undefined && schemas.size > 0 && schemas.has(name.trim().toLowerCase());
 }
 
-/** Caller casing first, then the Pi find->glob rename (upstream glob->find). */
+/** Caller casing first, then the translator's upstream-name rewrites. */
 export function restoreStreamName(name: string, cloak: StreamCloakOptions): string {
- const cased = cloak.caseRestore?.[name.toLowerCase()] ?? name;
+ const cased = restoreName(name, cloak.caseRestore);
  return cloak.findGlob ? restoreToolNameForCaller(cased, cloak.findGlob) : cased;
 }
 

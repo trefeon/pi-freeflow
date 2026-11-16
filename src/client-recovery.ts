@@ -17,16 +17,27 @@ import {
 } from "./config.ts";
 import type { DaemonHealthSnapshot } from "./health.ts";
 import { logInfo, logWarn } from "./logger.ts";
+import { processState } from "./process-state.ts";
 import { compareVersions } from "./update-core.ts";
 
-/** First tick (Date.now()) the daemon has looked continuously busy; 0 = idle. */
-let busySince = 0;
-/** Consecutive recovery attempts (backoff exponent n). Reset on healthy watchdog tick. */
-let backoffAttempt = 0;
-/** Timestamps of recent recovery failures (breaker window). */
-let recoveryFailures: number[] = [];
-/** Watchdog respawns halted until this time (breaker open). */
-let breakerOpenUntil = 0;
+type RecoveryState = {
+ /** First tick (Date.now()) the daemon has looked continuously busy; 0 = idle. */
+ busySince: number;
+ /** Consecutive recovery attempts (backoff exponent n). Reset on healthy watchdog tick. */
+ backoffAttempt: number;
+ /** Timestamps of recent recovery failures (breaker window). */
+ recoveryFailures: number[];
+ /** Watchdog respawns halted until this time (breaker open). */
+ breakerOpenUntil: number;
+};
+
+/** One backoff/breaker per process, however many copies of the extension are loaded. */
+const rs = processState<RecoveryState>("recovery-state.v1", () => ({
+ busySince: 0,
+ backoffAttempt: 0,
+ recoveryFailures: [],
+ breakerOpenUntil: 0,
+}));
 
 /**
  * Respawn backoff: min(2s * 2^n, 60s) + jitter. n is the consecutive-failure
@@ -53,33 +64,33 @@ export function isStuckBusy(busySinceMs: number, lastBytesAt: number, now = Date
 /** Track the busy/idle edge from a health snapshot; returns the updated busySince. */
 export function trackBusyEdge(activeRequests: number, lastBytesAt: number, now = Date.now()): number {
  if (activeRequests > 0) {
-  if (!busySince) busySince = now;
+  if (!rs.busySince) rs.busySince = now;
  } else {
-  busySince = 0;
+  rs.busySince = 0;
  }
- return busySince;
+ return rs.busySince;
 }
 
 export function getBusySince(): number {
- return busySince;
+ return rs.busySince;
 }
 
 export function resetBusySince(): void {
- busySince = 0;
+ rs.busySince = 0;
 }
 
 /** True while the breaker halt is in effect (respawns paused, fallback serves). */
 export function isBreakerHalted(now = Date.now()): boolean {
- return now < breakerOpenUntil;
+ return now < rs.breakerOpenUntil;
 }
 
 /** Record a recovery failure; opens the breaker after 5 straight failures in 5min. */
 export function recordRecoveryFailure(now = Date.now()): boolean {
- recoveryFailures.push(now);
- recoveryFailures = recoveryFailures.filter((t) => now - t <= BREAKER_WINDOW_MS);
- backoffAttempt += 1;
- if (recoveryFailures.length >= BREAKER_FAILURES) {
-  breakerOpenUntil = now + BREAKER_HALT_MS;
+ rs.recoveryFailures.push(now);
+ rs.recoveryFailures = rs.recoveryFailures.filter((t) => now - t <= BREAKER_WINDOW_MS);
+ rs.backoffAttempt += 1;
+ if (rs.recoveryFailures.length >= BREAKER_FAILURES) {
+  rs.breakerOpenUntil = now + BREAKER_HALT_MS;
   logWarn("recovery breaker open — 5 straight failures in 5min, halting respawn for 10min (in-process fallback meanwhile)");
   return true;
  }
@@ -88,9 +99,9 @@ export function recordRecoveryFailure(now = Date.now()): boolean {
 
 /** Record a healthy watchdog tick: clears the straight-failure run and backoff. */
 export function recordRecoverySuccess(): void {
- recoveryFailures = [];
- backoffAttempt = 0;
- breakerOpenUntil = 0;
+ rs.recoveryFailures = [];
+ rs.backoffAttempt = 0;
+ rs.breakerOpenUntil = 0;
 }
 
 /** Test seam: snapshot of the recovery counters. */
@@ -100,15 +111,15 @@ export function _getRecoveryStateForTest(): {
  breakerOpenUntil: number;
  busySince: number;
 } {
- return { backoffAttempt, failures: [...recoveryFailures], breakerOpenUntil, busySince };
+ return { backoffAttempt: rs.backoffAttempt, failures: [...rs.recoveryFailures], breakerOpenUntil: rs.breakerOpenUntil, busySince: rs.busySince };
 }
 
 /** Test seam: reset recovery counters without touching timers. */
 export function _resetRecoveryForTest(): void {
- backoffAttempt = 0;
- recoveryFailures = [];
- breakerOpenUntil = 0;
- busySince = 0;
+ rs.backoffAttempt = 0;
+ rs.recoveryFailures = [];
+ rs.breakerOpenUntil = 0;
+ rs.busySince = 0;
 }
 
 /** Recovery-decision shape; canonical definition lives in health.ts. */
@@ -164,7 +175,7 @@ export async function triggerRecovery(port: number, why: string, deps: RecoveryD
    void deps.ensureInProcessFallback();
    return;
   }
-  const delay = computeRecoveryBackoffMs(backoffAttempt - 1);
+  const delay = computeRecoveryBackoffMs(rs.backoffAttempt - 1);
   logWarn(`watchdog recovery (${why}) — backing off ${Math.round(delay)}ms before respawn`);
   deps.stopHeartbeatInternal();
   deps.resetHeartbeatPort();
@@ -176,11 +187,21 @@ export async function triggerRecovery(port: number, why: string, deps: RecoveryD
    const health = deps.getDaemonHealth ? await deps.getDaemonHealth(port) : null;
    if (health && (health.activeRequests ?? 0) > 0) {
     trackBusyEdge(health.activeRequests ?? 0, health.lastBytesAt ?? 0, Date.now());
-    if (!isStuckBusy(busySince, health.lastBytesAt ?? 0, Date.now())) {
+    if (!isStuckBusy(rs.busySince, health.lastBytesAt ?? 0, Date.now())) {
      logInfo(`watchdog recovery deferred — daemon busy (${health.activeRequests} active, waiting for 5min-stuck + 60s-quiet)`);
      await deps.attachTo(port);
      return;
     }
+   }
+   // Re-check after the backoff: another session (or another loaded copy of
+   // this extension) may already have brought a fresh daemon up. A daemon
+   // that is no longer worth recovering — same or newer version, SSE healthy
+   // — must be attached to, never shut down and respawned.
+   if (health !== null && !shouldRecoverOnHealth(health)) {
+    logInfo(`watchdog recovery cancelled — daemon on :${port} answers healthy v${health.version} after backoff`);
+    recordRecoverySuccess();
+    await deps.attachTo(port);
+    return;
    }
    const ver = health?.version ?? PKG_VERSION;
    await deps.killStaleDaemon(port, ver, "proxy daemon");
@@ -229,7 +250,7 @@ export async function watchdogCheck(port: number, deps: RecoveryDeps): Promise<v
   recordRecoverySuccess();
   return;
  }
- if (health && (health.activeRequests ?? 0) > 0 && !isStuckBusy(busySince, health.lastBytesAt ?? 0)) return;
+ if (health && (health.activeRequests ?? 0) > 0 && !isStuckBusy(rs.busySince, health.lastBytesAt ?? 0)) return;
  void triggerRecovery(
   port,
   health === null ? "daemon gone" : isOlderDaemonVersion(health.version) ? `stale v${health.version}` : "failed-SSE degraded",

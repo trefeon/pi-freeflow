@@ -15,7 +15,7 @@ import {
  refreshCatalog,
  setAliveCatalog,
 } from "./catalog.ts";
-import { ensureDaemon as ensureClientDaemon, ensureProxyReady, getClientPort, stopHeartbeat } from "./client.ts";
+import { ensureDaemon as ensureClientDaemon, ensureProxyReady, getClientPort, releaseClient, retainClient } from "./client.ts";
 import { createCommandSpec, stopLogsFollow, updateStatusBar } from "./commands.ts";
 import { HOST, ONBOARDED_FLAG_FILE, PORT } from "./config.ts";
 import { logInfo, logWarn } from "./logger.ts";
@@ -194,6 +194,9 @@ export function buildProviderConfig(
  */
 export default async function(pi: ExtensionAPI): Promise<void> {
  logInfo("pi-freeflow extension initializing...");
+ // This loaded copy's handle on the process-wide client (see client.ts).
+ const clientHolder = {};
+ retainClient(clientHolder);
 
  let actualPort: number;
  try {
@@ -287,6 +290,7 @@ export default async function(pi: ExtensionAPI): Promise<void> {
  }
 
  pi.on?.("session_start", async (_event, ctx: ExtensionContext) => {
+  retainClient(clientHolder);
   await ensureDaemon(ctx.ui);
   const freshRelayState = resolveRelayState();
   setStatusUi(ctx.ui);
@@ -375,14 +379,6 @@ export default async function(pi: ExtensionAPI): Promise<void> {
  });
  pi.on?.("session_shutdown", async () => {
   stopLogsFollow();
-  await stopHeartbeat();
- });
- process.once("beforeExit", () => {
-  void stopHeartbeat();
- });
- process.once("exit", () => {
-  try {
-   void stopHeartbeat();
-  } catch { }
+  await releaseClient(clientHolder);
  });
 }

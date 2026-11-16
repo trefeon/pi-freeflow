@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import {
  DAEMON_GC_MS,
  DAEMON_GRACE_MS,
+ DAEMON_NO_WALK_ENV,
  DAEMON_TTL_MS,
  HOST,
  PKG_VERSION,
@@ -117,7 +118,9 @@ async function runDaemon(): Promise<void> {
  setShutdownShouldExit(true);
  let boundPort = PORT;
  try {
-  const r = await startProxy();
+  // A client-spawned daemon must hold the base port or exit: the client only
+  // waits there, so a walked daemon would be an unreachable orphan.
+  const r = await startProxy(undefined, { walk: process.env[DAEMON_NO_WALK_ENV] !== "1" });
   if (!r.server) {
    // Port was taken by another (possibly newer) daemon — the parent
    // attaches to the winner; this spawn exits quietly.

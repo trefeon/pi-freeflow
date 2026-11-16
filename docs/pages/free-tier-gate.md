@@ -189,6 +189,13 @@ into exactly one live-shaped 5-line block (`Working directory:`,
 `Workspace root:`, `Is git:`, `Platform:`, `Today's date:`) appended to the
 last system prompt. The Kilo, Cline and OVHcloud lanes are not touched.
 
+Measured 2026-11-10: a second, independent body-side trigger is the declared
+tool list. A request that names both OMP experimental context tools
+(`context_notes` and `new_context`) is refused, while either name alone passes
+and the descriptions or schemas make no difference. On the free tier those two
+declarations ride under neutral names, and the caller's names are restored in
+the replies, so both tools keep working normally.
+
 A bare `FreeUsageLimitError` 429 with none of the quota markers (retry/reset
 language, explicit rate-limit codes) is the shape verdict above, not quota
 exhaustion: no deploy guidance is attached to it, because a relay rotation

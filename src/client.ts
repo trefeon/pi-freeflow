@@ -21,6 +21,7 @@ import {
  DAEMON_HEARTBEAT_MS,
  DAEMON_HEARTBEAT_MS_ENV,
  DAEMON_READY_TIMEOUT_MS,
+ DAEMON_NO_WALK_ENV,
  DAEMON_SPAWN_ENV,
  DAEMON_WATCHDOG_MS,
  DAEMON_WATCHDOG_MS_ENV,
@@ -46,6 +47,7 @@ import {
 import { compareVersions } from "./update-core.ts";
 import { isDaemonIdentityBody } from "./health.ts";
 import { tokenAuthHeaders } from "./token.ts";
+import { processState } from "./process-state.ts";
 import {
  daemonScriptPath,
  findExecutableOnPath,
@@ -113,23 +115,53 @@ export {
  type RecoveryDeps,
 };
 
-const CLIENT_ID = randomUUID();
+type ClientState = {
+ /** Lease id this process registers with the daemon. */
+ clientId: string;
+ attachedPort: number;
+ heartbeatTimer: ReturnType<typeof setInterval> | null;
+ watchdogTimer: ReturnType<typeof setInterval> | null;
+ heartbeatPort: number;
+ ensuring: boolean;
+ /**
+  * In-flight ensureDaemon() attempt. Every concurrent caller awaits this same
+  * promise instead of guessing a port; ensureDaemon clears it on settle.
+  */
+ ensureInFlight: Promise<number> | null;
+ fallbackServer: http.Server | null;
+ /** Last wall-clock attempt of a background UA refresh; storm-guard for heartbeat cadence. */
+ lastUaRefreshAt: number;
+ /** Test-injected fetch for the background UA refresh; null = global fetch. */
+ uaRefreshFetch: typeof fetch | null;
+ /** Wall-clock of the last detached daemon spawn (spawn throttle). */
+ lastSpawnAt: number;
+ daemonSpawner: DaemonSpawner;
+ /** Loaded extension copies still serving a session; the last release detaches. */
+ holders: Set<object>;
+ exitHookInstalled: boolean;
+};
 
-let attachedPort = 0;
-let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-let watchdogTimer: ReturnType<typeof setInterval> | null = null;
-let heartbeatPort = 0;
-let ensuring = false;
 /**
- * In-flight ensureDaemon() attempt. Every concurrent caller awaits this same
- * promise instead of guessing a port; ensureDaemon clears it on settle.
+ * One client per process: one lease, one heartbeat, one watchdog, one spawn
+ * throttle and one in-process fallback, however many copies of the extension
+ * the host loads (see process-state.ts).
  */
-let ensureInFlight: Promise<number> | null = null;
-let fallbackServer: http.Server | null = null;
-/** Last wall-clock attempt of a background UA refresh; storm-guard for heartbeat cadence. */
-let lastUaRefreshAt = 0;
-/** Test-injected fetch for the background UA refresh; null = global fetch. */
-let uaRefreshFetch: typeof fetch | null = null;
+const cs = processState<ClientState>("client-state.v1", () => ({
+ clientId: randomUUID(),
+ attachedPort: 0,
+ heartbeatTimer: null,
+ watchdogTimer: null,
+ heartbeatPort: 0,
+ ensuring: false,
+ ensureInFlight: null,
+ fallbackServer: null,
+ lastUaRefreshAt: 0,
+ uaRefreshFetch: null,
+ lastSpawnAt: 0,
+ daemonSpawner: spawn,
+ holders: new Set<object>(),
+ exitHookInstalled: false,
+}));
 
 function getHeartbeatMs(): number {
  const raw = process.env[DAEMON_HEARTBEAT_MS_ENV];
@@ -199,78 +231,78 @@ async function controlCall(
  */
 export function maybeRefreshOpenCodeUserAgent(): void {
  const now = Date.now();
- if (now - lastUaRefreshAt < OPENCODE_VERSION_TTL_MS) return;
- lastUaRefreshAt = now;
+ if (now - cs.lastUaRefreshAt < OPENCODE_VERSION_TTL_MS) return;
+ cs.lastUaRefreshAt = now;
  try {
-  void Promise.resolve(refreshOpenCodeUserAgent(uaRefreshFetch ?? fetch)).catch(() => { });
+  void Promise.resolve(refreshOpenCodeUserAgent(cs.uaRefreshFetch ?? fetch)).catch(() => { });
  } catch { }
 }
 
 /** Test seam: inject the fetch used by the background UA refresh. */
 export function _setUaRefreshFetchForTest(fetchImpl: typeof fetch | null): void {
- uaRefreshFetch = fetchImpl;
+ cs.uaRefreshFetch = fetchImpl;
 }
 
 /** Test seam: reset the UA refresh storm-guard (and injected fetch). */
 export function _resetUaRefreshForTest(): void {
- lastUaRefreshAt = 0;
- uaRefreshFetch = null;
+ cs.lastUaRefreshAt = 0;
+ cs.uaRefreshFetch = null;
 }
 
 function startHeartbeat(port: number): void {
  stopHeartbeatInternal();
- heartbeatPort = port;
+ cs.heartbeatPort = port;
  const ms = getHeartbeatMs();
- heartbeatTimer = setInterval(() => {
+ cs.heartbeatTimer = setInterval(() => {
   void beatOnce(port);
  }, ms);
  try {
-  heartbeatTimer.unref();
+  cs.heartbeatTimer.unref();
  } catch { }
  const wms = getWatchdogMs();
- watchdogTimer = setInterval(() => {
+ cs.watchdogTimer = setInterval(() => {
   void watchdogCheck(port, recoveryDeps);
  }, wms);
  try {
-  watchdogTimer.unref();
+  cs.watchdogTimer.unref();
  } catch { }
 }
 
 function stopHeartbeatInternal(): void {
- if (heartbeatTimer !== null) {
-  clearInterval(heartbeatTimer);
-  heartbeatTimer = null;
+ if (cs.heartbeatTimer !== null) {
+  clearInterval(cs.heartbeatTimer);
+  cs.heartbeatTimer = null;
  }
- if (watchdogTimer !== null) {
-  clearInterval(watchdogTimer);
-  watchdogTimer = null;
+ if (cs.watchdogTimer !== null) {
+  clearInterval(cs.watchdogTimer);
+  cs.watchdogTimer = null;
  }
 }
 
 export async function stopHeartbeat(): Promise<void> {
- const port = heartbeatPort;
- const hadFallback = fallbackServer !== null;
+ const port = cs.heartbeatPort;
+ const hadFallback = cs.fallbackServer !== null;
  stopHeartbeatInternal();
- heartbeatPort = 0;
- if (fallbackServer) {
+ cs.heartbeatPort = 0;
+ if (cs.fallbackServer) {
   try {
-   fallbackServer.closeIdleConnections?.();
-   fallbackServer.closeAllConnections?.();
-   fallbackServer.close();
+   cs.fallbackServer.closeIdleConnections?.();
+   cs.fallbackServer.closeAllConnections?.();
+   cs.fallbackServer.close();
   } catch { }
-  fallbackServer = null;
+  cs.fallbackServer = null;
  }
  if (port && !hadFallback) {
   try {
-   await controlCall(port, "/_client/detach", { id: CLIENT_ID });
+   await controlCall(port, "/_client/detach", { id: cs.clientId });
   } catch { }
  }
 }
 
 async function beatOnce(port: number): Promise<void> {
  maybeRefreshOpenCodeUserAgent();
- if (ensuring) return;
- const result = await controlCall(port, "/_client/heartbeat", { id: CLIENT_ID });
+ if (cs.ensuring) return;
+ const result = await controlCall(port, "/_client/heartbeat", { id: cs.clientId });
  if (result === "gone") {
   void ensureDaemon().catch((e) => logWarn("heartbeat respawn failed", { error: String(e) }));
  } else if (result === "unknown") {
@@ -280,8 +312,8 @@ async function beatOnce(port: number): Promise<void> {
 }
 
 async function attachTo(port: number): Promise<boolean> {
- attachedPort = port;
- const result = await controlCall(port, "/_client/attach", { id: CLIENT_ID });
+ cs.attachedPort = port;
+ const result = await controlCall(port, "/_client/attach", { id: cs.clientId });
  if (result === "gone") {
   return false;
  }
@@ -293,7 +325,7 @@ async function attachTo(port: number): Promise<boolean> {
 async function ensureInProcessFallback(): Promise<number> {
  try {
   const r = await startProxy();
-  if (r.server) fallbackServer = r.server;
+  if (r.server) cs.fallbackServer = r.server;
   await attachTo(r.port);
   return r.port;
  } catch (e) {
@@ -303,14 +335,14 @@ async function ensureInProcessFallback(): Promise<number> {
 }
 
 const recoveryDeps: RecoveryDeps = {
- isEnsuring: () => ensuring,
+ isEnsuring: () => cs.ensuring,
  setEnsuring: (val: boolean) => {
-  ensuring = val;
+  cs.ensuring = val;
  },
  ensureInProcessFallback,
  stopHeartbeatInternal,
  resetHeartbeatPort: () => {
-  heartbeatPort = 0;
+  cs.heartbeatPort = 0;
  },
  attachTo: async (p: number) => { await attachTo(p); },
  killStaleDaemon: (p, v, w) => killStaleDaemon(p, v, w),
@@ -367,7 +399,7 @@ async function killStaleDaemon(
  for (let i = 0; i < 15; i++) {
   await new Promise<void>((r) => setTimeout(r, 100));
   if (!(await isProxyAlive(port))) {
-   lastSpawnAt = 0;
+   cs.lastSpawnAt = 0;
    return true;
   }
  }
@@ -464,33 +496,39 @@ export function shouldReclaimDarkHolder(probe: DarkHolderProbe): boolean {
 }
 
 /**
+ * What a dark-holder reclaim left on the port:
+ * - "alive": a proxy of ours answers — attach to it;
+ * - "freed": we killed a dark holder and the port is free — spawn fresh;
+ * - "free": nothing was bound — spawn fresh;
+ * - "held": the holder stays (kill failed or disabled by env) — no daemon can bind.
+ */
+type ReclaimOutcome = "alive" | "freed" | "free" | "held";
+
+/**
  * Dislodge a dark holder from the base port so a fresh daemon can bind it.
- * Returns true when a healthy proxy answers afterwards (attach to it); false
- * when the caller should spawn fresh (the port is free — nothing to reclaim).
  * Honors the no-kill env opt-out; a live holder is never touched here — the
  * stale-replace path owns versioned daemons.
  */
-async function reclaimDarkHolder(port: number): Promise<boolean> {
+async function reclaimDarkHolder(port: number): Promise<ReclaimOutcome> {
  const probe = await probeDarkHolder(port);
- if (probe.alive) return true;
- if (!probe.bound) return false; // port is free — spawn fresh
- if (!shouldReclaimDarkHolder(probe)) return true;
+ if (probe.alive) return "alive";
+ if (!probe.bound) return "free";
+ if (!shouldReclaimDarkHolder(probe)) return "alive";
  if (NO_KILL_ENV && process.env[NO_KILL_ENV] === "1") {
   logInfo(
    `proxy on :${port} answers neither our health nor models — leaving it alone (replacement disabled by env)`,
   );
-  return false;
+  return "held";
  }
  logWarn(`proxy on :${port} holds the port but answers nothing of ours — replacing dark holder`);
  await killPortHolder(port);
  for (let i = 0; i < 10; i++) {
   await new Promise<void>((r) => setTimeout(r, 200));
-  if (await isProxyAlive(port)) return true;
+  if (await isProxyAlive(port)) return "alive";
+  if (!(await isPortBound(port))) return "freed";
  }
- if (await isPortBound(port)) {
-  logWarn(`port :${port} is still held by a process we could not (and must not) kill — starting the in-process proxy instead`);
- }
- return false;
+ logWarn(`port :${port} is still held by a process we could not (and must not) kill — starting the in-process proxy instead`);
+ return "held";
 }
 
 function mentionsLoopback(text: string): boolean {
@@ -576,13 +614,12 @@ type DaemonSpawner = (
  options: Parameters<typeof spawn>[2],
 ) => DaemonChild;
 
-let daemonSpawner: DaemonSpawner = spawn;
 /** Children that failed to launch (spawn error) — the ready-wait treats them as exited. */
 const failedDaemonSpawns = new WeakSet<DaemonChild>();
 
 /** Test seam: replace the child spawner used for detached daemon starts. */
 export function _setDaemonSpawnForTest(spawner: DaemonSpawner | null): void {
- daemonSpawner = spawner ?? spawn;
+ cs.daemonSpawner = spawner ?? spawn;
 }
 
 /** True once a spawned daemon child has exited (exit code or signal). */
@@ -590,12 +627,11 @@ export function hasChildExited(child: Pick<DaemonChild, "exitCode" | "signalCode
  return child.exitCode !== null || child.signalCode !== null;
 }
 
-let lastSpawnAt = 0;
 const SPAWN_THROTTLE_MS = 2_000;
 
 function spawnDaemonProcess(): DaemonChild | null {
  const now = Date.now();
- if (now - lastSpawnAt < SPAWN_THROTTLE_MS) {
+ if (now - cs.lastSpawnAt < SPAWN_THROTTLE_MS) {
   logWarn("daemon spawn throttled — recent spawn still pending");
   return null;
  }
@@ -611,11 +647,11 @@ function spawnDaemonProcess(): DaemonChild | null {
  const scriptArg = runtime.args[runtime.args.length - 1] ?? "";
  const stagedScript = runtime.runtimeType === "node" ? materializeDaemonSources(scriptArg) : scriptArg;
  const args = stagedScript === scriptArg ? runtime.args : [...runtime.args.slice(0, -1), stagedScript];
- lastSpawnAt = now;
+ cs.lastSpawnAt = now;
  const logFd = openDaemonLogFd();
  try {
-  const child = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(runtime.execPath) && daemonSpawner === spawn
-   ? daemonSpawner(`"${runtime.execPath}" ${args.map((a) => `"${a}"`).join(" ")}`, [], {
+  const child = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(runtime.execPath) && cs.daemonSpawner === spawn
+   ? cs.daemonSpawner(`"${runtime.execPath}" ${args.map((a) => `"${a}"`).join(" ")}`, [], {
     detached: true,
     stdio: logFd === null ? "ignore" : ["ignore", logFd, logFd],
     windowsHide: true,
@@ -623,15 +659,17 @@ function spawnDaemonProcess(): DaemonChild | null {
     env: {
      ...process.env,
      [DAEMON_SPAWN_ENV]: "0",
+     [DAEMON_NO_WALK_ENV]: "1",
     },
    })
-   : daemonSpawner(runtime.execPath, args, {
+   : cs.daemonSpawner(runtime.execPath, args, {
     detached: true,
     stdio: logFd === null ? "ignore" : ["ignore", logFd, logFd],
     windowsHide: true,
     env: {
      ...process.env,
      [DAEMON_SPAWN_ENV]: "0",
+     [DAEMON_NO_WALK_ENV]: "1",
     },
    });
   child.unref();
@@ -707,7 +745,7 @@ async function probeAndMaybeReplace(
  if (ver !== null && ver !== PKG_VERSION) {
   logWarn(`detected proxy daemon version mismatch: running v${ver}, required v${PKG_VERSION} — auto-restarting`);
   await killStaleDaemon(port, ver, label);
-  lastSpawnAt = 0;
+  cs.lastSpawnAt = 0;
   return null;
  }
  if (health !== null && isZenTransportEnvMismatch(health.zenTransport)) {
@@ -715,7 +753,7 @@ async function probeAndMaybeReplace(
    `detected proxy daemon zenTransport mismatch: running ${health.zenTransport?.mode ?? "node"} (${health.zenTransport?.reason ?? "unknown"}), client wants ${process.env[ZEN_TRANSPORT_ENV] === "bun-sidecar" ? "bun-sidecar" : "node"} — auto-restarting`,
   );
   if (await killStaleDaemon(port, ver ?? PKG_VERSION, label)) {
-   lastSpawnAt = 0;
+   cs.lastSpawnAt = 0;
    return null;
   }
  }
@@ -727,16 +765,16 @@ async function probeAndMaybeReplace(
  * Returns the port the caller should use for its ProviderConfig.
  */
 export async function ensureDaemon(): Promise<number> {
- if (ensureInFlight) return ensureInFlight;
- if (ensuring) return attachedPort || PORT;
- ensuring = true;
+ if (cs.ensureInFlight) return cs.ensureInFlight;
+ if (cs.ensuring) return cs.attachedPort || PORT;
+ cs.ensuring = true;
  const attempt = ensureDaemonAttempt();
- ensureInFlight = attempt;
+ cs.ensureInFlight = attempt;
  try {
   return await attempt;
  } finally {
-  if (ensureInFlight === attempt) ensureInFlight = null;
-  ensuring = false;
+  if (cs.ensureInFlight === attempt) cs.ensureInFlight = null;
+  cs.ensuring = false;
  }
 }
 
@@ -755,48 +793,77 @@ async function ensureDaemonAttempt(): Promise<number> {
 
 
   if (isSpawnEnabled()) {
-   const child = spawnDaemonProcess();
-   if (child) {
-    const ready = await waitForReady(PORT, DAEMON_READY_TIMEOUT_MS, child);
-    if (ready) {
-     const ver = await getDaemonVersion(PORT);
-     if (ver !== null && ver !== PKG_VERSION) {
-      if (await killStaleDaemon(PORT, ver, "proxy daemon")) {
-       lastSpawnAt = 0; // kill-confirmed retry bypasses the spawn throttle
-       const retryChild = spawnDaemonProcess();
-       if (retryChild) {
-        const retryReady = await waitForReady(PORT, DAEMON_READY_TIMEOUT_MS, retryChild);
-        if (retryReady) {
-         await attachTo(PORT);
-         return PORT;
-        }
-       }
-      } else if (await isProxyAlive(PORT)) {
-       await attachTo(PORT);
-       return PORT;
-      }
-     } else {
-      await attachTo(PORT);
-      return PORT;
-     }
-    } else {
-     // The spawn never answered: the child exited before binding (e.g. Node
-     // refusing type stripping under a node_modules path) or a dark holder
-     // owns the base port (bind fails, probes fail).
-     if (await reclaimDarkHolder(PORT)) {
-      await attachTo(PORT);
-      return PORT;
-     }
-     logWarn("daemon spawn did not become ready — child exited or the port is blocked");
-    }
+   // Clear a dark holder (e.g. a frozen daemon still owning the socket) BEFORE
+   // spawning: a fresh daemon cannot bind a held base port, and this client
+   // only ever waits on the base port. A free port costs one refused connect.
+   const holder = await reclaimDarkHolder(PORT);
+   if (holder === "alive") {
+    // Ours but slower than the first probe: re-run the version gate on it.
+    const slow = await probeAndMaybeReplace(PORT, "proxy daemon", 600);
+    if (slow !== null && (await attachTo(slow))) return slow;
+   }
+   if (holder === "freed") cs.lastSpawnAt = 0; // kill-confirmed: bypass the spawn throttle
+   if (holder !== "held") {
+    const port = await spawnAndAttach();
+    if (port !== null) return port;
    }
    // Fall through to the in-process fallback below — never hand the caller
    // a port we did not attach to (no lease, no heartbeat).
   }
 
+  return await startFallbackAndAttach();
+}
+
+/**
+ * Spawn a detached daemon on the base port and attach to it. A spawn that never
+ * answers is followed by a dark-holder reclaim; when that kill frees the port,
+ * one fresh spawn runs before giving up. Null means: use the in-process proxy.
+ */
+async function spawnAndAttach(): Promise<number | null> {
+  for (let round = 0; round < 2; round++) {
+   const child = spawnDaemonProcess();
+   if (!child) return null;
+   const ready = await waitForReady(PORT, DAEMON_READY_TIMEOUT_MS, child);
+   if (ready) {
+    const ver = await getDaemonVersion(PORT);
+    if (ver !== null && ver !== PKG_VERSION) {
+     if (await killStaleDaemon(PORT, ver, "proxy daemon")) {
+      cs.lastSpawnAt = 0; // kill-confirmed retry bypasses the spawn throttle
+      const retryChild = spawnDaemonProcess();
+      if (retryChild) {
+       const retryReady = await waitForReady(PORT, DAEMON_READY_TIMEOUT_MS, retryChild);
+       if (retryReady) {
+        if (await attachTo(PORT)) return PORT;
+       }
+      }
+     } else if (await isProxyAlive(PORT)) {
+      if (await attachTo(PORT)) return PORT;
+     }
+     return null;
+    }
+    if (await attachTo(PORT)) return PORT;
+    return null;
+   }
+   // The spawn never answered: the child exited before binding (e.g. Node
+   // refusing type stripping under a node_modules path) or a dark holder
+   // owns the base port (bind fails, probes fail).
+   const holder = await reclaimDarkHolder(PORT);
+   if (holder === "alive") {
+    if (await attachTo(PORT)) return PORT;
+    break;
+   }
+   if (holder !== "freed") break;
+   cs.lastSpawnAt = 0; // kill-confirmed respawn bypasses the spawn throttle
+  }
+  logWarn("daemon spawn did not become ready — child exited or the port is blocked");
+  return null;
+}
+
+/** In-process proxy for this process, with the walked-port guard. */
+async function startFallbackAndAttach(): Promise<number> {
   try {
    const r = await startProxy();
-   if (r.server) fallbackServer = r.server;
+   if (r.server) cs.fallbackServer = r.server;
    let port = r.port;
    if (port !== PORT && r.server) {
     // Walked-port guard: the base port may have freed during the
@@ -806,7 +873,7 @@ async function ensureDaemonAttempt(): Promise<number> {
      try {
       r.server.close();
      } catch { }
-     if (fallbackServer === r.server) fallbackServer = null;
+     if (cs.fallbackServer === r.server) cs.fallbackServer = null;
      logInfo(`base port ${PORT} freed during walk — re-attaching to :${PORT} instead of :${port}`);
      await attachTo(PORT);
      return PORT;
@@ -821,27 +888,62 @@ async function ensureDaemonAttempt(): Promise<number> {
 }
 
 export function getClientPort(): number {
- return attachedPort || PORT;
+ return cs.attachedPort || PORT;
 }
 
 export function hasFallbackServer(): boolean {
- return fallbackServer !== null;
+ return cs.fallbackServer !== null;
+}
+
+/**
+ * Mark one loaded copy of the extension as serving a session. Idempotent per
+ * holder, so a copy may re-retain on every session_start. The first retain
+ * installs a single pair of process-exit hooks that detach the lease, so a
+ * long-lived host does not collect one pair per loaded copy.
+ */
+export function retainClient(holder: object): void {
+ cs.holders.add(holder);
+ if (cs.exitHookInstalled) return;
+ cs.exitHookInstalled = true;
+ process.once("beforeExit", () => {
+  void stopHeartbeat();
+ });
+ process.once("exit", () => {
+  try {
+   void stopHeartbeat();
+  } catch { }
+ });
+}
+
+/**
+ * Release one copy on session_shutdown. The heartbeat, watchdog and fallback
+ * are shared by the whole process, so they stop only when the LAST holder
+ * leaves: a finished subagent or an evicted session must not detach the
+ * sessions still running, and a host that keeps the process alive must not
+ * leave a dead session's timers behind. Returns true when it stopped them.
+ */
+export async function releaseClient(holder: object): Promise<boolean> {
+ cs.holders.delete(holder);
+ if (cs.holders.size > 0) return false;
+ await stopHeartbeat();
+ return true;
 }
 
 export function _resetClientForTest(): void {
  stopHeartbeatInternal();
- heartbeatPort = 0;
- attachedPort = 0;
- ensuring = false;
- ensureInFlight = null;
- lastSpawnAt = 0;
- daemonSpawner = spawn;
+ cs.heartbeatPort = 0;
+ cs.attachedPort = 0;
+ cs.ensuring = false;
+ cs.ensureInFlight = null;
+ cs.lastSpawnAt = 0;
+ cs.daemonSpawner = spawn;
+ cs.holders.clear();
  _resetUaRefreshForTest();
  _resetRecoveryForTest();
- if (fallbackServer) {
+ if (cs.fallbackServer) {
   try {
-   fallbackServer.close();
+   cs.fallbackServer.close();
   } catch { }
-  fallbackServer = null;
+  cs.fallbackServer = null;
  }
 }
