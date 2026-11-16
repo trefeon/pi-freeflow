@@ -14,12 +14,15 @@ import {
 	DEAD_MODEL_IDS,
 	enrichModelDef,
 	getActiveModelUpstream,
+	getAliveCatalog,
 	getLastCatalogRefreshStatus,
 	isFreeCatalogId,
 	mergeCatalog,
 	parseKiloCatalogResponse,
 	refreshCatalog,
+	resolveActiveModelId,
 	setAliveCatalog,
+	syncAliveCatalogFromCache,
 } from "../src/catalog.ts";
 import {
 	CATALOG_CACHE_FILE,
@@ -700,4 +703,67 @@ test("cache persistence failure rejects newly discovered dynamics and marks refr
 		fs.renameSync = originalRename;
 		globalThis.fetch = realFetch;
 	}
+});
+
+test("an expired lock lease past max TTL is reclaimed even while its PID stays live", async () => {
+	const owner = `${process.pid}:expired-lease-test`;
+	const expiredAt = new Date(Date.now() - 130_000);
+	fs.writeFileSync(CATALOG_CACHE_LOCK_FILE, owner);
+	fs.utimesSync(CATALOG_CACHE_LOCK_FILE, expiredAt, expiredAt);
+	const result = await withFetch(async (url) => String(url) === KILO_CATALOG_URL
+		? new Response(JSON.stringify({ data: [kiloRow("vendor/expired-lease")] }), { status: 200 })
+		: new Response(JSON.stringify({ data: [{ id: "expired-lease-free" }] }), { status: 200 }),
+	() => refreshCatalog(true));
+	assert.equal(result.some((entry) => entry.id === "vendor/expired-lease"), true);
+	assert.equal(getLastCatalogRefreshStatus().kilo.outcome, "updated");
+	assert.equal(fs.existsSync(CATALOG_CACHE_LOCK_FILE), false);
+});
+
+test("pid reuse with mismatched Linux process start time reclaims a stale lock", { skip: process.platform !== "linux" }, async () => {
+	const owner = `${process.pid}:0-00000000-0000-4000-8000-000000000000`;
+	const staleAt = new Date(Date.now() - 60_000);
+	fs.writeFileSync(CATALOG_CACHE_LOCK_FILE, owner);
+	fs.utimesSync(CATALOG_CACHE_LOCK_FILE, staleAt, staleAt);
+	const result = await withFetch(async (url) => String(url) === KILO_CATALOG_URL
+		? new Response(JSON.stringify({ data: [kiloRow("vendor/pid-reused")] }), { status: 200 })
+		: new Response(JSON.stringify({ data: [{ id: "pid-reused-free" }] }), { status: 200 }),
+	() => refreshCatalog(true));
+	assert.equal(result.some((entry) => entry.id === "vendor/pid-reused"), true);
+	assert.equal(getLastCatalogRefreshStatus().kilo.outcome, "updated");
+});
+
+test("syncAliveCatalogFromCache resets mtime tracking when cache disappears before rewrite", () => {
+	const fixedTime = new Date(Date.now() - 10_000);
+	const first = model("vendor/first-sync", 1000, "kilo");
+	const second = model("vendor/second-sync", 1000, "kilo");
+	const payload = (entry: RegisteredModel) => JSON.stringify({
+		version: 2,
+		sources: {
+			opencode: { timestamp: Date.now(), ids: [], models: [] },
+			kilo: { timestamp: Date.now(), ids: [entry.id], models: [entry] },
+		},
+	});
+	fs.writeFileSync(CATALOG_CACHE_FILE, payload(first));
+	fs.utimesSync(CATALOG_CACHE_FILE, fixedTime, fixedTime);
+	assert.equal(syncAliveCatalogFromCache(), true);
+	assert.equal(getAliveCatalog().some((entry) => entry.id === first.id), true);
+
+	fs.rmSync(CATALOG_CACHE_FILE, { force: true });
+	assert.equal(syncAliveCatalogFromCache(), false);
+
+	fs.writeFileSync(CATALOG_CACHE_FILE, payload(second));
+	fs.utimesSync(CATALOG_CACHE_FILE, fixedTime, fixedTime);
+	assert.equal(syncAliveCatalogFromCache(), true);
+	assert.equal(getAliveCatalog().some((entry) => entry.id === second.id), true);
+});
+
+test("resolveActiveModelId ignores aliases whose canonical model is inactive", () => {
+	const previous = getAliveCatalog();
+	try {
+		setAliveCatalog([]);
+		assert.equal(resolveActiveModelId("beam"), null);
+	} finally {
+		setAliveCatalog(previous);
+	}
+	assert.equal(resolveActiveModelId("beam"), "beam-free");
 });

@@ -356,7 +356,7 @@ export function resolveActiveModelId(id: string): string | null {
  if (!clean) return null;
  if (activeSourceById.has(clean)) return clean;
  const canonical = resolveCanonicalModelId(clean);
- return canonical !== clean && MODEL_MAP.has(canonical) ? canonical : null;
+ return canonical !== clean && MODEL_MAP.has(canonical) && activeSourceById.has(canonical) ? canonical : null;
 }
 
 /**
@@ -697,7 +697,28 @@ export function writeCatalogCache(data: CatalogCacheData): void {
 }
 
 const CATALOG_LOCK_STALE_MS = 30_000;
+const CATALOG_LOCK_MAX_LEASE_MS = 120_000;
 const CATALOG_LOCK_ATTEMPTS = 100;
+
+function readProcessStartToken(pid: number): string | null {
+ if (process.platform !== "linux") return null;
+ try {
+  const raw = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+  const close = raw.lastIndexOf(")");
+  if (close === -1) return null;
+  const fields = raw.slice(close + 2).trim().split(/\s+/);
+  // Field 22 (starttime) is index 19 after field 2 `(comm)`.
+  const ticks = fields[19];
+  return ticks && /^\d+$/.test(ticks) ? BigInt(ticks).toString(16) : null;
+ } catch {
+  return null;
+ }
+}
+
+function createLockOwner(): string {
+ const startToken = readProcessStartToken(process.pid);
+ return startToken ? `${process.pid}:${startToken}-${randomUUID()}` : `${process.pid}:${randomUUID()}`;
+}
 
 function removeCatalogLock(owner: string): boolean {
  try {
@@ -710,10 +731,16 @@ function removeCatalogLock(owner: string): boolean {
 }
 
 function hasLiveOwner(owner: string): boolean {
- const match = /^([1-9]\d*):/.exec(owner);
- if (!match) return false;
- const pid = Number(match[1]);
+ const match = /^([1-9]\d*):(?:([0-9a-f]+)-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(owner);
+ const legacy = match ? null : /^([1-9]\d*):/.exec(owner);
+ const pidText = match ? match[1] : legacy?.[1];
+ if (!pidText) return false;
+ const pid = Number(pidText);
  if (!Number.isSafeInteger(pid)) return false;
+ if (match?.[2]) {
+  const currentStart = readProcessStartToken(pid);
+  if (currentStart !== null && currentStart !== match[2]) return false;
+ }
  try {
   process.kill(pid, 0);
   return true;
@@ -731,7 +758,7 @@ async function acquireCatalogLock(): Promise<string | null> {
   return null;
  }
  for (let attempt = 0; attempt < CATALOG_LOCK_ATTEMPTS; attempt++) {
-  const owner = `${process.pid}:${randomUUID()}`;
+  const owner = createLockOwner();
   try {
    fs.writeFileSync(CATALOG_CACHE_LOCK_FILE, owner, { flag: "wx" });
    return owner;
@@ -739,10 +766,9 @@ async function acquireCatalogLock(): Promise<string | null> {
    if ((err as NodeJS.ErrnoException | null)?.code !== "EEXIST") return null;
    try {
     const staleOwner = fs.readFileSync(CATALOG_CACHE_LOCK_FILE, "utf8");
-    if (
-     Date.now() - fs.statSync(CATALOG_CACHE_LOCK_FILE).mtimeMs > CATALOG_LOCK_STALE_MS &&
-     !hasLiveOwner(staleOwner)
-    ) {
+    const ageMs = Date.now() - fs.statSync(CATALOG_CACHE_LOCK_FILE).mtimeMs;
+    const stale = ageMs > CATALOG_LOCK_MAX_LEASE_MS || (ageMs > CATALOG_LOCK_STALE_MS && !hasLiveOwner(staleOwner));
+    if (stale) {
      removeCatalogLock(staleOwner);
      continue;
     }
@@ -798,12 +824,13 @@ export function syncAliveCatalogFromCache(): boolean {
  try {
   const mtimeMs = fs.statSync(CATALOG_CACHE_FILE).mtimeMs;
   if (mtimeMs === lastCatalogCacheMtimeMs) return false;
-  lastCatalogCacheMtimeMs = mtimeMs;
   const loaded = readAnyCatalogCache();
   if (!loaded) return false;
+  lastCatalogCacheMtimeMs = mtimeMs;
   setAliveCatalog(mergeSourceSnapshots(loaded.opencode.models, loaded.kilo.models));
   return true;
  } catch {
+  lastCatalogCacheMtimeMs = -1;
   return false;
  }
 }
