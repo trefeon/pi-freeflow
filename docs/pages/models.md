@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides a **31-model bundled, verified baseline** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**. Compatible free Kilo models can increase the live picker count without a package update.
+pi-freeflow provides a **33-model bundled, verified baseline** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**. Compatible free Kilo models can increase the live picker count without a package update.
 
 ## Upstream Protocol Distinction
 
@@ -22,7 +22,7 @@ pi-freeflow provides a **31-model bundled, verified baseline** across four upstr
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: keyless — no `Authorization` header at all (the gateway rejects a placeholder credential with `401 INVALID_TOKEN`; 200 req/hr per IP)
-- **Models**: 10 bundled baseline models with OpenRouter-style thinking format, plus compatible free models discovered from Kilo's authoritative listing
+- **Models**: 12 bundled baseline models (Dots3 Note Preview, Nemotron 3 Nano Omni, Nemotron 3 Ultra 550B, Nemotron 3.5 Lightning, North Mini Code, LFM 3, Kilo Auto, OpenRouter, Glyph Cluster, Nemotron 3.5 Super VL, ERNIE 5.5 Flash Preview, Particle 1) with OpenRouter-style thinking format, plus compatible free models discovered from Kilo's authoritative listing
 
 ### Cline (`/api/v1/chat/completions`)
 - **Endpoint**: `https://api.cline.bot/api/v1/chat/completions`
@@ -37,7 +37,7 @@ pi-freeflow provides a **31-model bundled, verified baseline** across four upstr
 - **Routing**: direct or through the relay pool (`https://oai.endpoints.kepler.ai.cloud.ovh.net` allowlisted)
 - **Config**: `api: "openai-completions"`. Chat is the only upstream shape: OVH's responses endpoint rejects every array `input` with `422 input: data did not match any variant of untagged enum ResponseInput` and accepts only a bare string, so a responses-path request is translated to chat upstream and the answer mapped back — the same shape mapping the Cline lane uses.
 
-## Bundled 31 Model Specifications
+## Bundled 33 Model Specifications
 
 ### OpenCode Zen (12 models)
 | Model ID | Context | Max Output | Thinking | Vision |
@@ -55,7 +55,7 @@ pi-freeflow provides a **31-model bundled, verified baseline** across four upstr
 | `longcat-2.5-free` | 1,048,576 | 262,144 | minimal..xhigh | ✅ |
 | `hy4-flash-free` | 1,048,576 | 65,536 | high | ✅ |
 
-### KiloCode Gateway (10-model bundled baseline)
+### KiloCode Gateway (12-model bundled baseline)
 
 The table below is the reviewed offline baseline. Every 24 hours, and whenever `/freeflow refresh` runs, pi-freeflow independently checks Kilo's authoritative model listing. A new row is added dynamically only when Kilo explicitly marks it free, reports zero prompt and completion prices, advertises text output and tool use, and supplies positive context and output limits. Dynamic rows use their canonical Kilo IDs and upstream names; no aliases or inferred capabilities are invented. A failed or malformed Kilo refresh keeps its previous snapshot, while a successful listing removes dynamic rows Kilo has withdrawn. Bundled rows remain authoritative until a package update deliberately retires them.
 
@@ -71,6 +71,8 @@ The table below is the reviewed offline baseline. Every 24 hours, and whenever `
 | `openrouter/free` | 200,000 | 65,536 | minimal..xhigh | ✅ |
 | `stealth/glyph-cluster` | 256,000 | 256,000 | minimal..xhigh | ❌ |
 | `nvidia/nemotron-3.5-super-vl:free` | 1,000,000 | 131,072 | minimal..xhigh | ✅ |
+| `baidu/ernie-5.5-flash-preview:free` | 1,024,000 | 921,600 | minimal..xhigh | ❌ |
+| `particle-ai/particle-1:free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 
 ### Cline (1 model)
 
@@ -125,7 +127,7 @@ When a model is available under multiple twin names (e.g. `deepseek-v4.1-flash-f
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :---: | :--- | :--- | :--- |
 | **OpenCode Zen** | 12 | `opencode.ai/inference` | `/inference/v1` (Chat; the Responses lane is wired for future ids) | `Bearer public` |
-| **KiloCode Gateway** | 10 baseline + discovered | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
+| **KiloCode Gateway** | 12 baseline + discovered | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
 | **Cline** | 1 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 | **OVHcloud AI Endpoints** | 8 | `oai.endpoints.kepler.ai.cloud.ovh.net` | `/v1/chat/completions` (responses path translated) | Keyless, anonymous |
 ## Stealth previews

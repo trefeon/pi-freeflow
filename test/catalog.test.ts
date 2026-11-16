@@ -407,11 +407,11 @@ test("enrichModelDef honors explicit contextWindow and max_tokens over id heuris
 	assert.equal(fallbackHeuristic.maxTokens, 131_072, "non-positive maxTokens falls back to id heuristic");
 });
 
-test("parseKiloCatalogResponse admits Particle free and rejects paid, priced, tool-less, dead, and malformed rows", () => {
+test("parseKiloCatalogResponse admits an unknown free row and rejects paid, priced, tool-less, dead, and malformed rows", () => {
 	const rows = parseKiloCatalogResponse({
 		data: [
-			kiloRow("particle-ai/particle-1:free"),
-			kiloRow("particle-ai/particle-1", { isFree: false }),
+			kiloRow("lab/dynamic-unknown:free"),
+			kiloRow("lab/dynamic-unknown", { isFree: false }),
 			kiloRow("particle/particle-1", { pricing: { prompt: "0", completion: "0.5" } }),
 			kiloRow("lab/no-tools:free", { supported_parameters: ["reasoning"] }),
 			kiloRow("mimo-v2.5-free"),
@@ -419,8 +419,8 @@ test("parseKiloCatalogResponse admits Particle free and rejects paid, priced, to
 			kiloRow("lab/no-limit:free", { top_provider: { max_completion_tokens: 0 } }),
 		],
 	});
-	assert.deepEqual(rows.map((row) => row.id), ["particle-ai/particle-1:free"]);
-	assert.equal(rows[0].name, "Upstream particle-ai/particle-1:free");
+	assert.deepEqual(rows.map((row) => row.id), ["lab/dynamic-unknown:free"]);
+	assert.equal(rows[0].name, "Upstream lab/dynamic-unknown:free");
 	assert.deepEqual(rows[0].input, ["text", "image"]);
 	assert.equal(rows[0].thinkingFormat, "openrouter");
 	assert.deepEqual(rows[0].thinkingLevelMap, { off: null, low: "low", high: "high", max: "max" });

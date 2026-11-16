@@ -1,10 +1,10 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 31 verified free models (live-verified 2026-11-16):
+ * Defines the 33 verified free models (live-verified 2026-11-16):
  * - 12 OpenCode Zen models (all Chat Completions / Responses)
- * - 10 KiloCode Keyless Gateway models (OpenRouter format)
- * - 1 Cline direct-only model (per-user pool; z-ai/glm-5.3-flash)
+ * - 12 KiloCode Keyless Gateway models (OpenRouter format)
+ * - 1 Cline direct-only model (per-user pool; cline/nemotron-3.5-super-vl)
  * - 8 OVHcloud AI Endpoints models (keyless, direct-only)
  *
  * No static entry declares `api: "openai-responses"` any more: the Zen
@@ -501,7 +501,35 @@ export const KILO_MODELS: ModelDef[] = [
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
  },
-];
+ {
+  // Added 2026-11-17: live-verified on the Kilo free list from clean egress
+  // (HTTP 200 with real tool calls, isFree true, $0 pricing, tool-capable).
+  // 1,024,000 / 921,600 is the published free-row spec; reasoning uses the
+  // gateway's openrouter nested shape with the shared Kilo effort ladder.
+  id: "baidu/ernie-5.5-flash-preview:free",
+  name: "ERNIE 5.5 Flash Preview [Kilo]",
+  reasoning: true,
+  contextWindow: 1_024_000,
+  maxTokens: 921_600,
+  input: ["text"],
+  thinkingFormat: "openrouter",
+  thinkingLevelMap: KILO_REASONING_MAP,
+ },
+ {
+  // Added 2026-11-17: live-verified on the Kilo free list from clean egress
+  // (HTTP 200 with real tool calls, isFree true, $0 pricing, tool-capable).
+  // 1,048,576 / 131,072 per the published free-row spec, text+image input;
+  // reasoning uses the gateway's openrouter nested shape with the shared map.
+  id: "particle-ai/particle-1:free",
+  name: "Particle 1 [Kilo]",
+  reasoning: true,
+  contextWindow: 1_048_576,
+  maxTokens: 131_072,
+  input: ["text", "image"],
+  thinkingFormat: "openrouter",
+  thinkingLevelMap: KILO_REASONING_MAP,
+ },
+ ];
 
 /**
  * Cline free models (per-user local pool — https://api.cline.bot).
@@ -724,6 +752,8 @@ export const MODEL_ALIASES: Record<string, string> = {
  "nemotron-3.5-super-vl-kilo": "nvidia/nemotron-3.5-super-vl:free",
  "kilo-auto": "kilo-auto/free",
  "openrouter": "openrouter/free",
+ "ernie-5.5-flash": "baidu/ernie-5.5-flash-preview:free",
+ "particle-1": "particle-ai/particle-1:free",
  // OVHcloud AI Endpoints — slash-free spellings of the `ovh-free/` ids.
  "gpt-oss-120b": "ovh-free/gpt-oss-120b",
  "gpt-oss-20b": "ovh-free/gpt-oss-20b",
@@ -773,7 +803,7 @@ export const OVH_MODEL_IDS = new Set<string>([
   .map(([alias]) => alias),
 ]);
 /**
- * Combined list of all 30 static free models (canonical)
+ * Combined list of all 33 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS, ...OVH_MODELS];
 

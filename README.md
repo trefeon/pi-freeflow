@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 31 verified free models (plus dynamically discovered Kilo models) with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 33 verified free models (plus dynamically discovered Kilo models) with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -15,7 +15,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **31+ free models** | 12 from OpenCode Zen, 10 from KiloCode Gateway (plus compatible free Kilo models discovered dynamically), 1 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
+| **33+ free models** | 12 from OpenCode Zen, 12 from KiloCode Gateway (plus compatible free Kilo models discovered dynamically), 1 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own relays: a self-hosted egress pool (many egress IPs on one small host) or Cloudflare Workers / Deno Deploy / Vercel Edge workers. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. With the Bun transport on, relays that support `CONNECT` keep serving OpenCode Zen too — the TLS handshake stays local, only the TCP leg leaves through the relay. | **$0** beyond your host or platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>` (including `cline-super-vl` for Cline). | **$0** |
@@ -226,7 +226,7 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 31 baseline models, one command
+### 33 baseline models, one command
 
 ```bash
 /model → freeflow → pick
@@ -255,7 +255,7 @@ Good defaults for long coding sessions and agentic work.
 | `longcat-2.5-free` | Meituan | **1M** (1.048.576) | **262K** (262.144) | `minimal … xhigh` | ✅ |
 | `hy4-flash-free` | Tencent | **1M** (1.048.576) | **65K** (65.536) | `high` | ✅ |
 
-#### KiloCode Gateway (10 models), OpenRouter compatible
+#### KiloCode Gateway (12 models), OpenRouter compatible
 
 Keyless access. Most rows have a short alias (shown with the full ID in parentheses); a row that shows only the full ID has no short form.
 
@@ -271,6 +271,8 @@ Keyless access. Most rows have a short alias (shown with the full ID in parenthe
 | `openrouter` (`openrouter/free`) | OpenRouter Free | **200K** (200.000) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
 | `glyph-cluster` (`stealth/glyph-cluster`) | Stealth preview (lab undisclosed) | **256K** (256.000) | **256K** (256.000) | `minimal…xhigh`\* | ❌ |
 | `nemotron-3.5-super-vl-kilo` (`nvidia/nemotron-3.5-super-vl:free`) | NVIDIA | **1M** (1.000.000) | **131K** (131.072) | `minimal…xhigh`\* | ✅ |
+| `ernie-5.5-flash` (`baidu/ernie-5.5-flash-preview:free`) | Baidu | **1M** (1.024.000) | **922K** (921.600) | `minimal…xhigh`\* | ❌ |
+| `particle-1` (`particle-ai/particle-1:free`) | Particle AI | **1M** (1.048.576) | **131K** (131.072) | `minimal…xhigh`\* | ✅ |
 
 \* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.
 
@@ -404,7 +406,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 #### Project structure
 
 ```
-├── models.ts                # 31-model baseline catalog definitions
+├── models.ts                # 33-model baseline catalog definitions
 ├── index.ts                 # extension entry, lifecycle hooks
 ├── catalog.ts               # model catalog cache (24h disk)
 ├── proxy.ts                 # local proxy server (127.0.0.1:28180)

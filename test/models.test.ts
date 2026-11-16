@@ -78,6 +78,8 @@ test("1M context window models are properly configured", () => {
 		"inkling-2-small-free",
 		"longcat-2.5-free",
 		"hy4-flash-free",
+		"baidu/ernie-5.5-flash-preview:free",
+		"particle-ai/particle-1:free",
 	];
 
  for (const id of oneMillionModels) {
@@ -358,6 +360,10 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
   "openrouter/free": { ctx: 200_000, max: 65_536, reasoning: true },
   "stealth/glyph-cluster": { ctx: 256_000, max: 256_000, reasoning: true },
   "nvidia/nemotron-3.5-super-vl:free": { ctx: 1_000_000, max: 131_072, reasoning: true },
+  // Added 2026-11-17: live-verified Kilo free entries (HTTP 200, real tool
+  // calls, isFree true, $0 pricing) with the published free-row specs.
+  "baidu/ernie-5.5-flash-preview:free": { ctx: 1_024_000, max: 921_600, reasoning: true },
+  "particle-ai/particle-1:free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // Cline direct-only (per-user pool — https://api.cline.bot)
   "cline/nemotron-3.5-super-vl": { ctx: 1_000_000, max: 131_072, reasoning: true },
   // OVHcloud AI Endpoints, keyless direct-only. Contexts are OVH's own
@@ -435,6 +441,41 @@ test("2026-10-16 issue #62: Nemotron 3.5 Super VL is a locked static entry", () 
  assert.equal(resolveCanonicalModelId("nemotron-3.5-super-vl"), "nemotron-3.5-super-vl-free");
  // Chat is the only native shape (/v1/responses answers 400 protocol error).
  assert.equal(superVl.api, undefined);
+});
+
+test("2026-11-17 Kilo additions carry verified specs and reasoning maps", () => {
+ // Live-verified from clean egress: HTTP 200 with real tool calls, isFree
+ // true, $0 pricing, tool-capable. Both share the Kilo openrouter ladder.
+ const kiloReasoningMap = {
+  off: null,
+  minimal: "minimal",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: null,
+ };
+ const additions: Array<{ id: string; alias: string; ctx: number; max: number; input: string[] }> = [
+  { id: "baidu/ernie-5.5-flash-preview:free", alias: "ernie-5.5-flash", ctx: 1_024_000, max: 921_600, input: ["text"] },
+  { id: "particle-ai/particle-1:free", alias: "particle-1", ctx: 1_048_576, max: 131_072, input: ["text", "image"] },
+ ];
+ for (const { id, alias, ctx, max, input } of additions) {
+  const m = getModelDef(id);
+  assert.ok(m, `${id} exists`);
+  assert.equal(m!.contextWindow, ctx, `${id} contextWindow`);
+  assert.equal(m!.maxTokens, max, `${id} maxTokens`);
+  assert.equal(m!.reasoning, true, `${id} reasoning`);
+  assert.deepEqual(m!.input, input, `${id} input`);
+  assert.equal(m!.thinkingFormat, "openrouter", `${id} thinkingFormat`);
+  assert.deepEqual(m!.thinkingLevelMap, kiloReasoningMap, `${id} reasoning map`);
+  assert.equal(m!.api, undefined, `${id} stays chat-native (no api override)`);
+  assert.equal(getModelUpstream(id), "kilo", `${id} must route to Kilo`);
+  assert.equal(isKiloModel(id), true, `${id} must be recognized as a Kilo id`);
+  assert.equal(isKiloModel(alias), true, `${alias} alias must be recognized as a Kilo id`);
+  assert.equal(resolveCanonicalModelId(alias), id, `${alias} resolves to ${id}`);
+  assert.equal(KILO_MODEL_IDS.has(id), true, `${id} in KILO_MODEL_IDS`);
+  assert.equal(KILO_MODEL_IDS.has(alias), true, `${alias} in KILO_MODEL_IDS`);
+ }
 });
 
 test("new alias map resolves to canonical kilo ids", () => {
