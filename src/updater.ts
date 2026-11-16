@@ -1,11 +1,10 @@
 /**
  * Global and host package-manager selection for the /freeflow update command.
  *
- * The update flow tries the host plugin managers first and only then falls
- * back to a global package install. npm is preferred among global managers
- * when present; on machines where only bun is installed (npm missing from
- * PATH) the same update runs through the equivalent bun command instead of
- * failing with a manual-install note.
+ * The update flow installs globally: npm is preferred when present, and on
+ * machines where only bun is installed (npm missing from PATH) the same
+ * update runs through the equivalent bun command instead of failing with a
+ * manual-install note.
  *
  * Every install runs through the asynchronous step runner in update-core.ts:
  * auto-update is triggered from extension activation, so a blocking

@@ -123,12 +123,12 @@ either path.
   installed version plus the cached newest tag from the last successful check;
   the background check writes that cache and notifies once per newer tag.
 - **Update path**: `/freeflow update` resolves the newest tag, downloads that
-  tag's asset, and installs the local file with the host's package manager
-  (bun when the host runs under bun, npm otherwise, global or `--prefix` into
-  the host's own package location). The proxy daemon is restarted on success,
-  which is how the running session picks up the new code. The download happens
-  first because npm 12 refuses remote and git specifiers by default
-  (`allow-remote`, `allow-git` = none) — a local path always installs.
+  tag's asset to a temporary file, and installs it globally — `npm i -g <file>`
+  when npm is on `PATH`, `bun add -g <file>` otherwise. The temporary file is
+  deleted after a successful install, and the proxy daemon this session is
+  attached to is restarted, which is how running sessions pick up the new code.
+  The download happens first because npm 12 refuses remote and git specifiers
+  by default (`allow-remote`, `allow-git` = none) — a local path always installs.
 - **Why not the registry**: installs and updates never need an npm account, a
   registry session, or a publish that is currently blocked. The tarball URL is
   the whole contract.
