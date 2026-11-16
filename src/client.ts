@@ -21,6 +21,7 @@ import {
  DAEMON_HEARTBEAT_MS,
  DAEMON_HEARTBEAT_MS_ENV,
  DAEMON_READY_TIMEOUT_MS,
+ DAEMON_NO_WALK_ENV,
  DAEMON_SPAWN_ENV,
  DAEMON_WATCHDOG_MS,
  DAEMON_WATCHDOG_MS_ENV,
@@ -495,33 +496,39 @@ export function shouldReclaimDarkHolder(probe: DarkHolderProbe): boolean {
 }
 
 /**
+ * What a dark-holder reclaim left on the port:
+ * - "alive": a proxy of ours answers — attach to it;
+ * - "freed": we killed a dark holder and the port is free — spawn fresh;
+ * - "free": nothing was bound — spawn fresh;
+ * - "held": the holder stays (kill failed or disabled by env) — no daemon can bind.
+ */
+type ReclaimOutcome = "alive" | "freed" | "free" | "held";
+
+/**
  * Dislodge a dark holder from the base port so a fresh daemon can bind it.
- * Returns true when a healthy proxy answers afterwards (attach to it); false
- * when the caller should spawn fresh (the port is free — nothing to reclaim).
  * Honors the no-kill env opt-out; a live holder is never touched here — the
  * stale-replace path owns versioned daemons.
  */
-async function reclaimDarkHolder(port: number): Promise<boolean> {
+async function reclaimDarkHolder(port: number): Promise<ReclaimOutcome> {
  const probe = await probeDarkHolder(port);
- if (probe.alive) return true;
- if (!probe.bound) return false; // port is free — spawn fresh
- if (!shouldReclaimDarkHolder(probe)) return true;
+ if (probe.alive) return "alive";
+ if (!probe.bound) return "free";
+ if (!shouldReclaimDarkHolder(probe)) return "alive";
  if (NO_KILL_ENV && process.env[NO_KILL_ENV] === "1") {
   logInfo(
    `proxy on :${port} answers neither our health nor models — leaving it alone (replacement disabled by env)`,
   );
-  return false;
+  return "held";
  }
  logWarn(`proxy on :${port} holds the port but answers nothing of ours — replacing dark holder`);
  await killPortHolder(port);
  for (let i = 0; i < 10; i++) {
   await new Promise<void>((r) => setTimeout(r, 200));
-  if (await isProxyAlive(port)) return true;
+  if (await isProxyAlive(port)) return "alive";
+  if (!(await isPortBound(port))) return "freed";
  }
- if (await isPortBound(port)) {
-  logWarn(`port :${port} is still held by a process we could not (and must not) kill — starting the in-process proxy instead`);
- }
- return false;
+ logWarn(`port :${port} is still held by a process we could not (and must not) kill — starting the in-process proxy instead`);
+ return "held";
 }
 
 function mentionsLoopback(text: string): boolean {
@@ -652,6 +659,7 @@ function spawnDaemonProcess(): DaemonChild | null {
     env: {
      ...process.env,
      [DAEMON_SPAWN_ENV]: "0",
+     [DAEMON_NO_WALK_ENV]: "1",
     },
    })
    : cs.daemonSpawner(runtime.execPath, args, {
@@ -661,6 +669,7 @@ function spawnDaemonProcess(): DaemonChild | null {
     env: {
      ...process.env,
      [DAEMON_SPAWN_ENV]: "0",
+     [DAEMON_NO_WALK_ENV]: "1",
     },
    });
   child.unref();
@@ -784,45 +793,74 @@ async function ensureDaemonAttempt(): Promise<number> {
 
 
   if (isSpawnEnabled()) {
-   const child = spawnDaemonProcess();
-   if (child) {
-    const ready = await waitForReady(PORT, DAEMON_READY_TIMEOUT_MS, child);
-    if (ready) {
-     const ver = await getDaemonVersion(PORT);
-     if (ver !== null && ver !== PKG_VERSION) {
-      if (await killStaleDaemon(PORT, ver, "proxy daemon")) {
-       cs.lastSpawnAt = 0; // kill-confirmed retry bypasses the spawn throttle
-       const retryChild = spawnDaemonProcess();
-       if (retryChild) {
-        const retryReady = await waitForReady(PORT, DAEMON_READY_TIMEOUT_MS, retryChild);
-        if (retryReady) {
-         await attachTo(PORT);
-         return PORT;
-        }
-       }
-      } else if (await isProxyAlive(PORT)) {
-       await attachTo(PORT);
-       return PORT;
-      }
-     } else {
-      await attachTo(PORT);
-      return PORT;
-     }
-    } else {
-     // The spawn never answered: the child exited before binding (e.g. Node
-     // refusing type stripping under a node_modules path) or a dark holder
-     // owns the base port (bind fails, probes fail).
-     if (await reclaimDarkHolder(PORT)) {
-      await attachTo(PORT);
-      return PORT;
-     }
-     logWarn("daemon spawn did not become ready — child exited or the port is blocked");
-    }
+   // Clear a dark holder (e.g. a frozen daemon still owning the socket) BEFORE
+   // spawning: a fresh daemon cannot bind a held base port, and this client
+   // only ever waits on the base port. A free port costs one refused connect.
+   const holder = await reclaimDarkHolder(PORT);
+   if (holder === "alive") {
+    // Ours but slower than the first probe: re-run the version gate on it.
+    const slow = await probeAndMaybeReplace(PORT, "proxy daemon", 600);
+    if (slow !== null && (await attachTo(slow))) return slow;
+   }
+   if (holder === "freed") cs.lastSpawnAt = 0; // kill-confirmed: bypass the spawn throttle
+   if (holder !== "held") {
+    const port = await spawnAndAttach();
+    if (port !== null) return port;
    }
    // Fall through to the in-process fallback below — never hand the caller
    // a port we did not attach to (no lease, no heartbeat).
   }
 
+  return await startFallbackAndAttach();
+}
+
+/**
+ * Spawn a detached daemon on the base port and attach to it. A spawn that never
+ * answers is followed by a dark-holder reclaim; when that kill frees the port,
+ * one fresh spawn runs before giving up. Null means: use the in-process proxy.
+ */
+async function spawnAndAttach(): Promise<number | null> {
+  for (let round = 0; round < 2; round++) {
+   const child = spawnDaemonProcess();
+   if (!child) return null;
+   const ready = await waitForReady(PORT, DAEMON_READY_TIMEOUT_MS, child);
+   if (ready) {
+    const ver = await getDaemonVersion(PORT);
+    if (ver !== null && ver !== PKG_VERSION) {
+     if (await killStaleDaemon(PORT, ver, "proxy daemon")) {
+      cs.lastSpawnAt = 0; // kill-confirmed retry bypasses the spawn throttle
+      const retryChild = spawnDaemonProcess();
+      if (retryChild) {
+       const retryReady = await waitForReady(PORT, DAEMON_READY_TIMEOUT_MS, retryChild);
+       if (retryReady) {
+        if (await attachTo(PORT)) return PORT;
+       }
+      }
+     } else if (await isProxyAlive(PORT)) {
+      if (await attachTo(PORT)) return PORT;
+     }
+     return null;
+    }
+    if (await attachTo(PORT)) return PORT;
+    return null;
+   }
+   // The spawn never answered: the child exited before binding (e.g. Node
+   // refusing type stripping under a node_modules path) or a dark holder
+   // owns the base port (bind fails, probes fail).
+   const holder = await reclaimDarkHolder(PORT);
+   if (holder === "alive") {
+    if (await attachTo(PORT)) return PORT;
+    break;
+   }
+   if (holder !== "freed") break;
+   cs.lastSpawnAt = 0; // kill-confirmed respawn bypasses the spawn throttle
+  }
+  logWarn("daemon spawn did not become ready — child exited or the port is blocked");
+  return null;
+}
+
+/** In-process proxy for this process, with the walked-port guard. */
+async function startFallbackAndAttach(): Promise<number> {
   try {
    const r = await startProxy();
    if (r.server) cs.fallbackServer = r.server;

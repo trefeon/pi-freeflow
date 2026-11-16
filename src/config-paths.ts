@@ -200,6 +200,12 @@ export const ALLOW_UNSAFE_RELAY_ENV = "PI_FREEFLOW_ALLOW_UNSAFE_RELAY";
 export const NO_KILL_ENV = ALLOW_UNSAFE_RELAY_ENV.replace("_ALLOW_UNSAFE_RELAY", "_NO_KILL");
 /** When "0", the extension never spawns a detached proxy daemon (tests/CI). */
 export const DAEMON_SPAWN_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_SPAWN");
+/**
+ * When "1", the daemon binds only the base port and exits on EADDRINUSE instead
+ * of walking to port+1. The client sets it on every daemon it spawns: it only
+ * ever waits on the base port, so a walked daemon is an unreachable orphan.
+ */
+export const DAEMON_NO_WALK_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_NO_WALK");
 /** Explicit runtime executable path for daemon.ts (overrides process.execPath and PATH search). */
 export const DAEMON_RUNTIME_ENV = DATA_DIR_ENV.replace("_DATA_DIR", "_DAEMON_RUNTIME");
 /** Lease TTL for attached clients (ms); expired leases are dropped by the daemon GC. */

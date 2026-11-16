@@ -489,11 +489,15 @@ async function retryWithoutReasoningEncryption(
  * Start the local HTTP proxy daemon.
  * Implements master/worker single-port reuse: if port 28180 is already held by a live
  * parent or sibling OMP session, resolves immediately with { server: null, port: 28180 }.
+ * With `walk: false` a busy base port rejects with EADDRINUSE instead of
+ * walking to port+1 (client-spawned daemons).
  */
 export function startProxy(
  overridePort?: number,
+ opts: { walk?: boolean } = {},
 ): Promise<{ server: http.Server | null; port: number }> {
  const basePort = overridePort ?? PORT;
+ const walk = opts.walk ?? true;
  // Write/read the installation token before the listener is bound so the host
  // can never observe a port that answers without a token, and so the daemon
  // owns the value its own clients will read from the file.
@@ -1414,7 +1418,7 @@ export function startProxy(
        resolve({ server: null, port: basePort });
        return;
       }
-      if (attempt < 20) {
+      if (walk && attempt < 20) {
        attempt++;
        log("warn", `port ${port} taken — trying ${port + 1}`);
        tryListen(port + 1);
