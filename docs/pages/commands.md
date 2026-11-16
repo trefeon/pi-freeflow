@@ -7,7 +7,7 @@ All commands are available inside the OMP or Pi TUI via `/freeflow`:
 | Command | Action |
 | :--- | :--- |
 | `/freeflow status` | View installed plugin version, active relay URL, pool status (ON/OFF), candidates, Cline login summary (logins saved, most recently used login and model), and active Zen transport mode when `PI_FREEFLOW_ZEN_TRANSPORT` is set |
-| `/freeflow version` | Show installed plugin version and cached update status (offline, alias: `/freeflow ver`) |
+| `/freeflow version` | Show the installed version and the newest release tag from the last successful check (offline, alias: `/freeflow ver`) |
 | `/freeflow hide` | Hide the status-bar widget (also `widget hide`) |
 | `/freeflow show` | Show the status-bar widget again (also `widget show`) |
 | `/freeflow list` | List all relays with health badges (✓ / ⚠️ cooling) |
@@ -29,11 +29,10 @@ All commands are available inside the OMP or Pi TUI via `/freeflow`:
 | `/freeflow trace [req-id]` | Tail logs filtered by request correlation ID |
 | `/freeflow refresh` | Refresh Zen and Kilo independently; reports partial failure when one source must retain cached/static data |
 | `/freeflow reload` | Alias of `refresh` (`models` is accepted too) |
-| `/freeflow update` | Check for and install a package update (restarts daemon automatically on success) |
-| `/freeflow autoupdate [on &vert; off]` | Toggle or view automatic background updates (`/freeflow update auto on &vert; off` also works) |
+| `/freeflow update` | Check GitHub for a newer release, download its tarball, install it with the host's package manager, and restart the daemon on success |
+| `/freeflow autoupdate [on &vert; off]` | Toggle or view the automatic background release check, which installs a newer release without asking (`/freeflow update auto on &vert; off` also works) |
 | `/freeflow kill` | Shut the proxy daemon down; the next freeflow request restarts it (aliases `stop`, `shutdown`) |
 | `/freeflow restart` | Stop and restart the proxy daemon immediately |
-| `/freeflow version` | Show local and cached latest package version (alias `ver`) |
 | `/freeflow debug on &vert; off` | Toggle full HTTP lifecycle debug logging |
 | `/freeflow cline` | Manage Cline free-tier accounts, pool, and rotation (`login`, `accounts`, `logout`, `signout`, `switch`) |
 | `/freeflow cline login` | Sign in through the browser, save to the per-user pool |
@@ -58,3 +57,6 @@ A second, separate file records tool-call turns: `~/.pi/agent/toolcall-audit.jso
 | **Relay 404 / broken URL** | Old or deleted edge deployment | Run `/freeflow remove <url>` to clean up |
 | **OpenCode 429 FreeUsageLimitError** | Daily OpenCode quota exhausted | Wait for UTC reset or route through an egress relay |
 | **Tool call renders as raw JSON** | Free model returned arguments that do not match the tool's declared shape | Automatic — the proxy repairs unambiguous packets against the tool schema. If it persists, the model invented an ambiguous shape; report it with the model name |
+| **`/freeflow update` says it cannot reach GitHub** | No network path to the release page | Nothing breaks: the installed version keeps running, the cached newest tag stays as it was, and the next check retries. Install from a downloaded tarball if the host is offline for good |
+| **Update installed but the session runs old code** | The proxy daemon was started by an older install | `/freeflow restart`. A new session also replaces a daemon whose reported version differs from the installed package |
+| **Install or update asks for an npm account** | Something is trying to resolve the package from a registry instead of the release asset | Install the downloaded `pi-freeflow.tgz` / `./package` path. Neither install nor update needs a registry session, and npm 12 refuses remote specifiers anyway |

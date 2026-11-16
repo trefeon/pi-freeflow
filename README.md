@@ -37,7 +37,7 @@ omp plugin link /path/to/pi-freeflow      # OMP, local dev checkout
 pi install npm:pi-freeflow                # Pi
 ```
 
-**From a release tarball** (one release ahead of whatever the registry serves):
+**From a release tarball** (independent of any registry):
 ```bash
 curl -fL -o pi-freeflow.tgz https://github.com/trefeon/pi-freeflow/releases/latest/download/pi-freeflow.tgz
 tar -xzf pi-freeflow.tgz                  # extracts package/

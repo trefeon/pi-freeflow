@@ -54,9 +54,9 @@ src/
 ├── toolcall-audit.ts        # Local JSONL trail of failed/retried tool-call turns
 ├── tool-translation.ts      # Tool schema translation across the chat, responses and messages wire shapes
 ├── types.ts                 # Core domain types, Pi/OMP ExtensionAPI and UI contracts
-├── update-core.ts           # Version facts and step runner shared by the update checker and updater
-├── update-checker.ts        # Background version check + update notification
-├── updater.ts               # /freeflow update package-manager choice (host first, global fallback)
+├── update-core.ts           # Version facts and GitHub release lookups shared by the checker and updater
+├── update-checker.ts        # Background release check + update notification
+├── updater.ts               # /freeflow update: download the release tarball, install it with npm or bun
 └── upstream-health.ts       # Zen gating detection with failover to a healthy Kilo model
 ```
 
@@ -109,6 +109,37 @@ curl http://127.0.0.1:28180/health
 # {"ok":true,"service":"pi-freeflow","port":28180,"version":"<package version>"}
 ```
 
+## Distribution and Updates
+
+The GitHub release is the distribution channel; there is no registry step in
+either path.
+
+- **What a release carries**: the tagged tree packed into
+  `pi-freeflow-<version>.tgz`, attached to the release, plus a stable
+  `pi-freeflow.tgz` name on the latest release. That second name is what
+  `https://github.com/trefeon/pi-freeflow/releases/latest/download/pi-freeflow.tgz`
+  serves, so an install command never has to know the version.
+- **Version source**: the newest release tag. `/freeflow version` prints the
+  installed version plus the cached newest tag from the last successful check;
+  the background check writes that cache and notifies once per newer tag.
+- **Update path**: `/freeflow update` resolves the newest tag, downloads that
+  tag's asset, and installs the local file with the host's package manager
+  (bun when the host runs under bun, npm otherwise, global or `--prefix` into
+  the host's own package location). The proxy daemon is restarted on success,
+  which is how the running session picks up the new code. The download happens
+  first because npm 12 refuses remote and git specifiers by default
+  (`allow-remote`, `allow-git` = none) — a local path always installs.
+- **Why not the registry**: installs and updates never need an npm account, a
+  registry session, or a publish that is currently blocked. The tarball URL is
+  the whole contract.
+- **Release gate**: `scripts/verify-release-tarball.mjs` compares the packed
+  tarball against the tagged tree — file list and bytes — before the workflow
+  attaches it, so the download URL never serves something the tag does not
+  contain. CI runs the same check.
+- **Offline behavior**: a failed check leaves the cached version in place and
+  logs the failure; it never blocks a session and never reports the installed
+  version as stale.
+
 ## Configuration (Environment Variables)
 
 Runtime knobs, all read in `src/config.ts`. "Unset" means the default applies.
@@ -125,7 +156,7 @@ Runtime knobs, all read in `src/config.ts`. "Unset" means the default applies.
 | `PI_FREEFLOW_DAEMON_HEARTBEAT_MS` | `8000` (Windows) / `10000` | Client heartbeat interval (kept well under the lease TTL). |
 | `PI_FREEFLOW_DAEMON_GC_MS` | `5000` | Daemon lease-GC sweep interval. |
 | `PI_FREEFLOW_DAEMON_GRACE_MS` | `15000` (Windows) / `10000` | Lease-less persistence window before the daemon exits. |
-| `PI_FREEFLOW_DAEMON_READY_TIMEOUT_MS` | `5000` | How long a client waits for a freshly spawned daemon to answer `/_health`. |
+| `PI_FREEFLOW_DAEMON_READY_TIMEOUT_MS` | `5000` | How long a client waits for a freshly spawned daemon to answer `/_health`. Raise it on a slow or heavily loaded host whose cold start can outlast the default. |
 | `PI_FREEFLOW_DAEMON_CONTROL_TIMEOUT_MS` | `3000` (Windows) / `1500` | Timeout for one loopback control call (attach/heartbeat/detach). |
 | `PI_FREEFLOW_DAEMON_WATCHDOG_MS` | `5000` | How often the client polls `/_health` for version + failed-SSE rate. |
 | `PI_FREEFLOW_OPENCODE_USER_AGENT` | live npm lookup | Pin the exact `opencode/<version>` UA (or bare version) sent upstream. |
@@ -151,7 +182,7 @@ The bundled catalog registers immediately, then Zen and Kilo refresh independent
 - **Isolation**: Zen and Kilo keep separate timestamps, validators, IDs, and model snapshots; one source failing cannot erase or stale the other
 - **Compatibility**: Legacy merged caches are classified conservatively and rewritten to the versioned per-source schema after the next successful refresh
 - **Atomic Write**: Uses a temp file + `fs.renameSync` to prevent corruption under concurrent writes
-- **Boot Speed**: All 30 bundled models are available before either network request; valid dynamic snapshots are overlaid from disk
+- **Boot Speed**: Every bundled model is available before either network request; valid dynamic snapshots are overlaid from disk
 
 ## Stream Lifecycle Safety
 

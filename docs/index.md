@@ -25,6 +25,8 @@ features:
     details: Single-port 28180 shared across OMP subagents — 0ms startup for parallel workers, no port conflicts.
   - title: "Thin by Design"
     details: No build step, one runtime dep, no payload normalizer — host pi-ai owns thinking and reasoning translation.
+  - title: "Release-Channel Updates"
+    details: Installs and updates take the GitHub release tarball — no npm account, no registry session, no publish step. `/freeflow update` resolves the newest tag, downloads that tag's asset, and installs the local file; the daemon restarts on it.
   - title: "Observable Logging"
     details: Auto-rotating 10MB file logger at ~/.pi/agent/pi-freeflow.log with request correlation IDs, plus a per-turn tool-call audit log for failed and retried turns.
 ---
