@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
 | **31+ free models** | 12 from OpenCode Zen, 10 from KiloCode Gateway (plus compatible free Kilo models discovered dynamically), 1 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
-| **Relay pool** | Route requests through your own relays: a self-hosted egress pool (many egress IPs on one small host) or Cloudflare Workers / Deno Deploy / Vercel Edge workers. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your host or platforms' free tiers |
+| **Relay pool** | Route requests through your own relays: a self-hosted egress pool (many egress IPs on one small host) or Cloudflare Workers / Deno Deploy / Vercel Edge workers. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. With the Bun transport on, relays that support `CONNECT` keep serving OpenCode Zen too — the TLS handshake stays local, only the TCP leg leaves through the relay. | **$0** beyond your host or platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>` (including `cline-super-vl` for Cline). | **$0** |
 | **Shared local proxy** | One daemon on `127.0.0.1:28180` serves every session on the machine, so parallel subagents reuse it instead of opening their own connections. Loopback-only and token-gated: hosts send the token automatically, external tools read `~/.pi/agent/token`. | **$0** |
@@ -108,6 +108,9 @@ cd warp-relay-pool && ./setup.sh
   requests arrive upstream with the client's own fingerprint.
 - **Same contract as edge relays**: implements `x-relay-target`, so it can sit
   in a pool alongside worker deployments.
+- **Zen-compatible tunnels**: the same relay port answers `CONNECT`, so with
+  `PI_FREEFLOW_ZEN_TRANSPORT=bun-sidecar` the pool carries Zen free-tier
+  traffic while the Bun TLS fingerprint stays local.
 - The setup wizard prints ready-to-paste `/freeflow add <url> <label>` commands;
   pair the pool with `/freeflow spread` so parallel sessions and subagents land
   on different egress IPs.

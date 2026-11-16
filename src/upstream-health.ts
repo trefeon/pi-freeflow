@@ -271,19 +271,23 @@ export function isFreeTierGate(status: number, bodyText: unknown): boolean {
  );
 }
 
-/** Free-usage shape marker: the fingerprint (env block) was missing or wrong. */
+/** Free-usage marker: the 429 the Zen free lane answers when it refuses a request. */
 const SHAPE_CODE_MARKER = "FreeUsageLimitError";
 /**
  * Quota markers: when the 429 body carries any of these alongside the usage
- * code, the pool — not the fingerprint — is exhausted (explicit quota or
- * rate-limit codes and window language). Only explicit markers qualify:
- * generic words like "retry", "reset", "capacity", and "overload" also show
- * up in shape-verdict bodies (retry-after countdowns, capacity language on
- * the fingerprint refusal), so keying on them misclassifies a fingerprint
- * fault as quota and points at deploys that cannot help. A bare
- * FreeUsageLimitError with none of these is the shape verdict measured in
- * issues #117/#118 (missing env block on the same machine, same minute,
- * while the retry-after countdown still read hours to 00:00 UTC).
+ * code, the bucket — not the request shape — is exhausted (explicit quota or
+ * rate-limit codes and window language). Generic words like "retry", "reset",
+ * "capacity", and "overload" appear in every variant (the reset countdown is
+ * generic), so only explicit markers qualify.
+ *
+ * A bare FreeUsageLimitError is ambiguous, and both readings are measured:
+ * - #117/#118: a missing `<env>` block on the same machine and minute returns
+ *   the bare body while the countdown still reads hours to 00:00 UTC.
+ * - #124: the official CLI hit the bare body with `Retry-After: 53355` when a
+ *   per-egress/model quota bucket was genuinely exhausted.
+ * Hence the three-state verdict: `shape` only with positive request-shape
+ * evidence, `unknown` otherwise, and the dispatcher settles `unknown` by
+ * trying another egress instead of guessing.
  */
 const QUOTA_MARKERS = [
  "quota",
@@ -296,18 +300,78 @@ const QUOTA_MARKERS = [
 ];
 
 /**
- * True when a 429 is a SHAPE verdict (missing/wrong env block or fingerprint),
- * not quota exhaustion. Shape 429s must never be treated as quota: no deploy
- * hint, no relay no-roll assumption violated — a rotation cannot fix our own
- * fingerprint, and the retry-after countdown is a generic error body rather
- * than a quota window (issues #117/#118). Callers use this to log the right
- * cause and keep quota hints for genuine quota 429s.
+ * Three-state verdict for a Zen free-lane 429.
+ * `null` means the body is not a FreeUsageLimitError at all.
  */
-export function isFreeUsageShapeError(status: number, bodyText: unknown): boolean {
- if (status !== 429 || typeof bodyText !== "string") return false;
- if (!bodyText.includes(SHAPE_CODE_MARKER)) return false;
- const lowered = bodyText.toLowerCase();
- return !QUOTA_MARKERS.some((marker) => lowered.includes(marker));
+export type FreeUsageVerdict = "quota" | "shape" | "unknown";
+
+export interface FreeUsageEvidence {
+ /**
+  * Whether the request carried the `<env>` block the free tier requires
+  * (issue #118). `false` turns a bare FreeUsageLimitError into a provable
+  * shape verdict; omit it when the request body is unavailable.
+  */
+ envBlockPresent?: boolean;
+}
+
+/** True when the body carries the Zen free-lane usage marker. */
+export function isFreeUsageLimitBody(bodyText: unknown): boolean {
+ return typeof bodyText === "string" && bodyText.includes(SHAPE_CODE_MARKER);
+}
+
+/**
+ * Classify a 429 from the Zen free lane. Quota language wins (a bucket body
+ * can never be repaired by a shape change); a bare body is `shape` only when
+ * the outgoing request is known to lack the required `<env>` block, else
+ * `unknown` so the caller can probe another egress before deciding.
+ */
+export function classifyFreeUsage429(
+ status: number,
+ bodyText: unknown,
+ evidence?: FreeUsageEvidence,
+): FreeUsageVerdict | null {
+ if (status !== 429 || !isFreeUsageLimitBody(bodyText)) return null;
+ const lowered = (bodyText as string).toLowerCase();
+ if (QUOTA_MARKERS.some((marker) => lowered.includes(marker))) return "quota";
+ if (evidence?.envBlockPresent === false) return "shape";
+ return "unknown";
+}
+
+/**
+ * True when an outgoing request body carries the gate's `<env>` block. The
+ * block is injected by ensureEnvBlock, so `false` here is positive evidence
+ * that a bare 429 is our own shape fault, not an exhausted egress.
+ */
+export function requestCarriesEnvBlock(body: unknown): boolean {
+ let text: string | null = null;
+ if (typeof body === "string") text = body;
+ else if (body instanceof Uint8Array) text = Buffer.from(body).toString("utf8");
+ if (text === null) return false;
+ const start = text.indexOf("<env>");
+ if (start < 0) return false;
+ return text.slice(start, start + 600).includes("Working directory:");
+}
+
+/**
+ * Upstream quota bucket for a model id. Measured behavior (#124): Zen tracks
+ * free-tier buckets per `modelId[:2]` prefix, so `de`/`gl`/`ne` exhaust
+ * independently through the same egress. Returns null for unknown models.
+ */
+export function modelQuotaBucket(model: unknown): string | null {
+ if (typeof model !== "string") return null;
+ const clean = model.trim();
+ if (clean.length < 2) return null;
+ return clean.slice(0, 2).toLowerCase();
+}
+
+/** Model id carried by a request body, or null when absent/unparseable. */
+export function modelIdOfBody(body: unknown): string | null {
+ let text: string | null = null;
+ if (typeof body === "string") text = body;
+ else if (body instanceof Uint8Array) text = Buffer.from(body).toString("utf8");
+ if (text === null) return null;
+ const match = text.match(/"model"\s*:\s*"([^"]*)"/);
+ return match ? match[1] : null;
 }
 /** Stable conversation key carried by request bodies, if the caller sent one. */
 export function sessionKeyOf(parsedBody: unknown): string | null {

@@ -439,11 +439,54 @@ export interface RelayHealth {
 }
 
 const relayHealthMap = new Map<string, RelayHealth>();
-// Sliding 60-second window of HTTP 429 events used by markRelayFailure to
-// keep the "burst >5/min" warning honest (see markRelayFailure).
+/**
+ * Upstream quota health, keyed by relay URL + model quota bucket. A 429 from
+ * the Zen free lane burns one upstream bucket (`modelId[:2]`, issue #124)
+ * through one egress; the relay endpoint itself stays reachable. Keeping this
+ * in a second map means a `de` exhaustion never cools the relay for `ne`, and
+ * a network failure never hides behind a quota cooldown.
+ * Key: `${relayUrl}\u0000${bucket}`.
+ */
+const relayQuotaMap = new Map<string, RelayQuotaState>();
+
+export interface RelayQuotaState {
+ /** Upstream quota bucket (model id prefix). */
+ bucket: string;
+ /** Most recent HTTP 429 for this bucket through this relay. */
+ last429At: number;
+ /** Bucket is unusable through this relay until this timestamp. */
+ cooldownUntil: number;
+ lastStatus: number;
+ /** Total 429s recorded for this relay/bucket pair. */
+ failureCount: number;
+}
+
+/** Base cooldown for a per-egress/model quota 429: short enough that the
+ * relay's own keep-cold rotation can hand back a fresh egress. */
+export const RELAY_QUOTA_COOLDOWN_MS = 90_000;
+
+function quotaKey(url: string, bucket: string): string {
+ return `${url.trim()}\u0000${bucket}`;
+}
+
+/** Sliding 60-second window of HTTP 429 events used by markRelayFailure to
+ * keep the "burst >5/min" warning honest (see record429Burst). */
 const RELAY_429_BURST_WINDOW_MS = 60_000;
 const RELAY_429_BURST_THRESHOLD = 5;
 const recent429Timestamps: number[] = [];
+
+/** Record one 429 in the burst window and warn on the crossing. */
+function record429Burst(relayUrl: string, now: number): void {
+ const cutoff = now - RELAY_429_BURST_WINDOW_MS;
+ while (recent429Timestamps.length > 0 && recent429Timestamps[0] <= cutoff) {
+  recent429Timestamps.shift();
+ }
+ const beforeBurst = recent429Timestamps.length;
+ recent429Timestamps.push(now);
+ if (beforeBurst <= RELAY_429_BURST_THRESHOLD && recent429Timestamps.length > RELAY_429_BURST_THRESHOLD) {
+  logWarn("relay 429 burst >5/min, consider adding egress", { relay: relayUrl });
+ }
+}
 
 // Phase 1 smart-routing priors (code-reviewed constants, not user knobs).
 /** EWMA weight per headers-latency sample (dampens one-off outliers). */
@@ -458,11 +501,14 @@ export const RELAY_EWMA_MARGIN_RATIO = 0.25;
 /**
  * Mark a relay as healthy and active on successful response.
  * With a finite latencyMs the health record is kept (failures reset, latency
- * recorded); without one the record is deleted entirely.
+ * recorded); without one the record is deleted entirely. A success in one
+ * quota bucket clears that bucket's cooldown only — other buckets keep their
+ * own state.
  */
-export function markRelaySuccess(url: string, latencyMs?: number): void {
+export function markRelaySuccess(url: string, latencyMs?: number, bucket?: string | null): void {
  if (!url) return;
  const clean = url.trim();
+ if (bucket) clearRelayQuota(clean, bucket);
  if (typeof latencyMs === "number" && Number.isFinite(latencyMs)) {
   const prev = relayHealthMap.get(clean);
   const sample = Math.round(latencyMs);
@@ -499,15 +545,7 @@ export function markRelayFailure(url: string, status?: number, error?: string): 
   // One warning per episode beats both spamming (old 10-min cooldown
   // re-warned on every boundary during a long burst) and blindness (a
   // fresh burst inside the cooldown stayed silent).
-  const cutoff = now - RELAY_429_BURST_WINDOW_MS;
-  while (recent429Timestamps.length > 0 && recent429Timestamps[0] <= cutoff) {
-   recent429Timestamps.shift();
-  }
-  const beforeBurst = recent429Timestamps.length;
-  recent429Timestamps.push(now);
-  if (beforeBurst <= RELAY_429_BURST_THRESHOLD && recent429Timestamps.length > RELAY_429_BURST_THRESHOLD) {
-   logWarn("relay 429 burst >5/min, consider adding egress", { relay: clean });
-  }
+  record429Burst(clean, now);
  } else if (status === 504) {
   cooldownMs = 60_000;
  } else if (status === 402) {
@@ -538,14 +576,70 @@ export function markRelayFailure(url: string, status?: number, error?: string): 
 }
 
 /**
- * Check if a relay is currently healthy (not in active cooldown).
+ * Record an upstream quota 429 for one model bucket through one relay.
+ * Network health is untouched: the endpoint answered, only that bucket is
+ * empty. With no bucket the caller falls back to markRelayFailure (relay-wide
+ * 429), which is the legacy behavior for lanes without a known bucket.
  */
-export function isRelayHealthy(url: string): boolean {
+export function markRelayQuotaFailure(
+ url: string,
+ bucket: string,
+ status = 429,
+ cooldownMs: number = RELAY_QUOTA_COOLDOWN_MS,
+): void {
+ if (!url || !bucket) return;
+ const clean = url.trim();
+ const key = quotaKey(clean, bucket);
+ const prev = relayQuotaMap.get(key);
+ const now = Date.now();
+ relayQuotaMap.set(key, {
+  bucket,
+  last429At: now,
+  cooldownUntil: now + Math.max(1_000, cooldownMs),
+  lastStatus: status,
+  failureCount: (prev?.failureCount ?? 0) + 1,
+ });
+ record429Burst(clean, now);
+}
+
+/** Clear one relay/bucket quota cooldown after a success in that bucket. */
+export function clearRelayQuota(url: string, bucket: string): void {
+ if (!url || !bucket) return;
+ relayQuotaMap.delete(quotaKey(url, bucket));
+}
+
+/** Current quota state for one relay/bucket pair, if any. */
+export function getRelayQuotaState(url: string, bucket: string): RelayQuotaState | undefined {
+ return relayQuotaMap.get(quotaKey(url, bucket));
+}
+
+/** Snapshot of every non-expired quota cooldown, sorted for stable display. */
+export function getRelayQuotaSnapshot(): Array<RelayQuotaState & { url: string }> {
+ const now = Date.now();
+ const out: Array<RelayQuotaState & { url: string }> = [];
+ for (const [key, quota] of relayQuotaMap) {
+  if (quota.cooldownUntil <= now) continue;
+  const sep = key.lastIndexOf("\u0000");
+  out.push({ ...quota, url: key.slice(0, sep) });
+ }
+ return out.sort((a, b) => a.url.localeCompare(b.url) || a.bucket.localeCompare(b.bucket));
+}
+
+/**
+ * Check if a relay is currently healthy (not in active network cooldown).
+ * With a bucket, an exhausted upstream quota bucket also reads unhealthy —
+ * but only for that bucket, so unrelated models still use the relay.
+ */
+export function isRelayHealthy(url: string, bucket?: string | null): boolean {
  if (!url) return true;
  const clean = url.trim();
  const health = relayHealthMap.get(clean);
- if (!health) return true;
- return Date.now() >= health.cooldownUntil;
+ if (health && Date.now() < health.cooldownUntil) return false;
+ if (bucket) {
+  const quota = relayQuotaMap.get(quotaKey(clean, bucket));
+  if (quota && Date.now() < quota.cooldownUntil) return false;
+ }
+ return true;
 }
 
 /**
@@ -560,6 +654,7 @@ export function getRelayHealth(url: string): RelayHealth | undefined {
  */
 export function resetAllRelayHealth(): void {
  relayHealthMap.clear();
+ relayQuotaMap.clear();
  recent429Timestamps.length = 0;
 }
 /**
@@ -739,7 +834,7 @@ export function shortRelayLabel(url: string, relays?: KnownRelay[]): string {
  * origin quota binds ~10x before data quota, so a healthy-but-quota-near Vercel
  * relay burns paid-adjacent budget. Vercel stays as failover.
  */
-export function getOrderedRelayUrls(): string[] {
+export function getOrderedRelayUrls(bucket?: string | null): string[] {
  const mtime = currentDiskStateMtimeMs();
  if (mtime !== lastKnownStateMtimeMs) {
   activeRelayState = loadRelayState();
@@ -766,8 +861,8 @@ export function getOrderedRelayUrls(): string[] {
   }
 
   // Partition into healthy candidates first, degraded/cooling candidates at the tail
-  const healthy = rawOrdered.filter((u) => isRelayHealthy(u));
-  const cooling = rawOrdered.filter((u) => !isRelayHealthy(u));
+  const healthy = rawOrdered.filter((u) => isRelayHealthy(u, bucket));
+  const cooling = rawOrdered.filter((u) => !isRelayHealthy(u, bucket));
   // Vercel last resort within each partition: non-Vercel first, Vercel tail.
   const vercelFlag = new Map<string, boolean>();
   for (const u of rawOrdered) {
@@ -850,11 +945,11 @@ export function ewmaBadge(health: RelayHealth | undefined): string {
  * issuer map releases them on access — so this stays a pure health/presence
  * gate and ordering otherwise behaves exactly as today.
  */
-export function isSessionPinEligible(pin: string, ordered: string[]): boolean {
+export function isSessionPinEligible(pin: string, ordered: string[], bucket?: string | null): boolean {
  const clean = (pin ?? "").trim();
  if (!clean) return false;
  if (!ordered.includes(clean)) return false;
- if (!isRelayHealthy(clean)) return false;
+ if (!isRelayHealthy(clean, bucket)) return false;
  const health = getRelayHealth(clean);
  if (health?.lastStatus === 402 && Date.now() < health.cooldownUntil) return false;
  return true;
@@ -881,18 +976,19 @@ export function orderedRelayCandidates(
  preferredRelay?: string,
  spreadKey?: string,
  forceRoundRobin?: boolean,
+ bucket?: string | null,
 ): string[] {
- const ordered = getOrderedRelayUrls();
+ const ordered = getOrderedRelayUrls(bucket);
  const preferred = (preferredRelay ?? "").trim();
  if (preferred) {
   const index = ordered.indexOf(preferred);
   if (index <= 0) return ordered;
-  if (!isSessionPinEligible(preferred, ordered)) return ordered;
+  if (!isSessionPinEligible(preferred, ordered, bucket)) return ordered;
   return [ordered[index], ...ordered.slice(0, index), ...ordered.slice(index + 1)];
  }
  if (activeRelayState.mode !== "spread" && !forceRoundRobin) return ordered;
- const healthy = ordered.filter((u) => isRelayHealthy(u));
- const cooling = ordered.filter((u) => !isRelayHealthy(u));
+ const healthy = ordered.filter((u) => isRelayHealthy(u, bucket));
+ const cooling = ordered.filter((u) => !isRelayHealthy(u, bucket));
  if (healthy.length <= 1) return [...healthy, ...cooling];
  const k = spreadKey ? stableHash(spreadKey) % healthy.length : spreadCursor++ % healthy.length;
  return [...healthy.slice(k), ...healthy.slice(0, k), ...cooling];

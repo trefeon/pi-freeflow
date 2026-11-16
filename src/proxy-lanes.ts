@@ -29,7 +29,6 @@ import {
  rollChat,
 } from "./cline-accounts.ts";
 import { fetchWithSystemCA } from "./system-ca-fetch.ts";
-import type { ZenTransportMode } from "./zen-transport.ts";
 import { pipeUpstreamStream } from "./stream-pipe.ts";
 import type { ToolcallRecorder, ToolcallWire } from "./toolcall-audit.ts";
 import {
@@ -50,8 +49,8 @@ import { relayFetch } from "./relay.ts";
 import { getActiveRelayState } from "./relay-state.ts";
 import {
  attachHintForDisplay,
+ classifyFreeUsage429,
  decideZenRoute,
- isFreeUsageShapeError,
  isUnprovenSession,
  isUpstreamGated,
  isZenFailoverEnabled,
@@ -86,9 +85,12 @@ export const RATE_LIMIT_HINT =
  */
 export function withRateLimitHint(status: number, data: string): string {
  if (status !== 429) return data;
- // Shape 429 (FreeUsageLimitError without quota burn) is our fingerprint's
- // fault, not the pool's: the deploy hint would mislead, so it stays off.
- if (isFreeUsageShapeError(status, data)) return data;
+ // A FreeUsageLimitError only earns the deploy hint when the body states a
+ // quota/rate-limit bucket. A confirmed shape fault (#118) and a bare,
+ // ambiguous body (#124/#137) both stay raw: pointing at deploys would
+ // mislead when the request or the transport — not the pool — is at fault.
+ const freeUsage = classifyFreeUsage429(status, data);
+ if (freeUsage === "shape" || freeUsage === "unknown") return data;
  try {
   const parsed: unknown = JSON.parse(data);
   if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && shouldShow429Hint()) {
@@ -1043,15 +1045,6 @@ export function isRelayEligibleModel(model: unknown): boolean {
  const canonical = resolveActiveModelId(model);
  if (canonical === null) return false;
  return getActiveModelUpstream(canonical) !== "cline";
-}
-
-/**
- * True when the resolved Zen transport forbids relay egress: a relay would
- * re-originate the connection and forfeit the sidecar's fingerprint, so the
- * request must ride the direct leg the transport was chosen for.
- */
-export function relayBypassedForTransport(mode: ZenTransportMode): boolean {
- return mode === "bun-sidecar";
 }
 
 /**

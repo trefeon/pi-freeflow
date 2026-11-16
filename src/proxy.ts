@@ -73,15 +73,18 @@ import {
  isReasoningCallerMismatch,
 } from "./responses.ts";
 import { pipeUpstreamStream, type StreamCloakOptions } from "./stream-pipe.ts";
+import { createZenBunRelayTransport } from "./zen-relay-proxy.ts";
 import { createToolcallRecorder, type ToolcallRecorder, type ToolcallWire } from "./toolcall-audit.ts";
 import {
+ classifyFreeUsage429,
  isFreeTierGate,
- isFreeUsageShapeError,
  isUpstreamGated,
+ modelQuotaBucket,
  recordUpstreamFailure,
  recordUpstreamSuccess,
  rejectionFingerprint,
  rememberGateRejection,
+ requestCarriesEnvBlock,
  sessionKeyOf,
  withFreeTierHint,
 } from "./upstream-health.ts";
@@ -103,7 +106,6 @@ import {
  handleOvhRequest,
  isRelayEligibleModel,
  isStaleOpenCodeVersionError,
- relayBypassedForTransport,
  stopClineKeepAlive,
  upstreamTimeoutError,
  withRateLimitHint,
@@ -822,15 +824,19 @@ export function startProxy(
       relayState.enabled !== false &&
       Boolean(relayState.url || (relayState.relays && relayState.relays.length > 0));
      const relayEligible = isRelayEligibleModel(parsedBody?.model);
-     // Sidecar-active Zen requests skip the relay pool: a relay would
-     // re-originate the connection and forfeit the sidecar's fingerprint.
      const zenTransport = resolveZenTransport();
-     const transportBypass = relayBypassedForTransport(zenTransport.mode);
-     const shouldUseRelay = relayPoolOn && relayEligible && !transportBypass;
+     // Using the Bun transport no longer bypasses the pool. A worker relay
+     // cannot carry the Zen free lane (it re-originates TLS, #120), but a
+     // relay that answers CONNECT can: the TLS handshake stays in the local
+     // Bun process and only the TCP leg leaves through that egress, so each
+     // relay URL is still a distinct upstream quota bucket (#137).
+     const nativeRelay =
+      zenTransport.mode === "bun-sidecar" && zenTransport.bunPath !== null
+       ? createZenBunRelayTransport(zenTransport, reqId)
+       : undefined;
+     const shouldUseRelay = relayPoolOn && relayEligible;
      if (relayPoolOn && !relayEligible) {
       log("info", `relay bypass for non-catalog model ${String(parsedBody?.model ?? "?")} — routing direct upstream`, { model: parsedBody?.model }, reqId);
-     } else if (relayPoolOn && transportBypass) {
-      log("info", "relay bypass for bun-sidecar transport — routing direct upstream", { transport: zenTransport.mode }, reqId);
      }
      if (shouldUseRelay) {
       // Dead-client guard: 'close' fires when the client goes away, the
@@ -846,7 +852,13 @@ export function startProxy(
       const activeHost = relayState.url
        ? new URL(relayState.url).host
        : "opencode.ai";
-      const relayHeaders = sanitizeHeaders(req.headers, activeHost, sessionKey ?? undefined);
+      // Worker relays rewrite the host to their own target; a native-TLS
+      // tunnel leg is a plain request to the upstream origin.
+      const relayHeaders = sanitizeHeaders(
+       req.headers,
+       nativeRelay ? new URL(OPENCODE_ORIGIN).host : activeHost,
+       sessionKey ?? undefined,
+      );
 
       try {
        if (parsedBody) {
@@ -865,8 +877,12 @@ export function startProxy(
         const issuer = responsesRequest && conversationKey !== null
          ? issuerRelayFor(conversationKey)
          : undefined;
+        const requestBucket = modelQuotaBucket(parsedBody?.model);
         const candidates = orderedRelayCandidates(
          typeof issuer === "string" ? issuer : undefined,
+         undefined,
+         false,
+         requestBucket,
         );
         const servingRelay = candidates[0] ?? null;
         // Affinity cannot be honored (issuer cooling, dropped from the
@@ -943,6 +959,7 @@ export function startProxy(
             },
            },
            (info) => audit?.attemptFailure(info),
+           nativeRelay,
           );
          } finally {
           clearTimeout(relayTimeoutId);
@@ -1329,8 +1346,13 @@ export function startProxy(
       // and a shape log instead of the quota hint.
       if (upstreamRes.status === 429) {
        const raw429 = await upstreamRes.text();
-       if (isFreeUsageShapeError(429, raw429)) {
-        log("warn", `direct upstream 429 FreeUsage shape verdict for model ${String(parsedBody?.model ?? "?")} — fingerprint/env fault, not quota`, { status: 429, model: parsedBody?.model, path: target.pathname }, reqId);
+       const verdict = classifyFreeUsage429(429, raw429, {
+        envBlockPresent: requestCarriesEnvBlock(directBodyForUpstream),
+       });
+       if (verdict === "shape") {
+        log("warn", `direct upstream 429 FreeUsage shape verdict for model ${String(parsedBody?.model ?? "?")} — request lacks the env block`, { status: 429, model: parsedBody?.model, path: target.pathname }, reqId);
+       } else if (verdict === "unknown") {
+        log("warn", `direct upstream 429 FreeUsage without quota language for model ${String(parsedBody?.model ?? "?")} — ambiguous; another egress bucket may still serve`, { status: 429, model: parsedBody?.model, path: target.pathname }, reqId);
        }
        const data = withRateLimitHint(429, raw429);
        const ct429 = upstreamRes.headers.get("content-type") || "application/json";

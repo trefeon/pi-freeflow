@@ -48,6 +48,7 @@ import {
  getActiveRelayState,
  ewmaBadge,
  getRelayHealth,
+ getRelayQuotaSnapshot,
  loadRelayState,
  setActiveRelayState,
  setStatusUi,
@@ -615,7 +616,16 @@ export function createCommandSpec(
     const deadLine = deadParked.length
      ? `\nDead relays (HTTP 402 disabled deployment, parked): ${deadParked.map((r) => r.url).join(", ")} — delete the Vercel project, run /freeflow remove <url>, then deploy Cloudflare`
      : "";
-    ctx.ui.notify(`${versionLine}\n${modeLine} | ${poolLine} | auto-update: ${relayState.autoUpdate ? "on" : "off"}\n${stateFileLine}\nUpstream: ${upstreamLine}${zenTransportLine}\n${clineLine}${deadLine}`, "info");
+    // Bucket-scoped quota cooldowns (modelId[:2] per egress): the relay still
+    // serves other model families, so show exactly which bucket is parked.
+    const quotaCooling = getRelayQuotaSnapshot();
+    const quotaLine = quotaCooling.length
+     ? `\nQuota cooldowns: ${quotaCooling
+      .slice(0, 6)
+      .map((q) => `${shortRelayLabel(q.url, relayState.relays)}[${q.bucket}] ${Math.max(1, Math.ceil((q.cooldownUntil - Date.now()) / 1000))}s`)
+      .join(", ")}${quotaCooling.length > 6 ? ` +${quotaCooling.length - 6} more` : ""}`
+     : "";
+    ctx.ui.notify(`${versionLine}\n${modeLine} | ${poolLine} | auto-update: ${relayState.autoUpdate ? "on" : "off"}\n${stateFileLine}\nUpstream: ${upstreamLine}${zenTransportLine}${quotaLine}\n${clineLine}${deadLine}`, "info");
    } else if (sub === "version" || sub === "ver") {
     // Offline by design: cached-latest only, never a live fetch.
     const local = getLocalVersion();

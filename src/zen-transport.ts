@@ -250,7 +250,18 @@ function isNullBodyStatus(status: number): boolean {
  */
 export function fetchZenDirectViaSidecar(
  url: string,
- init: { method: string; headers: Record<string, string>; body: Buffer; headerTimeoutMs: number },
+ init: {
+  method: string;
+  headers: Record<string, string>;
+  body: Buffer;
+  headerTimeoutMs: number;
+  /**
+   * CONNECT proxy for this leg. The TLS handshake to `url` stays in Bun —
+   * only the TCP connection leaves through the proxy's egress (issue #137).
+   * Headers ride the CONNECT request itself (e.g. x-relay-auth).
+   */
+  proxy?: { url: string; headers?: Record<string, string> };
+ },
  opts: { runtimePath: string; runtimeArgs?: string[]; scriptPath: string; signal?: AbortSignal; spawnImpl?: typeof spawn },
 ): Promise<Response> {
  const { promise, resolve, reject } = Promise.withResolvers<Response>();
@@ -349,7 +360,12 @@ export function fetchZenDirectViaSidecar(
  proc.on("exit", (code, signal) => {
   exitState = { code, signal };
   if (!headersDone) {
-   fail(new Error(`zen sidecar exited (${String(code ?? signal)}) before headers`));
+   // Buffered stdout (a structured error frame) can arrive after 'exit';
+   // give it a moment before calling this an anonymous early exit.
+   const announce = setTimeout(() => {
+    if (!headersDone) fail(new Error(`zen sidecar exited (${String(code ?? signal)}) before headers`));
+   }, 100);
+   announce.unref?.();
    return;
   }
   finishStream();
@@ -362,11 +378,24 @@ export function fetchZenDirectViaSidecar(
   const nl = buf.indexOf(0x0a);
   if (nl < 0) return;
   frameConsumed = true;
-  let parsed: { status?: unknown; headers?: unknown };
+  let parsed: { status?: unknown; headers?: unknown; error?: unknown };
   try {
-   parsed = JSON.parse(buf.subarray(0, nl).toString("utf8")) as { status?: unknown; headers?: unknown };
+   parsed = JSON.parse(buf.subarray(0, nl).toString("utf8")) as { status?: unknown; headers?: unknown; error?: unknown };
   } catch {
    fail(new Error("zen sidecar bad header frame"));
+   return;
+  }
+  // Structured failure frame: the sidecar keeps the fetch error's code and
+  // (for proxies) the CONNECT status, so callers can distinguish a relay
+  // that refuses to tunnel from a genuine network fault.
+  if (parsed.error !== null && typeof parsed.error === "object") {
+   const detail = parsed.error as Record<string, unknown>;
+   const err = new Error(
+    `zen sidecar fetch failed${typeof detail.code === "string" ? ` (${detail.code}${typeof detail.status === "number" ? ` ${detail.status}` : ""})` : ""}`,
+   ) as Error & { code?: string; proxyStatus?: number };
+   if (typeof detail.code === "string") err.code = detail.code;
+   if (typeof detail.status === "number") err.proxyStatus = detail.status;
+   fail(err);
    return;
   }
   if (typeof parsed.status !== "number" || !Number.isInteger(parsed.status) || parsed.status < 200 || parsed.status > 599) {
@@ -436,6 +465,7 @@ export function fetchZenDirectViaSidecar(
   headers: init.headers,
   bodyB64: init.body.length > 0 ? init.body.toString("base64") : "",
   headerTimeoutMs,
+  ...(init.proxy ? { proxy: init.proxy } : {}),
  });
  stdin.on("error", () => { });
  stdin.end(frame, "utf8");

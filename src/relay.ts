@@ -7,10 +7,17 @@ import { Buffer } from "node:buffer";
 import { Agent } from "undici";
 import { UPSTREAM_HEADER_TIMEOUT_MS } from "./config.ts";
 import { isDebugEnabled, log } from "./logger.ts";
-import { isFreeUsageShapeError } from "./upstream-health.ts";
+import {
+ classifyFreeUsage429,
+ modelIdOfBody,
+ modelQuotaBucket,
+ requestCarriesEnvBlock,
+ type FreeUsageVerdict,
+} from "./upstream-health.ts";
 import {
  getActiveRelayState,
  isRelayHealthy,
+ markRelayQuotaFailure,
  orderedRelayCandidates,
  getStatusUi,
  markRelayFailure,
@@ -20,6 +27,39 @@ import {
  withRelayState,
  validateRelayUrl,
 } from "./relay-state.ts";
+
+/**
+ * Per-candidate upstream transport for a relay attempt. The default leg is
+ * the relay's `x-relay-target` contract (a worker re-originates the request).
+ * A transport lets the caller pick a different mechanism per attempt — the
+ * OpenCode Zen lane uses it to keep the local Bun TLS fingerprint while the
+ * TCP connection leaves through a relay's CONNECT tunnel (issue #137).
+ */
+export interface RelayAttemptTransport {
+ /**
+  * One candidate attempt. Reject to report a transport/network failure;
+  * throw RelayTransportUnavailable when the candidate answered but cannot
+  * carry this transport, so the dispatcher skips it without a health mark.
+  */
+ attempt(
+  candidateUrl: string,
+  ctx: { url: string; opts: RequestInit; signal: AbortSignal; headerTimeoutMs: number },
+ ): Promise<Response>;
+ /** Direct (no relay) leg for the final fallback, same transport. */
+ attemptDirect(ctx: { url: string; opts: RequestInit }): Promise<Response>;
+}
+
+/** Candidate answered but cannot carry the requested transport (no fault). */
+export class RelayTransportUnavailable extends Error {
+ readonly candidate: string;
+ readonly reason: string;
+ constructor(candidate: string, reason: string) {
+  super(`relay ${candidate} cannot carry this transport: ${reason}`);
+  this.name = "RelayTransportUnavailable";
+  this.candidate = candidate;
+  this.reason = reason;
+ }
+}
 
 // Throttle user-facing roll notifications so a burst of failures surfaces
 // one warning instead of a wall of identical toasts.
@@ -104,14 +144,20 @@ export function isRetriableStatus(status: number): boolean {
 }
 
 /**
- * True when a 429 is a FreeUsage shape verdict (our fingerprint's fault, not
- * quota). Clone-peeked so the caller's body copy survives; fail-open to roll
- * when the peek itself fails.
+ * Three-state verdict for a Zen free-lane 429. The request's own `<env>`
+ * evidence separates a provable shape fault from an ambiguous body that only
+ * another egress can settle. Clone-peeked so the caller's body copy survives;
+ * an unreadable body is not evidence of a free-lane shape fault, so it falls
+ * back to the ordinary relay-wide 429 verdict (null) and the relay cools there
+ * instead of being probed again on every turn.
  */
-async function isShapeVerdict429(res: Response): Promise<boolean> {
+async function freeUsageVerdictOf(res: Response, envBlockPresent: boolean): Promise<FreeUsageVerdict | null> {
+ if (res.status !== 429) return null;
  try {
-  return isFreeUsageShapeError(res.status, await res.clone().text());
- } catch { return false; }
+  return classifyFreeUsage429(res.status, await res.clone().text(), { envBlockPresent });
+ } catch {
+  return null;
+ }
 }
 
 /**
@@ -184,6 +230,18 @@ export interface RelayAffinity {
  *        deadline and network faults). `attempt` is 1-based and monotonic across
  *        candidates and hedges; `status` is the HTTP status when headers arrived.
  *        A throwing hook is swallowed — observation must never break a roll.
+ * @param transport Optional per-candidate transport. Default is the relay's
+ *        `x-relay-target` worker contract; a transport replaces the attempt
+ *        mechanism while every roll/health rule below still applies.
+ *
+ * Model-scoped quota: the request body's model id yields the upstream quota
+ * bucket (`modelId[:2]`, issue #124). A 429 marks that bucket through the
+ * relay that produced it, never the relay's network health, so one exhausted
+ * family cannot park an egress for unrelated models. An ambiguous bare
+ * `FreeUsageLimitError` (no quota language, request carries its `<env>`
+ * block) rolls once per candidate without a health mark: whichever egress
+ * answers proves the refusal was egress-scoped, and only then do the
+ * ambiguous relays take a bucket cooldown (issue #137).
  */
 export async function relayFetch(
  url: string,
@@ -191,29 +249,36 @@ export async function relayFetch(
  reqId?: string,
  affinity: RelayAffinity = {},
  onAttemptFailure?: (info: { attempt: number; status?: number; reason: string }) => void,
+ transport?: RelayAttemptTransport,
 ): Promise<Response> {
  const rid = reqId || randomUUID().slice(0, 8);
  const relayState = getActiveRelayState();
+ const directLeg = (legOpts: RequestInit = opts): Promise<Response> =>
+  transport ? transport.attemptDirect({ url, opts: legOpts }) : fetch(url, legOpts as unknown as RequestInit);
+ const bucket = modelQuotaBucket(modelIdOfBody(opts.body));
+ const envBlockPresent = requestCarriesEnvBlock(opts.body);
 
  if (!relayState.enabled) {
   log("debug", `relayFetch: direct (relay disabled) -> ${url}`, undefined, rid);
   affinity.onServed?.(null);
-  return fetch(url, opts as unknown as RequestInit);
+  return directLeg();
  }
- const candidates = orderedRelayCandidates(affinity.preferred, affinity.spreadKey, affinity.roundRobin);
+ const candidates = orderedRelayCandidates(affinity.preferred, affinity.spreadKey, affinity.roundRobin, bucket);
 
  if (candidates.length === 0) {
   // Empty pool: skip straight to upstream instead of logging a misleading
   // "relays bypassed/exhausted" WARN on every request.
   log("debug", `relayFetch: direct (empty relay pool) -> ${url}`, undefined, rid);
   affinity.onServed?.(null);
-  return fetch(url, opts as unknown as RequestInit);
+  return directLeg();
  }
 
  let lastResponse: Response | null = null;
  let lastError: unknown = null;
  /** Relay that produced `lastResponse`, for accurate issuer reporting. */
  let lastResponseRelay: string | null = null;
+ /** Relays that answered an ambiguous FreeUsage 429 this request. */
+ const ambiguous429Relays: string[] = [];
  /** Relay URLs that returned a gated 402 DEPLOYMENT_DISABLED this request. */
  const disabledRelays: string[] = [];
  /** Bare-500 roll-once cap: one extra attempt per relayFetch turn. */
@@ -236,6 +301,26 @@ export async function relayFetch(
   } catch {
    // Observation is best-effort; never let it disturb the roll.
   }
+ };
+ /**
+  * An egress eventually served the turn, so the ambiguous bare 429s earlier
+  * in this request were egress-scoped after all: cool those relays for this
+  * model bucket only. A request where every candidate stayed ambiguous never
+  * reaches this (no egress proved healthy), so the pool is not poisoned.
+  */
+ const settleAmbiguousQuota = (servedRelay: string | null): void => {
+  if (ambiguous429Relays.length === 0 || !bucket) return;
+  const cooled = ambiguous429Relays.filter((relay) => relay !== servedRelay);
+  for (const relay of cooled) markRelayQuotaFailure(relay, bucket);
+  if (cooled.length > 0) {
+   log(
+    "info",
+    `ambiguous 429 settled by a serving egress: bucket ${bucket} cooled on ${cooled.length} relay(s)`,
+    { bucket, cooled: cooled.length, served: servedRelay ?? "direct" },
+    rid,
+   );
+  }
+  ambiguous429Relays.length = 0;
  };
  const u = new URL(url);
  const relayTarget = `${u.protocol}//${u.host}`;
@@ -291,6 +376,33 @@ export async function relayFetch(
     reportAbandoned("invalid-relay-url");
     continue;
    }
+   // Per-attempt budget: each relay gets its own header-timeout window,
+   // combined with the caller's signal (and a hedge-cancel controller) so
+   // either can fire. A hung relay then trips only its own timeout (roll)
+   // instead of vetoing the pool; a genuine client cancel (caller signal
+   // aborted) still propagates. The timer is disarmed the moment headers
+   // settle: the deadline bounds the header WAIT only, never the streaming
+   // body (an AbortSignal.timeout would keep hanging over the body and kill
+   // a healthy turn past five minutes mid-generation).
+   const deadlineSignal = (cancelCtl: AbortController) => {
+    const headerDeadlineCtl = new AbortController();
+    let headerTimer: NodeJS.Timeout | undefined;
+    let disarmed = false;
+    const disarm = (): void => {
+     if (disarmed) return;
+     disarmed = true;
+     clearTimeout(headerTimer);
+     headerTimer = undefined;
+    };
+    headerTimer = setTimeout(() => {
+     disarm();
+     headerDeadlineCtl.abort();
+    }, attemptHeaderTimeoutMs);
+    const signal = opts.signal
+     ? AbortSignal.any([opts.signal, headerDeadlineCtl.signal, cancelCtl.signal])
+     : AbortSignal.any([headerDeadlineCtl.signal, cancelCtl.signal]);
+    return { signal, disarm };
+   };
    // Per-candidate wiring: relay-target headers, per-relay auth, and a
    // combined signal (caller + header budget + hedge-cancel) so a
    // hedged loser can be aborted without touching the winner.
@@ -312,32 +424,8 @@ export async function relayFetch(
     if (attemptEntry?.auth) {
      attemptHeaders.set("x-relay-auth", attemptEntry.auth);
     }
-    // Per-attempt budget: each relay gets its own header-timeout
-    // window, combined with the caller's signal so either can fire.
-    // A hung relay then trips only its own timeout (roll) instead of
-    // vetoing the pool; a genuine client cancel (caller signal
-    // aborted) still propagates to both hedged attempts. The timer
-    // is disarmed the moment the fetch settles: the deadline bounds
-    // the header WAIT only, never the streaming body (an
-    // AbortSignal.timeout would keep hanging over the body and kill
-    // a healthy turn past five minutes mid-generation).
-    const headerDeadlineCtl = new AbortController();
-    let headerTimer: NodeJS.Timeout | undefined;
-    let headerDeadlineDisarmed = false;
-    const disarmHeaderTimeout = (): void => {
-     if (headerDeadlineDisarmed) return;
-     headerDeadlineDisarmed = true;
-     clearTimeout(headerTimer);
-     headerTimer = undefined;
-    };
-    headerTimer = setTimeout(() => {
-     disarmHeaderTimeout();
-     headerDeadlineCtl.abort();
-    }, attemptHeaderTimeoutMs);
-    const attemptSignal = opts.signal
-     ? AbortSignal.any([opts.signal, headerDeadlineCtl.signal, hedgeCtl.signal])
-     : AbortSignal.any([headerDeadlineCtl.signal, hedgeCtl.signal]);
-    return { headers: attemptHeaders, signal: attemptSignal, disarmHeaderTimeout };
+    const { signal, disarm } = deadlineSignal(hedgeCtl);
+    return { headers: attemptHeaders, signal, disarmHeaderTimeout: disarm };
    };
 
    // Hedged failover: an attempt with no response headers within
@@ -350,18 +438,36 @@ export async function relayFetch(
    // when fewer than two healthy candidates exist (hedging a lone
    // healthy relay into a cooling tail helps nobody).
    const canHedge =
+    transport === undefined &&
     candidates.length > 1 &&
     i < candidates.length - 1 &&
-    isRelayHealthy(targetUrl) &&
-    isRelayHealthy(candidates[i + 1]);
+    isRelayHealthy(targetUrl, bucket) &&
+    isRelayHealthy(candidates[i + 1], bucket);
    let res: Response;
    if (!canHedge) {
     const soloCtl = new AbortController();
-    const solo = buildAttempt(targetUrl, soloCtl);
-    try {
-     res = await fetch(targetUrl, { ...opts, headers: solo.headers, signal: solo.signal, ...relayLegInit() } as unknown as RequestInit);
-    } finally {
-     solo.disarmHeaderTimeout();
+    if (transport) {
+     // Transport leg: the transport owns headers/framing (e.g. a Bun
+     // sidecar dialing a CONNECT tunnel) and only needs the bounded
+     // signal plus the header budget.
+     const solo = deadlineSignal(soloCtl);
+     try {
+      res = await transport.attempt(targetUrl, {
+       url,
+       opts,
+       signal: solo.signal,
+       headerTimeoutMs: attemptHeaderTimeoutMs,
+      });
+     } finally {
+      solo.disarm();
+     }
+    } else {
+     const solo = buildAttempt(targetUrl, soloCtl);
+     try {
+      res = await fetch(targetUrl, { ...opts, headers: solo.headers, signal: solo.signal, ...relayLegInit() } as unknown as RequestInit);
+     } finally {
+      solo.disarmHeaderTimeout();
+     }
     }
    } else {
     const primaryUrl = targetUrl;
@@ -623,41 +729,68 @@ export async function relayFetch(
     }
    }
    if (isRetriableStatus(res.status)) {
-    // Shape-429 terminal: a FreeUsageLimitError without quota burn is our own
-    // fingerprint's fault, not the relay's — every candidate would answer it
-    // identically. Rolling only cools healthy relays and trips the pool-wide
-    // 429 burst alert, so surface it terminally with no health mark either
-    // way (never success: it must not reset the relay's cooldown, record an
-    // EWMA sample, or rewrite the sticky primary).
-    if (res.status === 429 && (await isShapeVerdict429(res))) {
+    const freeUsage = await freeUsageVerdictOf(res, envBlockPresent);
+    // Confirmed shape-429: the request itself lacks the gate's `<env>` block
+    // (#118), so every candidate would answer it byte-identically. Rolling
+    // only cools healthy relays and trips the pool-wide burst alert, so
+    // surface terminally with no health mark either way (never success: it
+    // must not reset a cooldown, record an EWMA sample, or rewrite sticky).
+    if (freeUsage === "shape") {
      lastResponse?.body?.cancel().catch(() => {});
      lastResponse = res;
      lastResponseRelay = targetUrl;
      log(
       "warn",
-      `relay ${targetUrl} returned shape 429 (fingerprint fault, not quota) in ${elapsed}s — surfacing without roll`,
+      `relay ${targetUrl} returned shape 429 (request lacks the env block) in ${elapsed}s — surfacing without roll`,
       { upstream: url, status: 429 },
       rid,
      );
      affinity.onServed?.(targetUrl);
      return res;
     }
-    markRelayFailure(targetUrl, res.status);
+    // Ambiguous bare FreeUsageLimitError: no quota language, and the request
+    // carries its `<env>` block, so the body alone cannot separate an
+    // exhausted egress bucket (#124) from a fingerprint fault (#117/#118).
+    // Probe the next candidate without a health mark; a success later in the
+    // turn proves the refusal was egress-scoped and cools these relays for
+    // this model bucket only (#137).
+    if (freeUsage === "unknown") {
+     ambiguous429Relays.push(targetUrl);
+     lastResponse?.body?.cancel().catch(() => {});
+     lastResponse = res;
+     lastResponseRelay = targetUrl;
+     log(
+      "info",
+      `relay ${targetUrl} returned ambiguous 429 (bare FreeUsageLimitError) in ${elapsed}s — trying the next candidate before deciding`,
+      { upstream: url, status: 429, bucket },
+      rid,
+     );
+     reportAbandoned("ambiguous-rate-limit", 429);
+     continue;
+    }
+    if (freeUsage === "quota") {
+     // Bucket-scoped, when the body named a model: the relay stays healthy
+     // for other model families, and a network failure never hides here.
+     if (bucket) markRelayQuotaFailure(targetUrl, bucket);
+     else markRelayFailure(targetUrl, 429);
+    } else {
+     markRelayFailure(targetUrl, res.status);
+    }
     lastResponse?.body?.cancel().catch(() => {});
     lastResponse = res;
     lastResponseRelay = targetUrl;
     if (res.status === 429) {
-     // A 429 is a transient per-relay rate limit, not a terminal
+     // A 429 is a transient per-egress rate limit, not a terminal
      // verdict: the request is already moving to the next candidate.
      // Keep the per-relay rotation silent (no warning toast, no
      // per-relay WARN line) so the host never flashes "rate limited"
      // while a sibling relay serves. A pool-wide 429 burst alert may
-     // still fire from markRelayFailure; the final verdict is logged
+     // still fire from the mark; the final verdict is logged
      // once when the pool and direct fallback cannot serve the turn.
      log(
       "info",
-      `relay ${targetUrl} rate-limited in ${elapsed}s — auto-rotating to next relay`,
-      { upstream: url, status: 429 },
+      `relay ${targetUrl} rate-limited in ${elapsed}s${bucket ? ` (bucket ${bucket})` : ""} — auto-rotating to next relay`,
+      { upstream: url, status: 429, bucket },
       rid,
      );
      reportAbandoned("rate-limited", 429);
@@ -780,7 +913,8 @@ export async function relayFetch(
    // now — a multi-MB error body would otherwise hold its connection
    // out of the shared relay agent until GC.
    lastResponse?.body?.cancel().catch(() => {});
-   markRelaySuccess(targetUrl, Date.now() - attemptStart);
+   if (res.ok) settleAmbiguousQuota(targetUrl);
+   markRelaySuccess(targetUrl, Date.now() - attemptStart, res.ok ? bucket : undefined);
    // If we switched to a different relay because previous failed, update sticky active relay!
    //
    // Exception: a winner that is the caller's preferred (affinity) relay
@@ -830,6 +964,20 @@ export async function relayFetch(
    if ((err as Error)?.name === "AbortError" && opts.signal?.aborted) {
     throw err;
    }
+   // The candidate answered but cannot carry this transport (e.g. a worker
+   // relay that does not implement CONNECT). Not a relay fault: no health
+   // mark, no rate-limit flip, just move on. The transport caches the
+   // verdict so later turns skip the candidate before dialing.
+   if (err instanceof RelayTransportUnavailable) {
+    log(
+     "debug",
+     `relay ${targetUrl} skipped — ${err.reason}`,
+     { upstream: url, candidate: err.candidate },
+     rid,
+    );
+    reportAbandoned("transport-unavailable");
+    continue;
+   }
    const elapsed = ((Date.now() - attemptStart) / 1000).toFixed(1);
    lastError = err;
    rateLimitOnly = false;
@@ -874,7 +1022,7 @@ export async function relayFetch(
   directHeaders.set("host", u.host);
   directHeaders.set("x-request-id", rid);
 
-  const directRes = await fetch(url, { ...opts, headers: directHeaders } as unknown as RequestInit);
+  const directRes = await directLeg({ ...opts, headers: directHeaders } as unknown as RequestInit);
   if (
    directRes.status === 403 &&
    lastResponse &&
@@ -897,6 +1045,9 @@ export async function relayFetch(
   // lastResponse holds an unread body that would otherwise leak its socket
   // until GC; the salvage path below still needs it, so only cancel here.
   lastResponse?.body?.cancel().catch(() => {});
+  // A direct success is the same proof a relay success is: the request was
+  // acceptable, so the ambiguous earlier 429s were egress-scoped.
+  if (directRes.ok) settleAmbiguousQuota(null);
   affinity.onServed?.(null);
   return directRes;
  } catch (directErr) {

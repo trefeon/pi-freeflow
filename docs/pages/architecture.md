@@ -167,7 +167,7 @@ Runtime knobs, all read in `src/config.ts`. "Unset" means the default applies.
 | `PI_FREEFLOW_OPENCODE_EXTRA_HEADERS` | unset | Comma-separated caller headers to forward in addition to the built-in allowlist. Credentials, cookies, and hop-by-hop headers are always refused. |
 | `PI_FREEFLOW_ZEN_EMPTY_TOOLS` | unset | When `1`, tool-less Zen turns are sent with zero tools instead of the injected client roster. |
 | `PI_FREEFLOW_ZEN_KILO_FAILOVER` | unset | When `1`, a refused Zen turn silently fails over to a healthy Kilo model. |
-| `PI_FREEFLOW_ZEN_TRANSPORT` | unset | When `bun-sidecar`, direct Zen requests use the bundled Bun helper (Bun 1.1+ required); any failure falls back to the normal transport. Starting a session with this variable set automatically replaces an idle background daemon started without it, and `/freeflow status` displays the active Zen transport mode and fallback reason when set. |
+| `PI_FREEFLOW_ZEN_TRANSPORT` | unset | When `bun-sidecar`, Zen requests use the bundled Bun helper (Bun 1.1+ required), so the TLS ClientHello is Bun's; any failure falls back to the normal transport. Relay egress stays available: relays that answer `CONNECT` carry only the TCP leg while the Bun handshake stays local, and relays that cannot tunnel are skipped for this lane without a health mark. Starting a session with this variable set automatically replaces an idle background daemon started without it, and `/freeflow status` displays the active Zen transport mode and fallback reason when set. |
 | `PI_FREEFLOW_CLINE_POOL_FILE` | beside the relay state file | Override the per-user Cline login pool file. |
 | `PI_FREEFLOW_CLINE_WORKOS_CLIENT_ID` | bundled default | Override the Cline/WorkOS client id used for browser login. |
 
@@ -300,12 +300,13 @@ host abandoned or retried can be attributed without reproducing it.
     to inspect).
   - `attempt-failure` — one line per upstream attempt abandoned in favour of
     another: `ts`, `kind`, `reqId`, `model`, `lane`, `attempt`, `reason`
-    (`rate-limited`, `gateway-timeout`, `payload-too-large`, `relay-edge-404`,
-    `deployment-disabled`, `retriable-status`, `server-error`,
-    `relay-auth-rejected`, `relay-forbidden`, `header-timeout`, `network-error`,
-    `invalid-relay-url`, or `final-upstream-status` for the request-level
-    verdict such as a rejected tool schema), and `status` when HTTP headers
-    arrived. Attempt numbers are 1-based and monotonic across the candidates
+    (`rate-limited`, `ambiguous-rate-limit`, `gateway-timeout`,
+    `payload-too-large`, `relay-edge-404`, `deployment-disabled`,
+    `retriable-status`, `server-error`, `relay-auth-rejected`,
+    `relay-forbidden`, `transport-unavailable`, `header-timeout`,
+    `network-error`, `invalid-relay-url`, or `final-upstream-status` for the
+    request-level verdict such as a rejected tool schema), and `status` when
+    HTTP headers arrived. Attempt numbers are 1-based and monotonic across the candidates
     and hedged legs of one relay send; `final-upstream-status` is a
     request-level verdict, not a roll, and carries `attempt: 0`.
   - `retry-detected` — a turn whose conversation the proxy already saw inside
