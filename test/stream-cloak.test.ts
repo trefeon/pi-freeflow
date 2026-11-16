@@ -141,6 +141,71 @@ test("responses stream: injected placeholders dropped, caller names restored", a
  );
 });
 
+test("chat+responses stream: disguised context tool names restore to the caller's", async () => {
+ const findGlob = {
+  renamedFindToGlob: false,
+  renamed: { notes_tool: "context_notes", refresh_tool: "new_context" },
+ };
+ const chatCloak: StreamCloakOptions = {
+  callerHadTools: true,
+  caseRestore: {},
+  findGlob,
+  injected: ["bash", "glob", "grep", "read", "edit", "write"],
+  pathname: "/v1/chat/completions",
+ };
+ const chatSse = [
+  'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"notes_tool","arguments":"{}"}}]}}]}',
+  'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"more"}}]}}]}',
+  'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"refresh_tool","arguments":"{}"}}]}}]}',
+  "data: [DONE]",
+ ].join("\n\n");
+ const chat = await runStreamed(chatSse, "/v1/chat/completions", chatCloak, thirds(chatSse));
+ assert.ok(chat.includes('"name":"context_notes"'), "notes_tool restores to context_notes");
+ assert.ok(chat.includes('"name":"new_context"'), "refresh_tool restores to new_context");
+ assert.ok(!chat.includes('"name":"notes_tool"'), "the disguise never reaches the host");
+ assert.ok(!chat.includes('"name":"refresh_tool"'), "the disguise never reaches the host");
+
+ const responsesCloak: StreamCloakOptions = { ...chatCloak, pathname: "/v1/responses" };
+ const completed = {
+  type: "response.completed",
+  response: {
+   id: "resp_1",
+   object: "response",
+   status: "completed",
+   output: [
+    { type: "function_call", name: "notes_tool", arguments: "{}" },
+    { type: "function_call", name: "refresh_tool", arguments: "{}" },
+   ],
+  },
+ };
+ const responsesSse = [
+  'event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"call_1","name":"notes_tool","arguments":""}}',
+  'event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"call_2","name":"refresh_tool","arguments":""}}',
+  `event: response.completed\ndata: ${JSON.stringify(completed)}`,
+ ].join("\n\n");
+ const responses = await runStreamed(responsesSse, "/v1/responses", responsesCloak, thirds(responsesSse));
+ assert.ok(responses.includes('"name":"context_notes"'), "responses notes_tool restores to context_notes");
+ assert.ok(responses.includes('"name":"new_context"'), "responses refresh_tool restores to new_context");
+ assert.ok(!responses.includes('"name":"notes_tool"'), "the disguise never reaches the host");
+ assert.ok(!responses.includes('"name":"refresh_tool"'), "the disguise never reaches the host");
+});
+
+test("stream: prototype-like caller names restore to themselves", async () => {
+ const cloak: StreamCloakOptions = {
+  callerHadTools: true,
+  caseRestore: { bash: "Bash" },
+  findGlob: { renamedFindToGlob: false },
+  injected: [],
+  pathname: "/v1/chat/completions",
+ };
+ const sse = [
+  'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"constructor","arguments":"{}"}}]}}]}',
+  "data: [DONE]",
+ ].join("\n\n");
+ const body = await runStreamed(sse, "/v1/chat/completions", cloak, thirds(sse));
+ assert.ok(body.includes('"name":"constructor"'), "a caller tool named constructor survives the case restore");
+});
+
 test("chat stream: injected tool_calls dropped incl. nameless continuations", async () => {
  const cloak: StreamCloakOptions = {
   callerHadTools: true,

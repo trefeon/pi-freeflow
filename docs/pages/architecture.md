@@ -222,19 +222,25 @@ so a cut stream still delivers the calls it announced.
 ## Tool Name Mapping
 
 `src/tool-translation.ts` reshapes whatever either host declares into the shape
-the target path expects. Caller tools are never dropped, and only two rewrites
-ever happen:
+the target path expects. Caller tools are never dropped, and only three
+rewrites ever happen:
 
 - Pi's `find` rides upstream as `glob` **on the free tier alone**, whose gate
   looks for the 11-tool roster with that name in its `glob` slot — and only when the
   caller left the slot empty. OMP declares **both** (`glob` for file patterns,
   `find` for semantic search), and renaming there would collapse two real tools
   into one under the other's schema.
-- Every other lane rides the caller's own names in **both** directions. There
-  the rename is pure loss: the upstream would have accepted `find`, and the host
-  gets `find` back and dispatches it natively.
+- The two OMP experimental context tools, `context_notes` and `new_context`,
+  ride under neutral names **on the free tier alone**: the gate refuses the
+  whole request when both exact names appear in the declared tool list, no
+  matter what their descriptions or schemas say. Renaming either one clears it,
+  and the caller's names are restored on the way back so both still dispatch.
 - Names outside `^[a-zA-Z0-9_.-]+$` are folded, because upstream rejects the
   whole request otherwise.
+
+Every other lane rides the caller's own names in **both** directions. There the
+rename is pure loss: the upstream would have accepted `find`, and the host gets
+`find` back and dispatches it natively.
 
 Every rewrite is recorded per request and undone on the way back, on all three
 wire shapes and on every upstream lane — a tool call that arrives under a name

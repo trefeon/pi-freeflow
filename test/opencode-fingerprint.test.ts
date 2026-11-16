@@ -588,6 +588,74 @@ test("enforce+sse round trip: caller Bash survives cloak with original casing", 
 	assert.equal(res.choices[0].message.tool_calls[0].function.name, "Bash");
 });
 
+test("enforce+sse round trip: OMP context tools disguised upstream, caller names restored on every shape", () => {
+	const body: Record<string, unknown> = {
+		model: "m",
+		stream: true,
+		tools: [
+			{ type: "function", function: { name: "context_notes", description: "notes", parameters: { type: "object", properties: { i: { type: "string" } } } } },
+			{ type: "function", function: { name: "new_context", description: "refresh", parameters: { type: "object", properties: { i: { type: "string" } } } } },
+		],
+	};
+	const r = enforceOpencodeFingerprint(body, "/v1/chat/completions");
+	const names = (body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name);
+	assert.ok(names.includes("notes_tool"), "context_notes disguised upstream");
+	assert.ok(names.includes("refresh_tool"), "new_context disguised upstream");
+	assert.ok(!names.includes("context_notes"), "the gate trigger name never reaches upstream");
+	assert.ok(!names.includes("new_context"), "the gate trigger name never reaches upstream");
+	assert.deepEqual(r.findGlob.renamed, { notes_tool: "context_notes", refresh_tool: "new_context" });
+
+	const chatSse = [
+		'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"notes_tool","arguments":"{}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"refresh_tool","arguments":"{}"}}]}}]}',
+		"data: [DONE]",
+	].join("\n\n");
+	const chat = sseToChatCompletionJson(chatSse, true, r.caseRestore, r.findGlob, r.injected) as {
+		choices: Array<{ message: { tool_calls: Array<{ function: { name: string } }> } }>;
+	};
+	assert.deepEqual(chat.choices[0].message.tool_calls.map((call) => call.function.name), ["context_notes", "new_context"], "chat restores both caller names");
+
+	const response = {
+		id: "resp_1",
+		object: "response",
+		status: "completed",
+		output: [
+			{ type: "function_call", name: "notes_tool", arguments: "{}" },
+			{ type: "function_call", name: "refresh_tool", arguments: "{}" },
+			{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] },
+		],
+	};
+	const responsesSse = `event: response.completed\ndata: {"type":"response.completed","response":${JSON.stringify(response)}}`;
+	const responses = sseToResponsesJson(responsesSse, true, r.caseRestore, r.findGlob, r.injected) as {
+		output: Array<{ type: string; name?: string }>;
+	};
+	assert.deepEqual(responses.output.filter((item) => item.type === "function_call").map((item) => item.name), ["context_notes", "new_context"], "responses restores both caller names");
+
+	const messagesSse = [
+		'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"notes_tool","input":{}}}',
+		'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}',
+		'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_2","name":"refresh_tool","input":{}}}',
+		'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}',
+	].join("\n\n");
+	const messages = sseToMessagesJson(messagesSse, true, r.caseRestore, r.findGlob, r.injected) as {
+		content: Array<{ type: string; name?: string }>;
+	};
+	assert.deepEqual(messages.content.filter((block) => block.type === "tool_use").map((block) => block.name), ["context_notes", "new_context"], "messages restores both caller names");
+});
+
+test("enforceOpencodeFingerprint: a messages choice follows the disguised wire name", () => {
+	const body: Record<string, unknown> = {
+		model: "m",
+		tools: [
+			{ type: "function", function: { name: "context_notes", description: "notes", parameters: { type: "object" } } },
+			{ type: "function", function: { name: "new_context", description: "refresh", parameters: { type: "object" } } },
+		],
+		tool_choice: { type: "tool", name: "context_notes" },
+	};
+	const r = enforceOpencodeFingerprint(body, "/v1/messages");
+	assert.deepEqual(body.tool_choice, { type: "tool", name: "notes_tool" }, "choice follows the disguised declaration");
+	assert.deepEqual(r.findGlob.renamed, { notes_tool: "context_notes", refresh_tool: "new_context" });
+});
+
 test("sseToMessagesJson: drops placeholder tool_use, keeps caller blocks with restored names", () => {
 	const sse = [
 		'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_ph","name":"read","input":{}}}',
