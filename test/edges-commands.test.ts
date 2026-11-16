@@ -21,6 +21,23 @@ import type {
 	ExtensionUIContext,
 	RelayState,
 } from "../src/types.ts";
+	formatRelayStatusLabel,
+	loadRelayState,
+import { updateStatusBar } from "../src/commands.ts";
+		// Persisted: a fresh read of the state file (what the next session's
+		// module init does) still reports hidden and renders no label.
+		const reloaded = loadRelayState();
+		assert.equal(reloaded.hideWidget, true, "hide must survive a reload");
+		assert.equal(formatRelayStatusLabel(reloaded), null);
+		const laterStatuses: Array<{ key: string; status?: string }> = [];
+		updateStatusBar({
+			notify() {},
+			setStatus(key: string, status: string | undefined) {
+				laterStatuses.push({ key, status });
+			},
+		} as unknown as ExtensionUIContext);
+		assert.equal(laterStatuses.at(-1)?.status, undefined, "later UI updates keep the widget hidden");
+		assert.equal(loadRelayState().hideWidget, false, "show clears the persisted preference");
 
 async function withSavedDiskState(fn: () => Promise<void> | void): Promise<void> {
 	const read = (p: string): string | null =>

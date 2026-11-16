@@ -437,7 +437,11 @@ export function createCommandSpec(
      }
     }
 
- ctx.ui.setStatus?.("freeflow", `deploying ${platform} relay…`);
+ // A hidden widget stays hidden through deploy progress: `/freeflow hide`
+ // is a persisted preference, not a one-session effect.
+ if (!getActiveRelayState().hideWidget) {
+  ctx.ui.setStatus?.("freeflow", `deploying ${platform} relay…`);
+ }
     try {
      const deployer =
       platform === "cloudflare"

@@ -129,6 +129,31 @@ describe("relay pool export/import", () => {
 		});
 	});
 
+	it("(b2) replace keeps the machine's widget preference, ignoring the file's", () => {
+		withIsolatedRelayFiles(() => {
+			seedDisk({ ...SEEDED, hideWidget: true });
+			const incoming: RelayState = {
+				mode: "on",
+				enabled: true,
+				url: "https://relay-c.example.com",
+				relays: [{ url: "https://relay-c.example.com", label: "Fresh" }],
+				hideWidget: false,
+			};
+			const raw = JSON.stringify(buildRelayExport(incoming));
+			const { fragment } = parseRelayImport(raw);
+			const plan = planRelayImport(loadRelayState(), fragment, { mode: "replace" });
+			withRelayState(() => plan.next);
+			assert.equal(loadRelayState().hideWidget, true, "a shared pool file must not un-hide this machine");
+
+			const hiddenFile = JSON.stringify(buildRelayExport({ ...incoming, hideWidget: true }));
+			const hiddenFragment = parseRelayImport(hiddenFile).fragment;
+			withRelayState(() => ({ ...loadRelayState(), hideWidget: false }));
+			const plan2 = planRelayImport(loadRelayState(), hiddenFragment, { mode: "replace" });
+			withRelayState(() => plan2.next);
+			assert.equal(loadRelayState().hideWidget, false, "nor may it hide a machine whose widget is shown");
+		});
+	});
+
 	it("(c) unconfirmed replace writes nothing (bytes + mtime identical)", () => {
 		withIsolatedRelayFiles(() => {
 			seedDisk(SEEDED);

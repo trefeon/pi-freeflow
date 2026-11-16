@@ -196,7 +196,7 @@ The same command set works identically in OMP and Pi:
 ```bash
 /freeflow status                  # View installed version, active relay, pool status, and candidates
 /freeflow version                 # Show installed plugin version and cached update status (alias: ver)
-/freeflow hide|show               # Hide or restore the status-bar widget (also `widget hide`/`widget show`)
+/freeflow hide|show               # Hide or restore the status-bar widget (also `widget hide`/`widget show`; the choice persists across sessions and imports)
 /freeflow list                    # List all relays with real-time health badges
 /freeflow use <url|index|label>   # Switch active relay
 /freeflow url <url>               # Set the active relay URL directly

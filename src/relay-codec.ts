@@ -245,6 +245,8 @@ function copyRelayEntry(r: KnownRelay): KnownRelay {
  * Plan an import against the current pool without touching disk or prompting.
  * Merge folds the file pool into the current one via ensureRelay semantics and
  * keeps the current mode/switch/widget; replace installs the file pool fresh.
+ * The widget preference is machine-local either way: a shared pool file must
+ * never un-hide (or hide) the status widget on this machine.
  */
 export function planRelayImport(
  current: RelayState,
@@ -301,7 +303,7 @@ export function planRelayImport(
     enabled: fragment.enabled,
     url: active,
     relays: installed,
-    hideWidget: fragment.hideWidget === true,
+    hideWidget: current.hideWidget === true,
    },
    added: installed.length,
    updated: 0,
