@@ -16,15 +16,11 @@ import {
 
 import { log } from "./logger.ts";
 import {
- getModelUpstream,
- isClineModel,
- isOvhModel,
- KILO_MODEL_IDS,
  MODEL_MAP,
  ovhUpstreamModelId,
  resolveCanonicalModelId,
 } from "./models.ts";
-import { isFreeCatalogId } from "./catalog.ts";
+import { getActiveModelUpstream, resolveActiveModelId } from "./catalog.ts";
 import { ClineAuthError, refreshClineToken, toApiKey } from "./cline-device-auth.ts";
 import {
  clineUpstreamModelId,
@@ -1035,19 +1031,18 @@ export async function handleKiloRequest(opts: HandleKiloRequestOptions): Promise
 
 /**
  * Relay eligibility: only free-catalog models ride relay egress. Returns true
- * when the model is a non-empty string present in MODEL_MAP or KILO_MODEL_IDS
- * (Kilo traffic leaves via its own branch regardless), and when the model is
- * missing/empty (e.g. GET /v1/models carries no body — preserve routing).
- * Cline and OVH models are direct-only and never relay-eligible. Anything else
- * (unknown/paid model ids, non-strings) goes direct upstream.
+ * when the model is a non-empty string present in the active catalog, and when
+ * the model is missing/empty (e.g. GET /v1/models carries no body — preserve routing).
+ * Cline models are direct-only and never relay-eligible. Unknown/paid IDs and
+ * non-strings are ineligible; inference routing rejects unknown IDs locally.
  */
 export function isRelayEligibleModel(model: unknown): boolean {
  if (model === undefined || model === null) return true;
  if (typeof model !== "string") return false;
  if (model.trim() === "") return true;
- const canonical = resolveCanonicalModelId(model.trim());
- if (isClineModel(canonical)) return false;
- return MODEL_MAP.has(canonical) || KILO_MODEL_IDS.has(canonical) || isFreeCatalogId(canonical) || isOvhModel(canonical);
+ const canonical = resolveActiveModelId(model);
+ if (canonical === null) return false;
+ return getActiveModelUpstream(canonical) !== "cline";
 }
 
 /**
@@ -1084,7 +1079,7 @@ export function classifyZenFailover(
 ): ZenFailoverDecision {
  if (!isZenFailoverEnabled()) return { action: "passthrough" };
  if (!parsedBody || typeof parsedBody.model !== "string") return { action: "passthrough" };
- if (getModelUpstream(parsedBody.model) !== "opencode") return { action: "passthrough" };
+ if (getActiveModelUpstream(parsedBody.model) !== "opencode") return { action: "passthrough" };
  const isChatPath = pathname.endsWith("/chat/completions");
  const isResponsesPath = pathname.endsWith("/responses");
  if (!isChatPath && !isResponsesPath) return { action: "passthrough" };

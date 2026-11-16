@@ -6,7 +6,7 @@
 
 import path from "node:path";
 import { ensureDaemon as ensureClientDaemon, getClientPort, stopHeartbeat } from "./client.ts";
-import { refreshCatalog, setAliveCatalog } from "./catalog.ts";
+import { getLastCatalogRefreshStatus, refreshCatalog, setAliveCatalog } from "./catalog.ts";
 import { DATA_DIR_ENV, DEBUG_STATE_FILE, HOST, LOG_FILE, PORT, RELAY_STATE_FILE, ZEN_TRANSPORT_ENV } from "./config.ts";
 import { getCachedUpdate, isLinkedInstall } from "./update-checker.ts";
 import {
@@ -912,15 +912,27 @@ export function createCommandSpec(
      "Refreshing model catalog from live upstreams…",
      "info",
     );
-    const updated = await refreshCatalog(true);
-    setAliveCatalog(updated);
-    resetUpstreamGate("zen");
-    persist();
-    onCatalogRefreshed?.(updated);
-    ctx.ui.notify(
-     `✓ Refreshed ${updated.length} models with full-spec metadata (upstream health reset)!`,
-     "info",
-    );
+     const updated = await refreshCatalog(true);
+     setAliveCatalog(updated);
+     const refreshStatus = getLastCatalogRefreshStatus();
+     if (refreshStatus.opencode.outcome !== "failed") resetUpstreamGate("zen");
+     persist();
+     onCatalogRefreshed?.(updated);
+     const failed = (["opencode", "kilo"] as const).filter((source) =>
+      refreshStatus[source].outcome === "failed"
+     );
+     if (failed.length === 0) {
+      ctx.ui.notify(`Refreshed ${updated.length} models from Zen and Kilo.`, "info");
+     } else {
+      const detail = failed.map((source) => {
+       const label = source === "opencode" ? "Zen" : "Kilo";
+       return `${label}: ${refreshStatus[source].detail ?? "refresh failed"}`;
+      }).join("; ");
+      ctx.ui.notify(
+       `Partial catalog refresh: ${updated.length} models active; cached/static data retained for ${detail}.`,
+       "warning",
+      );
+     }
    } else if (sub === "test") {
     const tokens = rest.trim() ? rest.trim().split(/\s+/) : [];
     let target: string | undefined;

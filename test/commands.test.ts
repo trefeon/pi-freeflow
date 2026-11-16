@@ -9,7 +9,9 @@ import path from "node:path";
 import { _setUpdateRestartDepsForTest, createCommandSpec, updateStatusBar } from "../src/commands.ts";
 import { getClientPort } from "../src/client.ts";
 import { DEBUG_STATE_FILE, LOG_FILE, PORT, RELAY_STATE_FILE } from "../src/config.ts";
+import { getAliveCatalog, setAliveCatalog } from "../src/catalog.ts";
 import { _resetDebugStateCacheForTest } from "../src/logger.ts";
+import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
 import {
 	getActiveRelayState,
 	setActiveRelayState,
@@ -18,6 +20,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 	ExtensionUIContext,
+	RegisteredModel,
 	RelayState,
 } from "../src/types.ts";
 
@@ -77,6 +80,43 @@ const mockApi: ExtensionAPI = {
 	registerProvider() {},
 	registerCommand() {},
 };
+
+test("command spec: refresh reports partial source failure without claiming full success", async () => {
+	await withIsolatedSandboxFiles(async () => {
+		clearSandboxFiles();
+		const before = getAliveCatalog();
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = async (url) => {
+			if (String(url).includes("api.kilo.ai")) {
+				return new Response(JSON.stringify({ data: [{
+					id: "particle-ai/particle-1:free",
+					name: "Particle AI: Particle-1 (free)",
+					isFree: true,
+					pricing: { prompt: "0", completion: "0" },
+					architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+					context_length: 1_048_576,
+					top_provider: { max_completion_tokens: 131_072 },
+					supported_parameters: ["tools", "reasoning"],
+				}] }), { status: 200 });
+			}
+			return new Response("Zen down", { status: 503 });
+		};
+		let registered: RegisteredModel[] = [];
+		try {
+			const spec = createCommandSpec(mockApi, (models) => { registered = models; });
+			const { ctx, notifications } = createMockContext();
+			await spec.handler("refresh", ctx);
+			const final = notifications.at(-1);
+			assert.equal(final?.type, "warning");
+			assert.match(final?.message ?? "", /Partial catalog refresh/);
+			assert.match(final?.message ?? "", /Zen: HTTP 503/);
+			assert.ok(registered.some((model) => model.id === "particle-ai/particle-1:free"));
+		} finally {
+			globalThis.fetch = realFetch;
+			setAliveCatalog(before);
+		}
+	});
+});
 
 test("command spec: /freeflow add adds relay with custom short name", async () => {
 	await withSavedDiskState(async () => {
@@ -495,4 +535,3 @@ test("command spec: description and completions list every implemented subcomman
 		assert.ok(description.includes(syntax), `description must document '${syntax}'`);
 	}
 });
-

@@ -10,6 +10,7 @@ import "./user-flow-env.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { isRelayEligibleModel, relayBypassedForTransport, startProxy } from "../src/proxy.ts";
+import { getAliveCatalog, setAliveCatalog } from "../src/catalog.ts";
 import { resetAllRelayHealth, setActiveRelayState } from "../src/relay-state.ts";
 import type { KnownRelay, RelayState } from "../src/types.ts";
 import { clearSandboxFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
@@ -82,7 +83,7 @@ function chatBody(model: string): string {
  return JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] });
 }
 
-test("unknown-model POST bypasses the relay pool while free-model POST uses it", async () => {
+test("unknown-model POST is rejected locally while a free-model POST uses the relay", async () => {
  await withIsolatedSandboxFiles(async () => {
   clearSandboxFiles();
   const relay = "http://127.0.0.1:19371";
@@ -126,24 +127,18 @@ test("unknown-model POST bypasses the relay pool while free-model POST uses it",
      `free-model POST must touch the relay URL, saw: ${seen.join(", ")}`,
     );
 
-    // Unknown/paid model bypasses every relay and goes direct.
+    // Unknown/paid models are refused locally and never reach any upstream.
     seen.length = 0;
     const paidRes = await fetch(`${localPrefix}/v1/chat/completions`, {
      method: "POST",
      headers: { "content-type": "application/json", ...authHeaders() },
      body: chatBody(UNKNOWN_MODEL),
     });
-    assert.equal(paidRes.status, 200);
-    await paidRes.text();
-    assert.ok(seen.length > 0, "unknown-model POST must still reach upstream");
-    assert.ok(
-     seen.every((u) => !u.startsWith(relay)),
-     `unknown-model POST must never touch a relay URL, saw: ${seen.join(", ")}`,
-    );
-    assert.ok(
-     seen.some((u) => u.includes("opencode.ai")),
-     `unknown-model POST must go direct upstream, saw: ${seen.join(", ")}`,
-    );
+    assert.equal(paidRes.status, 400);
+    const paidBody = await paidRes.json();
+    assert.equal(paidBody.error.code, "model_not_found");
+    assert.match(paidBody.error.message, /not in the active free catalog/);
+    assert.deepEqual(seen, [], "unknown-model POST must not touch a relay or direct upstream");
    } finally {
     fetchMock.mock.restore();
    }
@@ -205,6 +200,64 @@ test("ovh-model POST uses the relay pool when armed", async () => {
    }
   } finally {
    if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+ });
+});
+
+test("dynamic Kilo model routes keylessly without Zen fingerprinting or substitution", async () => {
+ await withIsolatedSandboxFiles(async () => {
+  clearSandboxFiles();
+  const before = getAliveCatalog();
+  const dynamic = {
+   id: "vendor/suffixless-model",
+   name: "Vendor Suffixless Model",
+   reasoning: true,
+   contextWindow: 1_048_576,
+   maxTokens: 131_072,
+   input: ["text", "image"] as ["text", "image"],
+   thinkingFormat: "openrouter" as const,
+   source: "kilo" as const,
+  };
+  setAliveCatalog([...before, dynamic]);
+  setActiveRelayState({ mode: "off", enabled: false, url: "", relays: [] }, false);
+  const testPort = 19374;
+  const { server, port } = await startProxy(testPort);
+  assert.ok(server);
+  const localPrefix = `http://127.0.0.1:${port}`;
+  const realFetch = globalThis.fetch.bind(globalThis);
+  let upstreamUrl = "";
+  let upstreamHeaders = new Headers();
+  let upstreamBody: Record<string, unknown> = {};
+  const fetchMock = test.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+   const target = String(url);
+   if (target.startsWith(localPrefix)) return realFetch(target, init);
+   upstreamUrl = target;
+   upstreamHeaders = new Headers(init?.headers);
+   upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+   return stubJson(JSON.stringify({ id: "particle-answer", choices: [] }));
+  });
+  try {
+   assert.equal(isRelayEligibleModel(dynamic.id), true, "active dynamic rows are catalog-eligible");
+   const response = await fetch(`${localPrefix}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify({
+     model: dynamic.id,
+     messages: [{ role: "user", content: "hi" }],
+     tools: [{ type: "function", function: { name: "only_tool", parameters: { type: "object" } } }],
+    }),
+   });
+   assert.equal(response.status, 200);
+   await response.text();
+   assert.ok(upstreamUrl.startsWith("https://api.kilo.ai"), upstreamUrl);
+   assert.equal(upstreamHeaders.get("authorization"), null);
+   assert.equal(upstreamBody.model, dynamic.id, "the requested canonical ID must remain exact");
+   assert.equal((upstreamBody.tools as unknown[]).length, 1, "Kilo bypasses Zen's injected tool roster");
+   assert.equal(upstreamBody.stream, undefined, "Kilo bypasses Zen's forced streaming fingerprint");
+  } finally {
+   fetchMock.mock.restore();
+   await new Promise<void>((resolve) => server.close(() => resolve()));
+   setAliveCatalog(before);
   }
  });
 });

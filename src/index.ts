@@ -11,7 +11,6 @@ import fs from "node:fs";
 import path from "node:path";
 import {
  getAliveCatalog,
- mergeCatalog,
  readCatalogCache,
  refreshCatalog,
  setAliveCatalog,
@@ -252,7 +251,7 @@ export default async function(pi: ExtensionAPI): Promise<void> {
   .then((aliveModels) => {
    if (aliveModels.length > 0) {
     setAliveCatalog(aliveModels);
-    registerCatalog(mergeCatalog(registeredCatalog, aliveModels));
+     registerCatalog(aliveModels);
     logInfo(
      `Catalog refreshed: ${aliveModels.length} models verified active`,
     );

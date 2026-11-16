@@ -503,6 +503,7 @@ test("catalog cache [g2] stale cache triggers a conditional refresh that merges 
 
 		const fetchMock = test.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
 			const u = String(url);
+			if (u.includes("api.kilo.ai")) return new Response("down", { status: 503 });
 			assert.ok(u.includes("/v1/models"), `unexpected fetch: ${u}`);
 			const headers = init?.headers as Record<string, string> | Headers | undefined;
 			const etag = headers instanceof Headers ? headers.get("if-none-match") : headers?.["If-None-Match"];
@@ -515,7 +516,7 @@ test("catalog cache [g2] stale cache triggers a conditional refresh that merges 
 		try {
 			const result = await refreshCatalog(false);
 			assert.ok(result.some((m) => m.id === "m-fresh-free"), "stale cache must be refreshed with the fetched model");
-			assert.equal(fetchMock.mock.calls.length, 1, "exactly one conditional fetch");
+			assert.equal(fetchMock.mock.calls.length, 2, "Zen and Kilo refresh independently");
 			const cache = readCatalogCache();
 			assert.ok(cache?.models?.some((m) => m.id === "m-fresh-free"), "fresh model must be persisted to the cache");
 		} finally {
@@ -526,19 +527,17 @@ test("catalog cache [g2] stale cache triggers a conditional refresh that merges 
 
 // ── 9. Catalog cache: corrupt fallback ─────────────────────────────────────
 
-test("catalog cache [g3] corrupt cache falls back to the static catalog without a refresh", async () => {
+test("catalog cache [g3] corrupt cache serves static immediately while both refreshes run", async () => {
 	await withIsolatedSandboxFiles(async () => {
 		clearSandboxFiles();
 		setAliveCatalog(resetCatalog());
 		fs.writeFileSync(CATALOG_CACHE_FILE, "{ this is not valid json", "utf8");
 
-		const fetchMock = test.mock.method(globalThis, "fetch", async () => {
-			throw new Error("corrupt cache must not trigger a fetch");
-		});
+		const fetchMock = test.mock.method(globalThis, "fetch", async () => { throw new Error("offline"); });
 		try {
 			const result = await refreshCatalog(false);
 			assert.equal(result.length, ALL_MODELS.length, "corrupt cache must fall back to the static catalog");
-			assert.equal(fetchMock.mock.calls.length, 0, "corrupt cache must not trigger a fetch");
+			assert.equal(fetchMock.mock.calls.length, 2, "corrupt cache must attempt both background sources");
 			assert.equal(readCatalogCache(), null, "corrupt cache must read as null");
 		} finally {
 			fetchMock.mock.restore();
@@ -705,6 +704,47 @@ test("activation [i1] async catalog refresh merges the fetched model into the re
 				"merge must preserve the static models",
 			);
 			assert.match(handle.config.baseUrl, /127\.0\.0\.1/, "baseUrl must point to loopback");
+		} finally {
+			await handle.shutdown();
+		}
+	});
+});
+
+test("activation [i2] discovered suffixless Kilo model enters the picker despite a Zen outage", async () => {
+	await withIsolatedSandboxFiles(async () => {
+		clearSandboxFiles();
+		writeCatalogCache({
+			timestamp: Date.now() - CATALOG_CACHE_TTL_MS - 5000,
+			opencode: ["m-old-free"],
+			kilo: [],
+			models: [fakeModel("m-old-free")],
+			etag: "etag-old",
+		});
+
+		const handle = await activate([TEST_PROXY_PORT], (u: string) => {
+			if (u.startsWith("https://opencode.ai") && u.includes("/models")) {
+				return new Response("Zen unavailable", { status: 503 });
+			}
+			if (u.includes("api.kilo.ai/api/gateway/models")) {
+				return new Response(JSON.stringify({ data: [{
+					id: "vendor/suffixless-model",
+					name: "Vendor Suffixless Model",
+					isFree: true,
+					pricing: { prompt: "0", completion: "0" },
+					architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] },
+					context_length: 1_048_576,
+					top_provider: { max_completion_tokens: 131_072 },
+					supported_parameters: ["tools", "reasoning"],
+				}] }), { status: 200 });
+			}
+			return benignExternal(u);
+		});
+		try {
+			await flushUntil(() => handle.config?.models.some((m) => m.id === "vendor/suffixless-model") === true);
+			const discovered = handle.config?.models.find((m) => m.id === "vendor/suffixless-model");
+			assert.ok(discovered, "strictly admitted suffixless Kilo row must be registered without restart");
+			assert.equal(discovered.owned_by, "kilocode");
+			assert.ok(handle.config?.models.some((m) => m.id === "m-old-free"), "Zen cache survives its outage");
 		} finally {
 			await handle.shutdown();
 		}

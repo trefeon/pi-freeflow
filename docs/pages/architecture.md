@@ -40,7 +40,7 @@ src/
 ├── index.ts                 # Extension bootstrap, provider registration, lifecycle hooks
 ├── lease.ts                 # Client lease registry and heartbeat expiry for daemon retirement
 ├── logger.ts                # Structured, leveled, rotating file logger (10MB x 10)
-├── models.ts                # 32 curated free model definitions and upstream mappings
+├── models.ts                # 30 bundled free model definitions and upstream mappings
 ├── opencode-fingerprint.ts  # Zen free-tier fingerprint enforcement + SSE stream aggregation
 ├── probe.ts                 # Relay reachability probe (HTTP 200 + latency)
 ├── proxy.ts                 # Loopback HTTP proxy server on 28180 with master/worker reuse
@@ -144,12 +144,14 @@ Two session behaviors apply with no knob (deliberate continuity fixes, not opt-i
 
 ## Atomic Disk Catalog Cache
 
-To prevent network burst storms when multiple subagents boot simultaneously, the model catalog is cached to disk:
+The bundled catalog registers immediately, then Zen and Kilo refresh independently in the background. To prevent network burst storms when multiple subagents boot simultaneously, dynamic source snapshots are cached to disk:
 
 - **Location**: `~/.pi/agent/pi-freeflow-catalog-cache.json`
 - **TTL**: 24 hours (86,400,000 ms)
+- **Isolation**: Zen and Kilo keep separate timestamps, validators, IDs, and model snapshots; one source failing cannot erase or stale the other
+- **Compatibility**: Legacy merged caches are classified conservatively and rewritten to the versioned per-source schema after the next successful refresh
 - **Atomic Write**: Uses a temp file + `fs.renameSync` to prevent corruption under concurrent writes
-- **Boot Speed**: Subagents load all 30 models from disk cache in ~0.1ms
+- **Boot Speed**: All 30 bundled models are available before either network request; valid dynamic snapshots are overlaid from disk
 
 ## Stream Lifecycle Safety
 

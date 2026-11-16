@@ -16,7 +16,7 @@ hero:
 
 features:
   - title: "30 Curated Free Models"
-    details: 11 OpenCode Zen + 10 KiloCode Gateway + 1 Cline + 8 OVHcloud AI Endpoints — up to 1M context, 384K output, vision support, no API keys.
+    details: 11 OpenCode Zen + 10 KiloCode Gateway + 1 Cline + 8 OVHcloud AI Endpoints in the verified baseline, plus compatible free Kilo models discovered automatically — up to 1M context, 384K output, vision support, no API keys.
   - title: "BYO Relay Pool"
     details: Round-robin across your own relays — a self-hosted pool that runs many egress IPs on one small host, or Cloudflare Workers / Vercel Edge / Deno Deploy workers.
   - title: "Adaptive Failover"

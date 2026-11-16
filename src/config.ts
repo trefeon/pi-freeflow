@@ -20,6 +20,7 @@ export { PKG_VERSION };
 
 // ── Upstream endpoints ──────────────────────────────────────────────
 export const UPSTREAM_OPENCODE = "https://opencode.ai/inference";
+export const KILO_CATALOG_URL = "https://api.kilo.ai/api/gateway/models";
 export const KILO_CHAT_URL = "https://api.kilo.ai/api/gateway/chat/completions";
 export const KILO_RESPONSES_URL = "https://api.kilo.ai/api/gateway/responses";
 export const OPENCODE_API_URL = `${UPSTREAM_OPENCODE}/v1`;
@@ -113,7 +114,7 @@ export const PORT = resolvePort();
 export const VERCEL_API = "https://api.vercel.com";
 
 // ── Catalog & Logging constants ─────────────────────────────────────
-export const CATALOG_CACHE_TTL_MS = 86_400_000; // 24 hours — delegate to host fetchDynamicModels
+export const CATALOG_CACHE_TTL_MS = 86_400_000; // 24 hours
 export const LOG_MAX_BYTES = 10 * 1024 * 1024; // 10MB per file
 export const LOG_MAX_FILES = 10; // 10 archived + current ≈ 110MB cap (rotated, never a single 100MB blob)
 
@@ -152,7 +153,7 @@ export const UPSTREAM_HEADER_TIMEOUT_MS = 300_000;
 // active (a relay would re-originate the connection and forfeit the
 // sidecar's fingerprint); non-Zen lanes never use the sidecar.
 export const ZEN_TRANSPORT_ENV = "PI_FREEFLOW_ZEN_TRANSPORT";
-/** Timeout for refreshing the catalog (host fetchDynamicModels). */
+/** Timeout for refreshing either upstream catalog. */
 export const CATALOG_REFRESH_TIMEOUT_MS = 10_000;
 /** Timeout for probing a relay with a light /v1/models request. */
 export const PROBE_TIMEOUT_MS = 5_000;

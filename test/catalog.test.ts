@@ -5,13 +5,31 @@
  * provider registration, even when a cached upstream list is partial, and fresh
  * entries must override stale ones by id.
  */
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEAD_MODEL_IDS, enrichModelDef, isFreeCatalogId, mergeCatalog, refreshCatalog } from "../src/catalog.ts";
-import { CATALOG_CACHE_FILE, CATALOG_CACHE_TTL_MS } from "../src/config.ts";
+import {
+	DEAD_MODEL_IDS,
+	enrichModelDef,
+	getActiveModelUpstream,
+	getAliveCatalog,
+	getLastCatalogRefreshStatus,
+	isFreeCatalogId,
+	mergeCatalog,
+	parseKiloCatalogResponse,
+	refreshCatalog,
+	resolveActiveModelId,
+	setAliveCatalog,
+	syncAliveCatalogFromCache,
+} from "../src/catalog.ts";
+import {
+	CATALOG_CACHE_FILE,
+	CATALOG_CACHE_LOCK_FILE,
+	CATALOG_CACHE_TTL_MS,
+	KILO_CATALOG_URL,
+} from "../src/config.ts";
 import { ALL_MODELS, getModelUpstream } from "../src/models.ts";
 import type { RegisteredModel } from "../src/types.ts";
 
@@ -28,6 +46,39 @@ function model(id: string, maxTokens: number, source: "opencode" | "kilo"): Regi
 }
 
 const BASE: RegisteredModel[] = [model("alpha-free", 100, "opencode"), model("beta-free", 200, "kilo")];
+
+afterEach(() => {
+	setAliveCatalog(ALL_MODELS.map((entry) => ({ ...entry, source: getModelUpstream(entry.id) })));
+	fs.rmSync(CATALOG_CACHE_FILE, { force: true });
+	fs.rmSync(CATALOG_CACHE_LOCK_FILE, { force: true });
+	const dir = path.dirname(CATALOG_CACHE_FILE);
+	const prefix = `${path.basename(CATALOG_CACHE_FILE)}.`;
+	if (fs.existsSync(dir)) {
+		for (const entry of fs.readdirSync(dir)) {
+			if (entry.startsWith(prefix) && entry.endsWith(".tmp")) fs.rmSync(path.join(dir, entry), { force: true });
+		}
+	}
+});
+
+function kiloRow(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		id,
+		name: `Upstream ${id}`,
+		isFree: true,
+		pricing: { prompt: "0", completion: "0" },
+		architecture: {
+			input_modalities: ["text", "image"],
+			output_modalities: ["text"],
+		},
+		context_length: 1_048_576,
+		top_provider: { context_length: 1_048_576, max_completion_tokens: 131_072 },
+		supported_parameters: ["tools", "reasoning", "reasoning_effort"],
+		opencode: {
+			reasoning_options: [{ type: "effort", values: ["none", "low", "high", "max"] }],
+		},
+		...overrides,
+	};
+}
 
 test("mergeCatalog overrides matching ids with fresh entries", () => {
 	const merged = mergeCatalog(BASE, [model("alpha-free", 999, "opencode")]);
@@ -56,14 +107,34 @@ test("mergeCatalog with an empty fresh list returns the base unchanged", () => {
 	assert.deepEqual(merged, BASE);
 });
 
-test("refreshCatalog uses If-None-Match ETag and skips merge on 304", async () => {
+test("refreshCatalog sends and updates independent ETags while a 304 advances both timestamps", async () => {
 	const realFetch = globalThis.fetch;
+	const stale = Date.now() - CATALOG_CACHE_TTL_MS - 5000;
+	const zen = model("etag-zen-free", 1000, "opencode");
+	const kilo = model("etag-kilo:free", 1000, "kilo");
+	fs.writeFileSync(CATALOG_CACHE_FILE, JSON.stringify({
+		version: 2,
+		sources: {
+			opencode: { timestamp: stale, etag: "zen-old", ids: [zen.id], models: [zen] },
+			kilo: { timestamp: stale, etag: "kilo-old", ids: [kilo.id], models: [kilo] },
+		},
+	}));
+	const requested = new Map<string, string | null>();
 	try {
-		// Simulate upstream 304 Not Modified
-		globalThis.fetch = async () =>
-			new Response(null, { status: 304, headers: { etag: '"abc123"' } });
+		globalThis.fetch = async (url, init) => {
+			const source = String(url) === KILO_CATALOG_URL ? "kilo" : "opencode";
+			requested.set(source, new Headers(init?.headers).get("if-none-match"));
+			return new Response(null, { status: 304, headers: { etag: `${source}-new` } });
+		};
 		const result = await refreshCatalog(true);
-		assert.ok(Array.isArray(result), "refreshCatalog must return array on 304");
+		assert.ok(result.some((entry) => entry.id === zen.id));
+		assert.ok(result.some((entry) => entry.id === kilo.id));
+		assert.deepEqual(Object.fromEntries(requested), { opencode: "zen-old", kilo: "kilo-old" });
+		const persisted = JSON.parse(fs.readFileSync(CATALOG_CACHE_FILE, "utf8"));
+		assert.ok(persisted.sources.opencode.timestamp > stale);
+		assert.ok(persisted.sources.kilo.timestamp > stale);
+		assert.equal(persisted.sources.opencode.etag, "opencode-new");
+		assert.equal(persisted.sources.kilo.etag, "kilo-new");
 	} finally {
 		globalThis.fetch = realFetch;
 	}
@@ -72,11 +143,11 @@ test("refreshCatalog uses If-None-Match ETag and skips merge on 304", async () =
 test("refreshCatalog passes an abortable timeout signal and falls back instead of hanging", async () => {
 	const realFetch = globalThis.fetch;
 	try {
-		let captured: RequestInit | undefined;
-		const { promise: fetchCalled, resolve: markCalled } = Promise.withResolvers<void>();
+		const captured: RequestInit[] = [];
+		const { promise: fetchesCalled, resolve: markCalled } = Promise.withResolvers<void>();
 		globalThis.fetch = async (_url, init) => {
-			captured = init;
-			markCalled();
+			captured.push(init ?? {});
+			if (captured.length === 2) markCalled();
 			// Simulate a hung upstream: never settles on its own; the abort
 			// signal is the only way out (the CATALOG_REFRESH_TIMEOUT_MS timer).
 			const { promise, reject } = Promise.withResolvers<Response>();
@@ -84,9 +155,12 @@ test("refreshCatalog passes an abortable timeout signal and falls back instead o
 			return promise;
 		};
 		const resultP = refreshCatalog(true);
-		await fetchCalled; // the fetch is executing now
-		assert.ok(captured?.signal, "the upstream fetch must receive an abortable signal");
-		captured?.signal?.dispatchEvent(new Event("abort"));
+		await fetchesCalled;
+		assert.equal(captured.length, 2, "Zen and Kilo must refresh concurrently");
+		for (const init of captured) {
+			assert.ok(init.signal, "each upstream fetch must receive an abortable signal");
+			init.signal?.dispatchEvent(new Event("abort"));
+		}
 		const result = await resultP;
 		assert.ok(Array.isArray(result), "a hung upstream must fall back to cache/static, not hang");
 	} finally {
@@ -229,7 +303,7 @@ test("refreshCatalog overlays the cache on a 304 so dynamic ids survive (issue: 
 		},
 		() => refreshCatalog(false),
 	);
-	assert.equal(requested.length, 1, "the conditional refresh must revalidate upstream exactly once");
+	assert.equal(requested.length, 2, "the conditional refresh must revalidate Zen and Kilo");
 	const kept = result.find((m) => m.id === dynamic.id);
 	assert.ok(kept, "a 304 must keep the cached dynamic free id");
 	assert.equal(kept.maxTokens, 4242, "the cached row, not a rebuilt one, must survive");
@@ -331,4 +405,365 @@ test("enrichModelDef honors explicit contextWindow and max_tokens over id heuris
 	);
 	assert.equal(fallbackHeuristic.contextWindow, 1_048_576, "non-positive contextWindow falls back to id heuristic");
 	assert.equal(fallbackHeuristic.maxTokens, 131_072, "non-positive maxTokens falls back to id heuristic");
+});
+
+test("parseKiloCatalogResponse admits Particle free and rejects paid, priced, tool-less, dead, and malformed rows", () => {
+	const rows = parseKiloCatalogResponse({
+		data: [
+			kiloRow("particle-ai/particle-1:free"),
+			kiloRow("particle-ai/particle-1", { isFree: false }),
+			kiloRow("particle/particle-1", { pricing: { prompt: "0", completion: "0.5" } }),
+			kiloRow("lab/no-tools:free", { supported_parameters: ["reasoning"] }),
+			kiloRow("mimo-v2.5-free"),
+			kiloRow("lab/no-output:free", { architecture: { input_modalities: ["text"], output_modalities: [] } }),
+			kiloRow("lab/no-limit:free", { top_provider: { max_completion_tokens: 0 } }),
+		],
+	});
+	assert.deepEqual(rows.map((row) => row.id), ["particle-ai/particle-1:free"]);
+	assert.equal(rows[0].name, "Upstream particle-ai/particle-1:free");
+	assert.deepEqual(rows[0].input, ["text", "image"]);
+	assert.equal(rows[0].thinkingFormat, "openrouter");
+	assert.deepEqual(rows[0].thinkingLevelMap, { off: null, low: "low", high: "high", max: "max" });
+});
+
+test("two-source refresh keeps static metadata authoritative and rejects unknown cross-source collisions", async () => {
+	fs.rmSync(CATALOG_CACHE_FILE, { force: true });
+	const staticKilo = ALL_MODELS.find((entry) => entry.id === "liquid/lfm-3-1.7b:free");
+	assert.ok(staticKilo);
+	const result = await withFetch(async (url) => {
+		if (String(url) === KILO_CATALOG_URL) {
+			return new Response(JSON.stringify({ data: [
+				kiloRow("particle-ai/particle-1:free"),
+				kiloRow("collision/free"),
+				kiloRow(staticKilo.id, { name: "Wrong live name", context_length: 1, top_provider: { max_completion_tokens: 1 } }),
+			] }), { status: 200 });
+		}
+		return new Response(JSON.stringify({ data: [
+			{ id: "zen-new-free", name: "Zen New" },
+			{ id: "collision/free", name: "Collision" },
+		] }), { status: 200 });
+	}, () => refreshCatalog(true));
+	assert.ok(result.some((entry) => entry.id === "particle-ai/particle-1:free" && entry.source === "kilo"));
+	assert.ok(result.some((entry) => entry.id === "zen-new-free" && entry.source === "opencode"));
+	assert.equal(result.some((entry) => entry.id === "collision/free"), false);
+	assert.deepEqual(
+		result.find((entry) => entry.id === staticKilo.id),
+		{ ...staticKilo, source: "kilo" },
+		"reviewed static metadata must beat the live row",
+	);
+	assert.equal(getActiveModelUpstream("particle-ai/particle-1:free"), "kilo");
+});
+
+test("a Kilo 200 replaces only Kilo dynamics while a Zen failure retains Zen cache", async () => {
+	const stale = Date.now() - CATALOG_CACHE_TTL_MS - 1;
+	const zenCached = model("zen-cached-free", 111, "opencode");
+	const kiloCached = model("kilo-cached:free", 222, "kilo");
+	const withdrawn = model("kilo-withdrawn:free", 333, "kilo");
+	fs.writeFileSync(CATALOG_CACHE_FILE, JSON.stringify({
+		version: 2,
+		sources: {
+			opencode: { timestamp: stale, etag: "zen-old", ids: [zenCached.id], models: [zenCached] },
+			kilo: { timestamp: stale, etag: "kilo-old", ids: [kiloCached.id, withdrawn.id], models: [kiloCached, withdrawn] },
+		},
+	}));
+	const result = await withFetch(async (url) => {
+		if (String(url) === KILO_CATALOG_URL) {
+			return new Response(JSON.stringify({ data: [kiloRow("particle-ai/particle-1:free")] }), { status: 200 });
+		}
+		return new Response("down", { status: 503 });
+	}, () => refreshCatalog(false));
+	assert.ok(result.some((entry) => entry.id === zenCached.id), "unrelated Zen failure keeps its cached row");
+	assert.ok(result.some((entry) => entry.id === "particle-ai/particle-1:free"));
+	assert.equal(result.some((entry) => entry.id === kiloCached.id), false, "successful Kilo listing replaces its old dynamics");
+	assert.equal(result.some((entry) => entry.id === withdrawn.id), false, "withdrawn Kilo dynamics disappear");
+	assert.equal(getLastCatalogRefreshStatus().opencode.outcome, "failed");
+	assert.equal(getLastCatalogRefreshStatus().kilo.outcome, "updated");
+});
+
+test("Kilo admission rejects a row whose exact ID is a reviewed static alias", () => {
+	const parsed = parseKiloCatalogResponse({ data: [
+		kiloRow("nemotron-3-ultra-550b"),
+		kiloRow("vendor/suffixless-model"),
+	] });
+	assert.deepEqual(parsed.map((entry) => entry.id), ["vendor/suffixless-model"]);
+});
+
+test("overlapping refreshCatalog calls serialize within one process", async () => {
+	const realFetch = globalThis.fetch;
+	const firstGate = Promise.withResolvers<void>();
+	let calls = 0;
+	globalThis.fetch = async (url) => {
+		const call = calls++;
+		if (call < 2) await firstGate.promise;
+		return String(url) === KILO_CATALOG_URL
+			? new Response(JSON.stringify({ data: [kiloRow(`vendor/serialized-${Math.floor(call / 2)}`)] }), { status: 200 })
+			: new Response(JSON.stringify({ data: [{ id: `serialized-${Math.floor(call / 2)}-free` }] }), { status: 200 });
+	};
+	try {
+		const first = refreshCatalog(true);
+		const second = refreshCatalog(true);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(calls, 2, "the second refresh must wait while the first source pair is in flight");
+		firstGate.resolve();
+		await first;
+		await second;
+		assert.equal(calls, 4);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
+test("a cross-process source update written during refresh survives the locked commit", async () => {
+	const realFetch = globalThis.fetch;
+	const zenGate = Promise.withResolvers<void>();
+	let calls = 0;
+	globalThis.fetch = async (url) => {
+		calls++;
+		if (String(url) === KILO_CATALOG_URL) return new Response("down", { status: 503 });
+		await zenGate.promise;
+		return new Response(JSON.stringify({ data: [{ id: "host-zen-free" }] }), { status: 200 });
+	};
+	try {
+		const pending = refreshCatalog(true);
+		while (calls < 2) await new Promise<void>((resolve) => setImmediate(resolve));
+		const daemonKilo = model("vendor/daemon-suffixless", 4096, "kilo");
+		fs.writeFileSync(CATALOG_CACHE_FILE, JSON.stringify({
+			version: 2,
+			sources: {
+				opencode: { timestamp: 0, ids: [], models: [] },
+				kilo: { timestamp: Date.now(), etag: "daemon-kilo", ids: [daemonKilo.id], models: [daemonKilo] },
+			},
+		}));
+		zenGate.resolve();
+		const result = await pending;
+		assert.ok(result.some((entry) => entry.id === "host-zen-free"));
+		assert.ok(result.some((entry) => entry.id === daemonKilo.id && entry.source === "kilo"));
+		assert.equal(getLastCatalogRefreshStatus().kilo.usedCache, true, "status reflects the concurrently persisted Kilo snapshot");
+		const persisted = JSON.parse(fs.readFileSync(CATALOG_CACHE_FILE, "utf8"));
+		assert.ok(persisted.sources.kilo.models.some((entry: RegisteredModel) => entry.id === daemonKilo.id));
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
+test("two failed fetches still adopt a newer catalog committed while they were in flight", async () => {
+	const realFetch = globalThis.fetch;
+	const fetchGate = Promise.withResolvers<void>();
+	let calls = 0;
+	globalThis.fetch = async () => {
+		calls++;
+		await fetchGate.promise;
+		return new Response("down", { status: 503 });
+	};
+	try {
+		const pending = refreshCatalog(true);
+		while (calls < 2) await new Promise<void>((resolve) => setImmediate(resolve));
+		const daemonZen = model("daemon-zen-free", 4096, "opencode");
+		const daemonKilo = model("vendor/daemon-only", 4096, "kilo");
+		const committedAt = Date.now() + 1000;
+		fs.writeFileSync(CATALOG_CACHE_FILE, JSON.stringify({
+			version: 2,
+			sources: {
+				opencode: { timestamp: committedAt, etag: "daemon-zen", ids: [daemonZen.id], models: [daemonZen] },
+				kilo: { timestamp: committedAt, etag: "daemon-kilo", ids: [daemonKilo.id], models: [daemonKilo] },
+			},
+		}));
+		fetchGate.resolve();
+		const result = await pending;
+		assert.ok(result.some((entry) => entry.id === daemonZen.id));
+		assert.ok(result.some((entry) => entry.id === daemonKilo.id && entry.source === "kilo"));
+		const status = getLastCatalogRefreshStatus();
+		assert.equal(status.opencode.outcome, "failed", "durable reconciliation is not a local fetch success");
+		assert.equal(status.kilo.outcome, "failed", "durable reconciliation is not a local fetch success");
+		assert.equal(status.opencode.usedCache, true);
+		assert.equal(status.kilo.usedCache, true);
+		assert.match(status.opencode.detail ?? "", /HTTP 503/);
+		assert.match(status.kilo.detail ?? "", /HTTP 503/);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
+test("a lock holder never removes a successor token after stale takeover", async () => {
+	const originalRename = fs.renameSync;
+	const staleAt = new Date(Date.now() - 60_000);
+	const successor = "successor-owner-token";
+	let acquiredOwner = "";
+	fs.writeFileSync(CATALOG_CACHE_LOCK_FILE, "stale-owner-token");
+	fs.utimesSync(CATALOG_CACHE_LOCK_FILE, staleAt, staleAt);
+	fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+		const result = originalRename(from, to);
+		if (String(to) === CATALOG_CACHE_FILE) {
+			acquiredOwner = fs.readFileSync(CATALOG_CACHE_LOCK_FILE, "utf8");
+			fs.writeFileSync(CATALOG_CACHE_LOCK_FILE, successor);
+		}
+		return result;
+	}) as typeof fs.renameSync;
+	try {
+		await withFetch(async (url) => String(url) === KILO_CATALOG_URL
+			? new Response(JSON.stringify({ data: [kiloRow("vendor/lock-owner")] }), { status: 200 })
+			: new Response(JSON.stringify({ data: [{ id: "lock-owner-free" }] }), { status: 200 }),
+		() => refreshCatalog(true));
+		assert.notEqual(acquiredOwner, "");
+		assert.notEqual(acquiredOwner, "stale-owner-token");
+		assert.match(acquiredOwner, new RegExp(`^${process.pid}:[0-9a-f-]+$`));
+		assert.equal(fs.readFileSync(CATALOG_CACHE_LOCK_FILE, "utf8"), successor);
+	} finally {
+		fs.renameSync = originalRename;
+	}
+});
+
+test("an artificially old lock owned by the current live PID is never taken over", async () => {
+	const owner = `${process.pid}:live-owner-test`;
+	const staleAt = new Date(Date.now() - 60_000);
+	fs.writeFileSync(CATALOG_CACHE_LOCK_FILE, owner);
+	fs.utimesSync(CATALOG_CACHE_LOCK_FILE, staleAt, staleAt);
+	const startedAt = Date.now();
+	const result = await withFetch(async (url) => String(url) === KILO_CATALOG_URL
+		? new Response(JSON.stringify({ data: [kiloRow("vendor/live-lock")] }), { status: 200 })
+		: new Response(JSON.stringify({ data: [{ id: "live-lock-free" }] }), { status: 200 }),
+	() => refreshCatalog(true));
+	const elapsedMs = Date.now() - startedAt;
+	assert.equal(fs.readFileSync(CATALOG_CACHE_LOCK_FILE, "utf8"), owner);
+	assert.equal(result.some((entry) => entry.id === "vendor/live-lock"), false);
+	assert.equal(getLastCatalogRefreshStatus().kilo.outcome, "failed");
+	assert.match(getLastCatalogRefreshStatus().kilo.detail ?? "", /persistence failed/);
+	assert.ok(elapsedMs < 2500, `lock acquisition must stay bounded, took ${elapsedMs}ms`);
+});
+
+test("per-source validators and freshness revalidate only the stale source", async () => {
+	const zen = model("fresh-zen-free", 1000, "opencode");
+	const kilo = model("stale-kilo:free", 1000, "kilo");
+	const oldKiloTimestamp = Date.now() - CATALOG_CACHE_TTL_MS - 5000;
+	fs.writeFileSync(CATALOG_CACHE_FILE, JSON.stringify({
+		version: 2,
+		sources: {
+			opencode: { timestamp: Date.now(), etag: "zen-etag", ids: [zen.id], models: [zen] },
+			kilo: { timestamp: oldKiloTimestamp, etag: "kilo-etag", ids: [kilo.id], models: [kilo] },
+		},
+	}));
+	const requests: Array<{ url: string; etag: string | null }> = [];
+	await withFetch(async (url, init) => {
+		requests.push({ url: String(url), etag: new Headers(init?.headers).get("if-none-match") });
+		return new Response(null, { status: 304 });
+	}, () => refreshCatalog(false));
+	assert.deepEqual(requests, [{ url: KILO_CATALOG_URL, etag: "kilo-etag" }]);
+	const persisted = JSON.parse(fs.readFileSync(CATALOG_CACHE_FILE, "utf8"));
+	assert.ok(persisted.sources.kilo.timestamp > oldKiloTimestamp, "a real 304 advances only that source timestamp");
+	assert.equal(persisted.sources.kilo.etag, "kilo-etag");
+	assert.equal(getLastCatalogRefreshStatus().opencode.outcome, "fresh-cache");
+	assert.equal(getLastCatalogRefreshStatus().kilo.outcome, "not-modified");
+});
+
+test("a successful 200 without ETag clears each source's old validator", async () => {
+	const stale = Date.now() - CATALOG_CACHE_TTL_MS - 5000;
+	fs.writeFileSync(CATALOG_CACHE_FILE, JSON.stringify({
+		version: 2,
+		sources: {
+			opencode: { timestamp: stale, etag: "old-zen", ids: ["old-zen-free"], models: [model("old-zen-free", 1, "opencode")] },
+			kilo: { timestamp: stale, etag: "old-kilo", ids: ["old-kilo:free"], models: [model("old-kilo:free", 1, "kilo")] },
+		},
+	}));
+	await withFetch(async (url) => String(url) === KILO_CATALOG_URL
+		? new Response(JSON.stringify({ data: [kiloRow("vendor/no-validator")] }), { status: 200 })
+		: new Response(JSON.stringify({ data: [{ id: "zen-no-validator-free" }] }), { status: 200 }),
+	() => refreshCatalog(true));
+	const persisted = JSON.parse(fs.readFileSync(CATALOG_CACHE_FILE, "utf8"));
+	assert.equal(persisted.sources.opencode.etag, undefined);
+	assert.equal(persisted.sources.kilo.etag, undefined);
+});
+
+test("refresh failures report usedCache false when no source snapshot exists", async () => {
+	await withFetch(async () => new Response("down", { status: 503 }), () => refreshCatalog(true));
+	const status = getLastCatalogRefreshStatus();
+	assert.equal(status.opencode.outcome, "failed");
+	assert.equal(status.opencode.usedCache, false);
+	assert.equal(status.kilo.outcome, "failed");
+	assert.equal(status.kilo.usedCache, false);
+});
+
+test("cache persistence failure rejects newly discovered dynamics and marks refresh failed", async () => {
+	const originalRename = fs.renameSync;
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async (url) => String(url) === KILO_CATALOG_URL
+		? new Response(JSON.stringify({ data: [kiloRow("vendor/not-durable")] }), { status: 200 })
+		: new Response(JSON.stringify({ data: [{ id: "not-durable-free" }] }), { status: 200 });
+	fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+		if (String(to) === CATALOG_CACHE_FILE) throw new Error("EACCES: persistence denied");
+		return originalRename(from, to);
+	}) as typeof fs.renameSync;
+	try {
+		const result = await refreshCatalog(true);
+		assert.equal(result.some((entry) => entry.id === "vendor/not-durable"), false);
+		assert.equal(result.some((entry) => entry.id === "not-durable-free"), false);
+		assert.equal(getLastCatalogRefreshStatus().opencode.outcome, "failed");
+		assert.equal(getLastCatalogRefreshStatus().kilo.outcome, "failed");
+		assert.match(getLastCatalogRefreshStatus().kilo.detail ?? "", /persistence failed/);
+	} finally {
+		fs.renameSync = originalRename;
+		globalThis.fetch = realFetch;
+	}
+});
+
+test("an expired lock lease past max TTL is reclaimed even while its PID stays live", async () => {
+	const owner = `${process.pid}:expired-lease-test`;
+	const expiredAt = new Date(Date.now() - 130_000);
+	fs.writeFileSync(CATALOG_CACHE_LOCK_FILE, owner);
+	fs.utimesSync(CATALOG_CACHE_LOCK_FILE, expiredAt, expiredAt);
+	const result = await withFetch(async (url) => String(url) === KILO_CATALOG_URL
+		? new Response(JSON.stringify({ data: [kiloRow("vendor/expired-lease")] }), { status: 200 })
+		: new Response(JSON.stringify({ data: [{ id: "expired-lease-free" }] }), { status: 200 }),
+	() => refreshCatalog(true));
+	assert.equal(result.some((entry) => entry.id === "vendor/expired-lease"), true);
+	assert.equal(getLastCatalogRefreshStatus().kilo.outcome, "updated");
+	assert.equal(fs.existsSync(CATALOG_CACHE_LOCK_FILE), false);
+});
+
+test("pid reuse with mismatched Linux process start time reclaims a stale lock", { skip: process.platform !== "linux" }, async () => {
+	const owner = `${process.pid}:0-00000000-0000-4000-8000-000000000000`;
+	const staleAt = new Date(Date.now() - 60_000);
+	fs.writeFileSync(CATALOG_CACHE_LOCK_FILE, owner);
+	fs.utimesSync(CATALOG_CACHE_LOCK_FILE, staleAt, staleAt);
+	const result = await withFetch(async (url) => String(url) === KILO_CATALOG_URL
+		? new Response(JSON.stringify({ data: [kiloRow("vendor/pid-reused")] }), { status: 200 })
+		: new Response(JSON.stringify({ data: [{ id: "pid-reused-free" }] }), { status: 200 }),
+	() => refreshCatalog(true));
+	assert.equal(result.some((entry) => entry.id === "vendor/pid-reused"), true);
+	assert.equal(getLastCatalogRefreshStatus().kilo.outcome, "updated");
+});
+
+test("syncAliveCatalogFromCache resets mtime tracking when cache disappears before rewrite", () => {
+	const fixedTime = new Date(Date.now() - 10_000);
+	const first = model("vendor/first-sync", 1000, "kilo");
+	const second = model("vendor/second-sync", 1000, "kilo");
+	const payload = (entry: RegisteredModel) => JSON.stringify({
+		version: 2,
+		sources: {
+			opencode: { timestamp: Date.now(), ids: [], models: [] },
+			kilo: { timestamp: Date.now(), ids: [entry.id], models: [entry] },
+		},
+	});
+	fs.writeFileSync(CATALOG_CACHE_FILE, payload(first));
+	fs.utimesSync(CATALOG_CACHE_FILE, fixedTime, fixedTime);
+	assert.equal(syncAliveCatalogFromCache(), true);
+	assert.equal(getAliveCatalog().some((entry) => entry.id === first.id), true);
+
+	fs.rmSync(CATALOG_CACHE_FILE, { force: true });
+	assert.equal(syncAliveCatalogFromCache(), false);
+
+	fs.writeFileSync(CATALOG_CACHE_FILE, payload(second));
+	fs.utimesSync(CATALOG_CACHE_FILE, fixedTime, fixedTime);
+	assert.equal(syncAliveCatalogFromCache(), true);
+	assert.equal(getAliveCatalog().some((entry) => entry.id === second.id), true);
+});
+
+test("resolveActiveModelId ignores aliases whose canonical model is inactive", () => {
+	const previous = getAliveCatalog();
+	try {
+		setAliveCatalog([]);
+		assert.equal(resolveActiveModelId("beam"), null);
+	} finally {
+		setAliveCatalog(previous);
+	}
+	assert.equal(resolveActiveModelId("beam"), "beam-free");
 });
