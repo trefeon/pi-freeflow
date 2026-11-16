@@ -2,7 +2,7 @@ import { defineConfig } from 'vitepress'
 
 export default defineConfig({
   title: 'pi-freeflow Docs',
-  description: '30 verified baseline models plus dynamically discovered Kilo models. Up to 1M context. Zero API keys.',
+  description: '31 verified baseline models plus dynamically discovered Kilo models. Up to 1M context. Zero API keys.',
   themeConfig: {
     sidebar: [
       { text: 'Home', link: '/' },

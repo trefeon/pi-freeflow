@@ -222,6 +222,9 @@ export const DEAD_MODEL_IDS = new Set<string>([
  // xingchen-agi/xing4.0-29b-a4b:free: discontinued upstream on KiloCode (2026-11-09) —
  // answers HTTP 404 "The requested model is currently unavailable".
  "xingchen-agi/xing4.0-29b-a4b:free",
+ // crouton-alpha-free: deprecated upstream on OpenCode Zen (2026-11-10, issue #130) —
+ // removed from live /inference/v1/models and answers HTTP 410 ModelDeprecated.
+ "crouton-alpha-free",
 ]);
 /**
  * Free-tier allowlist for Zen network rows and legacy cache entries. Kilo live

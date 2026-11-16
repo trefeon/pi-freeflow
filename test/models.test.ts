@@ -75,8 +75,9 @@ test("1M context window models are properly configured", () => {
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
 		"nvidia/nemotron-3.5-super-vl:free",
-		"crouton-alpha-free",
 		"inkling-2-small-free",
+		"longcat-2.5-free",
+		"hy4-flash-free",
 	];
 
  for (const id of oneMillionModels) {
@@ -201,7 +202,11 @@ test("model aliases resolve correctly to canonical IDs", () => {
  assert.equal(resolveCanonicalModelId("flint"), "flint-40b-free");
  assert.equal(resolveCanonicalModelId("beam"), "beam-free");
  assert.equal(resolveCanonicalModelId("nemotron-3.5-super-vl"), "nemotron-3.5-super-vl-free");
- assert.equal(resolveCanonicalModelId("crouton"), "crouton-alpha-free");
+ assert.equal(resolveCanonicalModelId("crouton"), "crouton");
+ assert.equal(getModelDef("crouton"), undefined);
+ assert.equal(MODEL_MAP.has("crouton"), false);
+ assert.equal(resolveCanonicalModelId("longcat"), "longcat-2.5-free");
+ assert.equal(resolveCanonicalModelId("hy4-flash"), "hy4-flash-free");
  assert.equal(resolveCanonicalModelId("iceman"), "iceman-free");
  assert.equal(resolveCanonicalModelId("inkling-2-small"), "inkling-2-small-free");
  assert.equal(resolveCanonicalModelId("lfm-3"), "liquid/lfm-3-1.7b:free");
@@ -338,9 +343,10 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
   // prompt_tokens 129,736; 65,536 output is the published figure (70,000 is
   // also accepted, so acceptance is not a cap).
   "flint-40b-free": { ctx: 262_144, max: 65_536, reasoning: true },
-  "crouton-alpha-free": { ctx: 1_048_576, max: 270_000, reasoning: true },
   "iceman-free": { ctx: 262_144, max: 131_072, reasoning: true },
   "inkling-2-small-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
+  "longcat-2.5-free": { ctx: 1_048_576, max: 262_144, reasoning: true },
+  "hy4-flash-free": { ctx: 1_048_576, max: 65_536, reasoning: true },
   // KiloCode Gateway
   "dots-studio/dots-3-note-preview:free": { ctx: 393_216, max: 262_144, reasoning: true },
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": { ctx: 262_144, max: 65_536, reasoning: true },
@@ -622,4 +628,46 @@ test("2026-10-13 OVH reasoning models lock the confirmed effort ladders", () => 
 			assert.ok(level in m.thinkingLevelMap!, `${m.id}: ${level} must be explicit`);
 		}
 	}
+});
+
+test("crouton-alpha-free is retired and cannot re-enter the catalog (2026-11-10)", () => {
+	assert.equal(MODEL_MAP.get("crouton-alpha-free"), undefined, "crouton-alpha-free must not be in MODEL_MAP");
+	assert.equal(ALL_MODELS.some((m) => m.id === "crouton-alpha-free"), false, "crouton-alpha-free must not be in ALL_MODELS");
+	assert.ok(DEAD_MODEL_IDS.has("crouton-alpha-free"), "crouton-alpha-free must be dead-listed so stale caches cannot revive it");
+	assert.equal(MODEL_MAP.has("crouton"), false, "removed crouton alias must not resolve");
+});
+
+test("2026-11-16 Zen additions: longcat-2.5-free and hy4-flash-free lock twin specs and effort ladders", () => {
+	const longcat = getModelDef("longcat-2.5-free");
+	assert.ok(longcat, "longcat-2.5-free must be registered");
+	assert.equal(longcat!.reasoning, true);
+	assert.equal(longcat!.requiresReasoningContentOnAssistantMessages, undefined);
+	assert.equal(longcat!.contextWindow, 1_048_576);
+	assert.equal(longcat!.maxTokens, 262_144);
+	assert.deepEqual(longcat!.input, ["text", "image"]);
+	assert.deepEqual(longcat!.thinkingLevelMap, {
+		off: null,
+		minimal: "minimal",
+		low: "low",
+		medium: "medium",
+		high: "high",
+		xhigh: "xhigh",
+		max: null,
+	});
+
+	const hy4 = getModelDef("hy4-flash-free");
+	assert.ok(hy4, "hy4-flash-free must be registered");
+	assert.equal(hy4!.reasoning, true);
+	assert.equal(hy4!.contextWindow, 1_048_576);
+	assert.equal(hy4!.maxTokens, 65_536);
+	assert.deepEqual(hy4!.input, ["text", "image"]);
+	assert.deepEqual(hy4!.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: null,
+		medium: null,
+		high: "high",
+		xhigh: null,
+		max: null,
+	});
 });

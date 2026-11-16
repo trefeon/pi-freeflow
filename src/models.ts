@@ -1,8 +1,8 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 30 verified free models (live-verified 2026-11-09):
- * - 11 OpenCode Zen models (all Chat Completions / Responses)
+ * Defines the 31 verified free models (live-verified 2026-11-16):
+ * - 12 OpenCode Zen models (all Chat Completions / Responses)
  * - 10 KiloCode Keyless Gateway models (OpenRouter format)
  * - 1 Cline direct-only model (per-user pool; z-ai/glm-5.3-flash)
  * - 8 OVHcloud AI Endpoints models (keyless, direct-only)
@@ -274,25 +274,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
   },
  },
  {
-  // Added 2026-11-03: Stealth reasoning model on OpenCode Zen (/zen/v1/models: crouton-alpha-free).
-  // 1,048,576 context, 270,000 max output. Modalities: text and image.
-  id: "crouton-alpha-free",
-  name: "Crouton Alpha [OpenCode]",
-  reasoning: true,
-  contextWindow: 1_048_576,
-  maxTokens: 270_000,
-  input: ["text", "image"],
-  thinkingLevelMap: {
-   off: null,
-   minimal: "minimal",
-   low: "low",
-   medium: "medium",
-   high: "high",
-   xhigh: "xhigh",
-   max: "max",
-  },
- },
- {
   // Added 2026-11-06: Stealth model on OpenCode Zen (/zen/v1/models: iceman-free).
   // 262,144 context, 131,072 max output. Modalities: text.
   id: "iceman-free",
@@ -329,6 +310,44 @@ export const OPENCODE_MODELS: ModelDef[] = [
    high: "high",
    xhigh: "high",
    max: "max",
+  },
+ },
+ {
+  // Added 2026-11-16: Meituan LongCat 2.5 Free on OpenCode Zen (/inference/v1/models: longcat-2.5-free).
+  // 1,048,576 context (published twin vs 1M rounded), 262,144 max output, vision, reasoning_content.
+  id: "longcat-2.5-free",
+  name: "LongCat 2.5 [OpenCode]",
+  reasoning: true,
+  contextWindow: 1_048_576,
+  maxTokens: 262_144,
+  input: ["text", "image"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: "minimal",
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: null,
+  },
+ },
+ {
+  // Added 2026-11-16: Tencent Hy4 Flash Free on OpenCode Zen (/inference/v1/models: hy4-flash-free).
+  // 1,048,576 context, 65,536 max output, vision, effort ["none", "high"].
+  id: "hy4-flash-free",
+  name: "Hy4 Flash [OpenCode]",
+  reasoning: true,
+  contextWindow: 1_048_576,
+  maxTokens: 65_536,
+  input: ["text", "image"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: null,
+   low: null,
+   medium: null,
+   high: "high",
+   xhigh: null,
+   max: null,
   },
  },
 ];
@@ -698,7 +717,8 @@ export const MODEL_ALIASES: Record<string, string> = {
  "beam": "beam-free",
  "deepseek-v4.1-flash": "deepseek-v4.1-flash-free",
  "flint": "flint-40b-free",
- "crouton": "crouton-alpha-free",
+ "longcat": "longcat-2.5-free",
+ "hy4-flash": "hy4-flash-free",
  "iceman": "iceman-free",
  "inkling-2-small": "inkling-2-small-free",
  "nemotron-3.5-super-vl-kilo": "nvidia/nemotron-3.5-super-vl:free",
