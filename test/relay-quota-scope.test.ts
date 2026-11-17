@@ -91,3 +91,27 @@ test("candidate ordering demotes only the exhausted bucket", async () => {
 		}
 	});
 });
+
+test("mixed health: a network-cooled relay and a bucket-cooled relay order per bucket", async () => {
+	withIsolatedRelayFiles(() => {
+		resetAllRelayHealth();
+		const RELAY_C = "https://quota-c.example.com";
+		setActiveRelayState(pool([RELAY_A, RELAY_B, RELAY_C]), false);
+		try {
+			// A is network-dead (all buckets); B has only its "de" bucket cooled.
+			markRelayFailure(RELAY_A, 0, "socket hang up");
+			markRelayQuotaFailure(RELAY_B, "de");
+			// For "de": both A and B are demoted, C (fully healthy) leads.
+			assert.deepEqual(orderedRelayCandidates(undefined, undefined, false, "de"), [RELAY_C, RELAY_A, RELAY_B]);
+			// For "ne": only A is demoted; B serves again, so it leads C.
+			assert.deepEqual(orderedRelayCandidates(undefined, undefined, false, "ne"), [RELAY_B, RELAY_C, RELAY_A]);
+			// Network health stays distinct: A is unhealthy for every bucket.
+			assert.equal(isRelayHealthy(RELAY_A, "de"), false);
+			assert.equal(isRelayHealthy(RELAY_A, "ne"), false);
+			assert.equal(isRelayHealthy(RELAY_B, "de"), false);
+			assert.equal(isRelayHealthy(RELAY_B, "ne"), true);
+		} finally {
+			resetAllRelayHealth();
+		}
+	});
+});

@@ -196,6 +196,50 @@ test("real sidecar surfaces ERR_PROXY_TUNNEL with the CONNECT status", { skip: b
 	}
 });
 
+/**
+ * P1 regression (issue #137): the real sidecar always writes stderr when a
+ * fetch fails. A structured CONNECT error must keep its `code`/`proxyStatus`
+ * across that stderr detail, or the relay is marked network-failed instead of
+ * cached as tunnel-incapable. The child delays its stdout frame so the parent's
+ * stderr 'data' event lands first — cross-pipe ordering needs a real delay in
+ * the child (fake timers cannot drive a spawned process's stdio).
+ */
+test("structured tunnel error keeps its code when the sidecar also writes stderr", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ff-proxy-stderr-"));
+	try {
+		const script = path.join(dir, "tunnel-refused.mjs");
+		fs.writeFileSync(
+			script,
+			[
+				"for await (const _c of process.stdin) {}",
+				"process.stderr.write('zen-sidecar: fetch failed: ERR_PROXY_TUNNEL\\n');",
+				"setTimeout(() => process.stdout.write(JSON.stringify({ error: { name: 'Error', code: 'ERR_PROXY_TUNNEL', status: 405 } }) + '\\n'), 150);",
+			].join("\n") + "\n",
+		);
+		await assert.rejects(
+			fetchZenDirectViaSidecar(
+				"https://example.invalid/x",
+				{
+					method: "POST",
+					headers: {},
+					body: Buffer.from("{}"),
+					headerTimeoutMs: 5000,
+					proxy: { url: "http://127.0.0.1:1234" },
+				},
+				{ runtimePath: process.execPath, scriptPath: script },
+			),
+			(err: unknown) => {
+				const e = err as { code?: string; proxyStatus?: number };
+				assert.equal(e.code, "ERR_PROXY_TUNNEL", "structured code must survive stderr detail");
+				assert.equal(e.proxyStatus, 405, "CONNECT status must survive stderr detail");
+				return true;
+			},
+		);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 /** Fake child echoes the frame it received, proving the proxy payload shape. */
 test("sidecar frame carries the proxy block and keeps x-relay-auth off the request", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ff-proxy-frame-"));

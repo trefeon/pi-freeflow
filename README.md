@@ -30,25 +30,26 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 pi-freeflow ships as a GitHub release tarball — the same asset `/freeflow update`
 installs, so no registry account or npm session is involved.
 
-**As a host plugin (OMP / Pi):**
-```bash
-omp plugin install pi-freeflow            # OMP, from its registry
-omp plugin link /path/to/pi-freeflow      # OMP, local dev checkout
-pi install npm:pi-freeflow                # Pi
-```
-
-**From a release tarball** (independent of any registry):
+**As a host plugin (OMP / Pi) — GitHub release only:**
 ```bash
 curl -fL -o pi-freeflow.tgz https://github.com/trefeon/pi-freeflow/releases/latest/download/pi-freeflow.tgz
 tar -xzf pi-freeflow.tgz                  # extracts package/
-omp plugin install ./package              # or: pi install ./package
-# global install instead: npm i -g ./pi-freeflow.tgz  (or bun add -g ./pi-freeflow.tgz)
+omp plugin install ./package              # OMP, from the downloaded release
+pi install ./package                      # Pi, from the downloaded release
+# local dev checkout instead: omp plugin link /path/to/pi-freeflow
+```
+
+**Global install from the same release asset** (optional, still GitHub-only):
+```bash
+npm i -g ./pi-freeflow.tgz    # or: bun add -g ./pi-freeflow.tgz
 ```
 
 > npm 12 refuses remote and git specifiers by default (`allow-remote`,
-> `allow-git` = none), so every path above installs a **local file**.
-> `/freeflow update` follows the same rule: it reads the newest GitHub release
-> tag, downloads that release's tarball, and installs it with npm or bun.
+> `allow-git` = none), so every install path starts with **downloading the
+> release tarball** and then installing that local file. Never install from
+> the npm registry: all updates come from GitHub releases. `/freeflow update`
+> follows the same rule: it reads the newest GitHub release tag, downloads that
+> release's tarball, and installs it with npm or bun.
 > pi-freeflow is an extension loaded by the host, not a standalone CLI; it works
 > on OMP and Pi only (they share the extension API).
 
