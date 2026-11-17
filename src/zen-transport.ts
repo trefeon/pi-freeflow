@@ -302,7 +302,8 @@ export function fetchZenDirectViaSidecar(
  const errorWithDetail = (base: Error): Error => {
   const detail = stderrDetail();
   if (detail.length === 0 || base.message.includes(detail)) return base;
-  return new Error(`${base.message}${detail}`);
+  base.message = `${base.message}${detail}`;
+  return base;
  };
  const fail = (err: unknown): void => {
   try { killZenSidecarTree(proc); } catch { }

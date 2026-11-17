@@ -322,6 +322,9 @@ export function buildOpenCodeUserAgent(version: string, opts?: { channel?: strin
 const STABLE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{13,14}$/;
 const STABLE_SESSION_CAP = 1000;
 const stableSessionCache = new Map<string, string>();
+/** Bumped per conversation key when a rejected id is dropped, so the next mint
+ * differs from the flagged one while staying canonical and stable. */
+const sessionGeneration = new Map<string, number>();
 const TIME48_MASK = (1n << 48n) - 1n;
 
 /**
@@ -342,7 +345,8 @@ export function stableOpenCodeSessionId(key: string, now = Date.now()): string {
   stableSessionCache.set(key, hit);
   return hit;
  }
- const digest = createHash("sha256").update(`pi-freeflow\0${key}`).digest();
+ const gen = sessionGeneration.get(key) ?? 0;
+ const digest = createHash("sha256").update(gen === 0 ? `pi-freeflow\0${key}` : `pi-freeflow\0${key}\0${gen}`).digest();
  const time48 = (BigInt(digest[0]!) << 40n) | (BigInt(digest[1]!) << 32n) | (BigInt(digest[2]!) << 24n) | (BigInt(digest[3]!) << 16n) | (BigInt(digest[4]!) << 8n) | BigInt(digest[5]!);
  const time = ((~(time48 * 0x1000n + 1n)) & TIME48_MASK).toString(16).padStart(12, "0");
  let rand = "";
@@ -355,9 +359,24 @@ export function stableOpenCodeSessionId(key: string, now = Date.now()): string {
  }
  return id;
 }
+/**
+ * Drop a rejected session id by VALUE and bump every conversation key that
+ * mapped to it, so the next mint is a fresh canonical id (9router #5559).
+ * Caller-supplied native `ses_*` ids are never cached and never touched.
+ */
+export function dropRejectedOpenCodeSession(sessionId: string): boolean {
+ let dropped = false;
+ for (const [key, id] of stableSessionCache) {
+  if (id !== sessionId) continue;
+  stableSessionCache.delete(key);
+  sessionGeneration.set(key, (sessionGeneration.get(key) ?? 0) + 1);
+  dropped = true;
+ }
+ return dropped;
+}
 
 /** Test-only: clear the stable session memo. */
-export function _resetStableSessionCacheForTest(): void { stableSessionCache.clear(); }
+export function _resetStableSessionCacheForTest(): void { stableSessionCache.clear(); sessionGeneration.clear(); }
 
 /** Test-only: current stable session memo size (proves the LRU cap). */
 export function _stableSessionCacheSizeForTest(): number { return stableSessionCache.size; }

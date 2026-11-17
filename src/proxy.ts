@@ -39,6 +39,7 @@ import {
  zenUpstreamPathFor,
 } from "./config.ts";
 
+import { dropRejectedOpenCodeSession, stableOpenCodeSessionId } from "./opencode-identity.ts";
 import {
  convertSseToJson,
  enforceOpencodeFingerprint,
@@ -1010,6 +1011,7 @@ export function startProxy(
           const gateText = await response.clone().text();
           recordUpstreamFailure("zen", 403, gateText);
           rememberGateRejection(parsedBody, target.pathname, 403, gateText, gateFingerprint);
+          if (isFreeTierGate(403, gateText) && sessionKey) dropRejectedOpenCodeSession(stableOpenCodeSessionId(sessionKey));
          } catch { }
         }
 
@@ -1336,6 +1338,7 @@ export function startProxy(
         const gateText = await upstreamRes.clone().text();
         recordUpstreamFailure("zen", 403, gateText);
         rememberGateRejection(parsedBody, target.pathname, 403, gateText, gateFingerprint);
+        if (isFreeTierGate(403, gateText) && sessionKey) dropRejectedOpenCodeSession(stableOpenCodeSessionId(sessionKey));
        } catch { }
       }
 
@@ -1349,6 +1352,8 @@ export function startProxy(
        const verdict = classifyFreeUsage429(429, raw429, {
         envBlockPresent: requestCarriesEnvBlock(directBodyForUpstream),
        });
+       // Quota is per egress/model bucket, not a rejected session: keep the
+       // stable id here (Zen's measured quota is not session-keyed).
        if (verdict === "shape") {
         log("warn", `direct upstream 429 FreeUsage shape verdict for model ${String(parsedBody?.model ?? "?")} — request lacks the env block`, { status: 429, model: parsedBody?.model, path: target.pathname }, reqId);
        } else if (verdict === "unknown") {
