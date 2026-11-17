@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.47.0
+
+### Minor Changes
+
+- Two more free models are now in the bundled catalog: ERNIE 5.5 Flash Preview and Particle 1 from KiloCode Gateway. Both are keyless and tool-capable, with up to 1M tokens of context, bringing the verified baseline to 33 models.
+- OpenCode Zen requests now use the relay pool while keeping the Bun transport. Relays that answer `CONNECT` carry only the TCP connection, so the TLS handshake and request bytes still originate from the local Bun sidecar and the free tier keeps working while the egress address changes. Worker relays that cannot tunnel are skipped for this lane without a health mark instead of disabling the pool.
+  
+  Rate-limit failover also distinguishes what was actually exhausted. A 429 with quota language cools only that relay and that model family (`modelId[:2]`) for 90 seconds, so the same relay keeps serving other models; a bare `FreeUsageLimitError` that cannot be classified from the body probes the next candidate first, and only an egress that serves settles the earlier refusals as quota. `/freeflow status` lists the active per-model cooldowns.
+
+### Patch Changes
+
+- The status widget stays hidden after `/freeflow hide`. The preference was already saved in the relay state file; two paths could still bring the widget back and no longer do: deploy progress now respects the hidden state instead of writing a `deploying …` label, and importing a relay pool with `--replace` keeps this machine's widget choice instead of adopting the file's.
+- A Zen conversation whose session was rejected now recovers on the next request instead of replaying the same refused session until restart. A confirmed free-tier gate refusal retires the affected session; caller-supplied session ids are left untouched.
+- Zen relay failover no longer cools a relay's network health when that relay simply refuses a `CONNECT` tunnel. Non-tunneling relays are skipped for the Bun transport lane as intended, and the structured refusal keeps the details the retry logic needs.
+
 ## 1.46.0
 
 ### Minor Changes
