@@ -3,7 +3,7 @@
   "fileShas": {
     "identifier.ts": "77fc45a0401f03877521a6219e9691377e882a628826cc1489d51bc389c2f2fc",
     "session-id.ts": "cb946d9746d1a83ded98d673c68f1cd27e967035a0708fcd10fa764e61976571",
-    "zen.mdx": "0b4d95d222b2a69ee8c568f23df03318fae83d19f49814ae23bc480b4af35e7a"
+    "zen.mdx": "4125d39fa96fc5df227e29e93dcf61400ea33ddfc455132fbc193db3871eb3ce"
   },
   "freeModels": [
     "beam-free",
@@ -13,10 +13,12 @@
     "hy4-flash-free",
     "iceman-free",
     "inkling-2-small-free",
+    "jev-1.13-free",
     "longcat-2.5-free",
     "mimo-v2.6-flash-free",
     "nemotron-3.5-lightning-free",
-    "nemotron-3.5-super-vl-free"
+    "nemotron-3.5-super-vl-free",
+    "tidepool-alpha-free"
   ],
-  "lastChecked": "2026-11-18T12:50:39.214Z"
+  "lastChecked": "2026-11-19T12:41:10.101Z"
 }
