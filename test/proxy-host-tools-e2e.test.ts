@@ -10,7 +10,7 @@ import {
 import http from "node:http";
 import { startProxy } from "../src/proxy.ts";
 import { authHeaders } from "./_auth.ts";
-import { FULL11_TOOL_NAMES } from "../src/tool-translation.ts";
+import { COMPAT_TOOL_DESCRIPTION, FULL11_TOOL_NAMES } from "../src/tool-translation.ts";
 import {
 	_resetFreeTierHintForTest,
 	_resetUpstreamHealthForTest,
@@ -218,13 +218,14 @@ test("proxy e2e: chat non-stream carries mixed host tools upstream and restores 
 	assert.ok(!("tool_choice" in upstream), "an unsupported tool_choice never reaches upstream");
 	assert.ok(Array.isArray(upstream.tools));
 	const tools = upstream.tools as Array<unknown>;
-	assert.equal(tools.length, 17, "8 caller tools translated + 9 injected verbatim roster slots");
+	assert.equal(tools.length, 17, "8 caller tools translated + 9 injected roster slots");
 	assertFingerprintOnce(tools, "chat");
-	// Every injected slot carries the verbatim CLI definition (never a COMPAT
-	// placeholder): bash {command, timeout, workdir}, read {filePath, offset,
-	// limit}, edit {filePath, oldString, newString}. All of them stay in the
-	// cloak list, so model calls to non-caller tools never execute downstream.
-	for (const n of ["bash", "edit", "grep", "read", "write", "skill", "task", "todowrite", "webfetch", "websearch"]) {
+	// Every injected non-edit slot carries the verbatim CLI definition: bash
+	// {command, timeout, workdir}, read {filePath, offset, limit}, grep, write.
+	// The edit slot is the CLI schema as a COMPAT placeholder: the model must
+	// call the host's real edit (restored from `edit_file` when one was
+	// declared), never this cloaked slot.
+	for (const n of ["bash", "grep", "read", "write", "skill", "task", "todowrite", "webfetch", "websearch"]) {
 		const t = byUpstreamName(tools, n) as Record<string, unknown>;
 		assert.ok(t.function && typeof t.function === "object", `injected ${n} has a function wrapper`);
 		const fn = t.function as { description?: unknown; parameters?: unknown };
@@ -236,9 +237,10 @@ test("proxy e2e: chat non-stream carries mixed host tools upstream and restores 
 	const injectedEdit = byUpstreamName(tools, "edit") as Record<string, unknown>;
 	const editFn = injectedEdit.function;
 	assert.ok(editFn && typeof editFn === "object" && "parameters" in editFn, "edit carries parameters");
+	assert.equal((editFn as Record<string, unknown>).description, COMPAT_TOOL_DESCRIPTION, "edit slot is marked non-executable");
 	const editParams = editFn.parameters;
 	assert.ok(editParams && typeof editParams === "object", "edit parameters are an object");
-	assert.deepEqual(editParams, { type: "object", properties: { filePath: { type: "string", description: "The absolute path to the file to edit" }, oldString: { type: "string", description: "The exact string to replace" }, newString: { type: "string", description: "The replacement string" }, replaceAll: { type: "boolean", description: "Replace all occurrences of oldString (default false)" } }, required: ["filePath", "oldString", "newString"] }, "injected edit rides real-or-drop: the real schema");
+	assert.deepEqual(editParams, { type: "object", properties: { filePath: { type: "string", description: "The absolute path to the file to edit" }, oldString: { type: "string", description: "The exact string to replace" }, newString: { type: "string", description: "The replacement string" }, replaceAll: { type: "boolean", description: "Replace all occurrences of oldString (default false)" } }, required: ["filePath", "oldString", "newString"] }, "injected edit keeps the verbatim CLI schema");
 	// Caller find arrives as glob with params/description verbatim; no raw find upstream.
 	assert.ok(!tools.some((t) => upstreamToolName(t).toLowerCase() === "find"), "caller find must be renamed to glob upstream");
 	const glob = byUpstreamName(tools, "glob");
@@ -329,7 +331,7 @@ test("proxy e2e: responses non-stream stores false, flat tools, function_call re
 	assert.equal(upstream.tool_choice, "auto", "tool_choice must be carried, not imposed");
 	assert.ok(Array.isArray(upstream.tools));
 	const tools = upstream.tools as Array<Record<string, unknown>>;
-	assert.equal(tools.length, 17, "8 caller tools translated + 9 injected verbatim roster slots");
+	assert.equal(tools.length, 17, "8 caller tools translated + 9 injected roster slots");
 	assertFingerprintOnce(tools, "responses");
 	for (const t of tools) {
 		assert.equal(t.type, "function", "responses tools use the flat shape");
@@ -418,7 +420,7 @@ test("proxy e2e: messages non-stream uses anthropic shape and restores tool_use 
 	assert.ok(!("tool_choice" in upstream), "tool_choice must not be imposed when the caller sends none");
 	assert.ok(Array.isArray(upstream.tools));
 	const tools = upstream.tools as Array<Record<string, unknown>>;
-	assert.equal(tools.length, 17, "8 caller tools translated + 9 injected verbatim roster slots");
+	assert.equal(tools.length, 17, "8 caller tools translated + 9 injected roster slots");
 	assertFingerprintOnce(tools, "messages");
 	for (const t of tools) {
 		assert.ok(typeof t.name === "string", "anthropic tools carry a flat name");
@@ -463,7 +465,7 @@ test("proxy e2e: chat stream:true still fingerprints upstream and streams to the
 	assert.equal(upstream.tool_choice, "auto");
 	assert.ok(Array.isArray(upstream.tools));
 	const tools = upstream.tools as Array<unknown>;
-	assert.equal(tools.length, 17, "8 caller tools translated + 9 injected verbatim roster slots");
+	assert.equal(tools.length, 17, "8 caller tools translated + 9 injected roster slots");
 	assertFingerprintOnce(tools, "chat-stream");
 	assert.ok(!tools.some((t) => upstreamToolName(t).toLowerCase() === "find"), "caller find must be renamed to glob upstream");
 	assert.ok(clientHeaders["content-type"]?.includes("text/event-stream"), "streaming caller receives the SSE stream");

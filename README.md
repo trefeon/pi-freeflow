@@ -82,6 +82,20 @@ Model IDs accept a full canonical ID, a short alias (see the tables below),
 and an optional `:effort` suffix (`:minimal` through `:xhigh`, `:max` where
 supported). The host resolves the rest.
 
+### Host edit modes keep working
+
+OpenCode Zen's free gate validates the `edit` slot against the CLI's own
+`{filePath, oldString, newString}` schema. OMP's default hashline shape, and its
+replace shape, answer `429 FreeUsageLimitError` on DeepSeek even though the
+model and the rest of the tools are healthy.
+
+pi-freeflow masks only the declaration. A caller-declared `edit` rides upstream
+as `edit_file` with its untouched description and schema, and the `edit` slot is
+a cloaked CLI compat placeholder. A model call to `edit_file` is restored to
+`edit` before OMP dispatches it, so the hashline default and the replace, patch,
+and sloppy `edit` shapes all execute normally with the same arguments. No
+`edit.mode` or `edit.modelVariants` change is needed.
+
 ### Add relays
 
 The default setup talks to upstream directly. Add relays when shared IPs start

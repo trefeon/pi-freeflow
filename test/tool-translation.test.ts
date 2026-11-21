@@ -740,10 +740,12 @@ function upstreamSchemaOf(t: Record<string, unknown>): Record<string, unknown> {
 	return cand as Record<string, unknown>;
 }
 
-test("contract: full Pi inventory round-trips verbatim on all three paths", () => {
+test("contract: full Pi inventory rides through; caller edit is disguised and restored", () => {
 	// This contract runs the translation the OpenCode lane actually performs:
 	// the rename into the `glob` slot is what makes Pi's `find` and the
-	// roster's `glob` the same declaration.
+	// roster's `glob` the same declaration. `edit` is renamed because DeepSeek's
+	// free lane rejects every non-CLI edit slot, and the gate slot is refilled
+	// with the verbatim CLI declaration.
 	for (const path of PATHS) {
 		const caller = PI_TOOL_NAMES.map((n) => richCallerTool(n, "pi"));
 		const snapshot = JSON.parse(JSON.stringify(caller)) as Array<Record<string, unknown>>;
@@ -758,7 +760,7 @@ test("contract: full Pi inventory round-trips verbatim on all three paths", () =
 		for (const orig of snapshot) {
 			const fn = orig.function as Record<string, unknown>;
 			const cname = String(fn.name);
-			const uname = cname.toLowerCase() === "find" ? "glob" : cname;
+			const uname = cname.toLowerCase() === "find" ? "glob" : cname.toLowerCase() === "edit" ? "edit_file" : cname;
 			const hit = withFp.find((t) => upstreamNameOf(t).toLowerCase() === uname.toLowerCase());
 			assert.ok(hit, `${path}: keeps caller tool ${cname}`);
 			assert.equal(upstreamDescOf(hit!), `${cname} host tool`, `${path}: ${cname} description verbatim`);
@@ -773,9 +775,15 @@ test("contract: full Pi inventory round-trips verbatim on all three paths", () =
 			);
 			assert.equal((hit as Record<string, unknown>)["x-host"], "pi", `${path}: ${cname} extra field verbatim`);
 		}
-		const restore = buildFindGlobRestore(caller);
+		// The gate slot is a placeholder, never the caller's executable edit.
+		const slot = withFp.find((t) => upstreamNameOf(t) === "edit");
+		assert.ok(slot, `${path}: CLI edit slot injected`);
+		assert.ok(upstreamSchemaOf(slot!).required instanceof Array, `${path}: slot carries the CLI schema`);
+		assert.ok((upstreamSchemaOf(slot!).required as string[]).includes("filePath"), `${path}: slot is filePath/oldString/newString`);
+		const restore = buildFindGlobRestore(caller, { forFingerprint: true });
 		assert.equal(restore.renamedFindToGlob, true, `${path}: Pi find->glob rename recorded`);
 		assert.equal(restoreToolNameForCaller("glob", restore), "find", `${path}: upstream glob restores to caller find`);
+		assert.equal(restoreToolNameForCaller("edit_file", restore), "edit", `${path}: upstream edit_file restores to caller edit`);
 		assert.equal(restoreToolNameForCaller("read", restore), "read", `${path}: untouched names restore verbatim`);
 	}
 });

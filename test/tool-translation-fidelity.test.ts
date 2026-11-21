@@ -231,6 +231,10 @@ function upstreamNameFor(caller: string, name: string, forFingerprint = false): 
 	// the free-tier gate rejects a declaration carrying both exact names.
 	if (forFingerprint && name === "context_notes") return "notes_tool";
 	if (forFingerprint && name === "new_context") return "refresh_tool";
+	// DeepSeek's free lane rejects any caller `edit` shape that is not the CLI's
+	// own slot; the caller edit keeps its schema under edit_file while the slot
+	// is refilled with the verbatim CLI declaration.
+	if (forFingerprint && name === "edit") return "edit_file";
 	return name.replace(/[^a-zA-Z0-9_.-]/g, "_");
 }
 

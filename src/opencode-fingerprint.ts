@@ -45,9 +45,17 @@
  * are never dropped. Injected placeholder calls are cloaked from downstream
  * responses on all three paths; caller casing is restored via a bounded
  * per-request map (never module-global).
+ *
+ * A caller-declared `edit` is the one tool this lane cannot forward verbatim:
+ * the gate validates the edit slot's schema, and DeepSeek's free lane rejects
+ * OMP's hashline/replace shapes. It therefore rides upstream as `edit_file`
+ * with its own schema, while the verbatim CLI `edit` declaration fills the slot
+ * as a cloaked compat placeholder. Downstream calls to `edit_file` restore to
+ * `edit`, so every host edit mode executes unchanged with no host config edit.
  */
 
 import {
+ COMPAT_TOOL_DESCRIPTION,
  FULL11_TOOL_NAMES,
  buildFindGlobRestore,
  canonicalizeTool,
@@ -81,6 +89,37 @@ export * from "./fingerprint-env.ts";
 export * from "./sse-aggregator.ts";
 export type { FindGlobRestore } from "./tool-translation.ts";
 
+/** Unwrap a function tool in either chat ({ function }) or Responses/flat shape. */
+function toolHolderOf(tool: unknown): Record<string, unknown> | null {
+ if (!tool || typeof tool !== "object" || Array.isArray(tool)) return null;
+ const rec = tool as Record<string, unknown>;
+ const fn = rec.function;
+ return fn && typeof fn === "object" && !Array.isArray(fn) ? (fn as Record<string, unknown>) : rec;
+}
+
+function toolDescriptionOf(tool: unknown): string {
+ const holder = toolHolderOf(tool);
+ return holder !== null && typeof holder.description === "string" ? holder.description : "";
+}
+
+/**
+ * Label an injected gate slot that stands in for a disguised caller tool.
+ * Its parameters stay the CLI shape the gate checks; the description is what
+ * stops the model from calling it instead of the caller's real, restored tool.
+ */
+function markToolAsCompatPlaceholder(tools: unknown, name: string): void {
+ if (!Array.isArray(tools)) return;
+ const wanted = name.trim().toLowerCase();
+ for (const tool of tools) {
+  const holder = toolHolderOf(tool);
+  if (holder === null) continue;
+  const raw = holder.name;
+  if (typeof raw === "string" && raw.trim().toLowerCase() === wanted) {
+   holder.description = COMPAT_TOOL_DESCRIPTION;
+  }
+ }
+}
+
 /**
  * The messages lane keeps Anthropic named choices. A choice naming a caller
  * tool whose wire spelling was rewritten (find->glob, gate disguise, folded
@@ -111,14 +150,12 @@ function retargetMessagesToolChoice(body: Record<string, unknown>, findGlob: Fin
  * src/tool-translation.ts), then the missing live-truth 11-roster slots injected
  * in that shape with their verbatim CLI definitions (bash {command, timeout,
  * workdir}, read {filePath, offset, limit}, edit {filePath, oldString,
- * newString}). `edit` rides real-or-drop: the real schema when injected, still
- * cloaked downstream like every other injected slot. Returns the original
- * stream flag, caller-tools flag, whether injection added tools, and the
- * bounded per-request restore records (caseRestore, findGlob, injected)
- * for downstream cloaking. Cloaking strips by `injected` only: injected slots
- * are never the caller's own tools, so model calls to them never execute.
- * Chat bodies additionally gain stream_options {include_usage: true} for the
- * openai-compat lane.
+ * newString}). A caller-declared `edit` is renamed to `edit_file` and never
+ * occupies the gate slot: some free lanes (DeepSeek) reject every other edit
+ * shape, so the slot is always the CLI declaration, injected as a cloaked compat
+ * placeholder. Downstream calls to `edit_file` restore to the caller's `edit`
+ * and execute normally. Chat bodies additionally gain stream_options
+ * {include_usage: true} for the openai-compat lane.
  * `argSchemas` (lowercased caller tool name -> declared parameters) lets
  * downstream repair malformed arguments against the caller's own schema; it
  * is empty when no caller tool declares a structured parameter, so such
@@ -193,6 +230,11 @@ export function enforceOpencodeFingerprint(
  const argSchemas = buildArgRepairSchemas(Array.isArray(body.tools) ? body.tools : []);
  const injected: string[] = [];
  let addedTools = false;
+ const callerEditTool = Array.isArray(body.tools)
+  ? body.tools.find((tool) => toolNameOf(tool).toLowerCase() === "edit")
+  : undefined;
+ const callerHadCompatEdit =
+  callerEditTool !== undefined && toolDescriptionOf(callerEditTool) === COMPAT_TOOL_DESCRIPTION;
  if (emptyToolsLane) {
   // Title-only lane: no injection, but the chat lane still carries the usage
   // accounting the CLI's openai-compat request sends.
@@ -209,17 +251,31 @@ export function enforceOpencodeFingerprint(
   }
   const missing = FULL11_TOOL_NAMES.filter((n) => !callerUpstream.has(n.toLowerCase()));
   // Cloak list carries every injected slot: none of them is the caller's own
-  // tool, so model calls to them must never execute downstream — edit included,
-  // even though it now rides with its real schema (real-or-drop, never a
-  // no-op placeholder).
+  // tool, so model calls to them must never execute downstream. The edit slot
+  // is always the CLI compat declaration — the caller's real edit rides as
+  // `edit_file` and is restored downstream — so it stays in this list even when
+  // the caller declared an edit.
   injected.push(...missing);
 
   // Zen alone asks for a rename: its free-tier gate looks for the roster name
   // `glob`, so a Pi caller that sent `find` needs it renamed into that slot.
   // Every other lane accepts the caller's own names untouched.
   if (Array.isArray(body.tools)) {
-   body.tools = translateToolsForPath(body.tools, pathname, { forFingerprint: true });
+   const translatedTools = translateToolsForPath(body.tools, pathname, { forFingerprint: true });
+   body.tools = translatedTools;
    if (pathname.endsWith("/messages")) retargetMessagesToolChoice(body, findGlob);
+   // Recompute against the names upstream will actually see. A disguised
+   // caller tool (`edit` -> `edit_file`) no longer fills the gate slot, so that
+   // slot must be injected with the CLI definition it is checked against.
+   const translatedUpstream = new Set<string>();
+   for (const tool of translatedTools) {
+    const n = toolNameOf(tool);
+    if (n) translatedUpstream.add(upstreamToolNameFor(n).toLowerCase());
+   }
+   missing.length = 0;
+   missing.push(...FULL11_TOOL_NAMES.filter((n) => !translatedUpstream.has(n.toLowerCase())));
+   injected.length = 0;
+   injected.push(...missing);
   }
 
   const before = Array.isArray(body.tools) ? body.tools.length : 0;
@@ -235,6 +291,13 @@ export function enforceOpencodeFingerprint(
   }
   const after = Array.isArray(body.tools) ? body.tools.length : 0;
   addedTools = after > before;
+  if (injected.includes("edit")) {
+   markToolAsCompatPlaceholder(body.tools, "edit");
+  } else if (callerHadCompatEdit) {
+   // Already a placeholder from an earlier enforce pass (a retry of the same
+   // repaired body): keep it non-executable even though nothing was injected.
+   injected.push("edit");
+  }
  }
 
  // Note: Upstream OpenCode Zen explicitly rejects any tool_choice other than "auto"
@@ -243,8 +306,9 @@ export function enforceOpencodeFingerprint(
  // the Zen messages lane keeps the caller's own choice semantics (Anthropic
  // spells choices with `any` / `{ type: "tool", name: ... }`), and we never
  // impose a choice.
- // Empty-placeholder callers stay silent via the COMPAT description and the
- // output-aggregator; real OMP definitions execute normally.
+ // Injected edit slots are always the COMPAT declaration marked above; when the
+ // caller declared its own edit it rides as `edit_file` and is restored
+ // downstream. Placeholder calls stay silent, real caller tools execute.
 
  return { clientRequestedStream, callerHadTools, addedTools, caseRestore, findGlob, injected, argSchemas };
 }
