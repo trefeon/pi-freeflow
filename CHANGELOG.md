@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.48.0
+
+### Minor Changes
+
+- Updated the OpenCode Zen free-model catalog: retired `glm-5.3-flash-free` (`400 Model is unavailable`) and `inkling-2-small-free` (`410 Model has been deprecated`), added live `tidepool-alpha-free` (`tidepool` alias, 1M context, 131K max output), enriched dynamically discovered Zen models from upstream context/output limits, vision modalities, reasoning ladders, and full-spec twins, and excluded non-chat protocols automatically (32 bundled baseline models).
+- Added relay egress-identity verification (`/freeflow test pool` and `/freeflow test <target> --egress`) to inspect outbound IPs and IPv6 `/64` blocks and warn when saved relay URLs share an upstream egress.
+- Shared upstream quota cooldowns across Zen models backed by the same quota pool (`deepseek-v4.1-flash-free`, `mimo-v2.6-flash-free`, `nemotron-3.5-super-vl-free`), enabled sibling-relay stream failover when a streaming response carries an in-band `FreeUsageLimitError` frame, and updated OpenCode CLI version discovery to OpenCode's official CLI release feed.
+
+### Patch Changes
+
+- Keep DeepSeek's OpenCode Zen free lane usable from hosts that declare their own `edit` tool. Hosts sending their own `edit` declaration keep executing with their configured edit mode and schema while OpenCode Zen sees a compatible declaration, and tool calls restore seamlessly on the way back.
+
 ## 1.47.0
 
 ### Minor Changes
