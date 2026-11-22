@@ -3,7 +3,7 @@
   "fileShas": {
     "identifier.ts": "77fc45a0401f03877521a6219e9691377e882a628826cc1489d51bc389c2f2fc",
     "session-id.ts": "cb946d9746d1a83ded98d673c68f1cd27e967035a0708fcd10fa764e61976571",
-    "zen.mdx": "4125d39fa96fc5df227e29e93dcf61400ea33ddfc455132fbc193db3871eb3ce"
+    "zen.mdx": "34f4c6921caa8561e369e9da1ebeb1adc68be71ff80cb6e659e2815c33223988"
   },
   "freeModels": [
     "beam-free",
@@ -19,5 +19,5 @@
     "nemotron-3.5-super-vl-free",
     "tidepool-alpha-free"
   ],
-  "lastChecked": "2026-11-20T12:39:47.962Z"
+  "lastChecked": "2026-11-22T12:23:26.254Z"
 }
