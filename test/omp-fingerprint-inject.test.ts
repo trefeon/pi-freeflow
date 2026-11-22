@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+ COMPAT_TOOL_DESCRIPTION,
  OMP_FINGERPRINT_DEFS,
  canonicalizeTool,
  isOmpLikeCaller,
@@ -112,7 +113,7 @@ test("fingerprint injection: OMP sextet inventory gains only the 5 missing roste
  assert.ok(canon && Object.keys(canon.parameters.properties as Record<string, unknown>).length > 0);
 });
 
-test("enforce: partial caller [ask,glob] on /v1/responses yields verbatim 11-roster fills, all cloaked", () => {
+test("enforce: partial caller [ask,glob] on /v1/responses fills the roster; edit is a compat slot", () => {
  const body: Record<string, unknown> = {
   model: "nemotron-3.5-super-vl-free",
   input: "hi",
@@ -130,7 +131,7 @@ test("enforce: partial caller [ask,glob] on /v1/responses yields verbatim 11-ros
  assert.equal(tools.length, 12);
  for (const t of tools) {
   const name = String(t.name);
-  if (name === "ask" || name === "glob") continue;
+  if (name === "ask" || name === "glob" || name === "edit") continue;
   assert.ok(!String(t.description).includes("never be invoked"), `${name}: verbatim definition, never a placeholder`);
   const params = t.parameters as { properties?: Record<string, unknown> };
   assert.ok(params.properties && Object.keys(params.properties).length > 0, `${name}: executable params`);
@@ -142,9 +143,10 @@ test("enforce: partial caller [ask,glob] on /v1/responses yields verbatim 11-ros
  assert.deepEqual(readParams.required, ["filePath"], "verbatim CLI read schema");
  const edit = tools.find((t) => t.name === "edit");
  assert.ok(edit);
+ assert.equal(edit.description, COMPAT_TOOL_DESCRIPTION, "edit is the gate slot, never executable");
  const editParams = edit.parameters;
  assert.ok(editParams && typeof editParams === "object" && "required" in editParams);
- assert.deepEqual(editParams.required, ["filePath", "oldString", "newString"], "edit rides real-or-drop: the real schema");
+ assert.deepEqual(editParams.required, ["filePath", "oldString", "newString"], "edit keeps the real CLI schema");
 });
 
 test("enforce: model calling injected read is cloaked (not the caller's tool)", () => {
@@ -175,7 +177,7 @@ test("enforce: model calling injected read is cloaked (not the caller's tool)", 
  );
 });
 
-test("enforce: caller sextet+extras gains only the 5 missing roster slots", () => {
+test("enforce: caller sextet+extras gains the CLI edit slot plus 5 missing roster slots", () => {
  const body: Record<string, unknown> = {
   model: "nemotron-3.5-super-vl-free",
   input: "hi",
@@ -192,9 +194,14 @@ test("enforce: caller sextet+extras gains only the 5 missing roster slots", () =
   ],
  };
  const r = enforceOpencodeFingerprint(body, "/v1/responses");
- assert.deepEqual(r.injected, ["skill", "task", "todowrite", "webfetch", "websearch"]);
+ assert.deepEqual(r.injected, ["edit", "skill", "task", "todowrite", "webfetch", "websearch"]);
  assert.equal(r.addedTools, true);
- assert.equal((body.tools as unknown[]).length, 13);
+ assert.equal((body.tools as unknown[]).length, 14, "caller edit renamed, CLI edit slot refilled");
+ const tools = body.tools as Array<Record<string, unknown>>;
+ assert.ok(tools.some((t) => t.name === "edit_file"), "caller edit rides under edit_file");
+ const edit = tools.find((t) => t.name === "edit");
+ assert.ok(edit, "CLI edit slot present");
+ assert.equal(edit!.description, COMPAT_TOOL_DESCRIPTION, "slot is marked non-executable");
 });
 
 test("enforce: Pi find caller keeps verbatim def and the 10 missing roster slots", () => {

@@ -286,10 +286,10 @@ export const COMPAT_TOOL_DESCRIPTION =
  * `edit` is deliberately absent: OMP's edit schema is edit-mode dependent
  * (default hashline `{ input }`, replace `{ path, old_string, new_string }`,
  * patch `{ path, edits[] }`) while Pi wants `{ path, edits[{ oldText,
- * newText }] }`, so no single static def executes on either host. An injected
- * edit rides the cloak list (see enforceOpencodeFingerprint in
- * src/opencode-fingerprint.ts); a caller-declared edit still passes through
- * verbatim and executes normally.
+ * newText }] }`, so no single static def executes on either host. The
+ * fingerprint lane therefore renames a caller-declared edit to `edit_file` and
+ * fills the slot with FULL11_TOOL_DEFS.edit as a cloaked placeholder; the
+ * downstream name restores to `edit`, so the host's own edit mode runs.
  *
  * `glob` carries OMP GlobTool's real shape: the pattern carrier is `path`
  * (optional — omitted searches the workspace root), never a required
@@ -610,6 +610,14 @@ export function upstreamToolNameFor(name: string): string {
 const FINGERPRINT_TOOL_DISGUISE = new Map<string, string>([
  ["context_notes", "notes_tool"],
  ["new_context", "refresh_tool"],
+ // DeepSeek's free lane (Zen, 2026-11-21) answers a bare 429
+ // FreeUsageLimitError when the caller declares OMP's hashline `edit`
+ // schema ({ input }) in the gate's edit slot, while the CLI's own
+ // { filePath, oldString, newString } edit slot passes. Rename the
+ // caller's tool and let fingerprint injection fill the slot with the
+ // CLI shape; the upstream call is restored to `edit` downstream, so the
+ // host's own edit mode still runs.
+ ["edit", "edit_file"],
 ]);
 /**
  * Rename a fingerprint-lane tool whose final upstream spelling trips the Zen
@@ -621,10 +629,15 @@ function disguiseFingerprintToolName(
  name: string,
  reserved: ReadonlySet<string>,
  taken: ReadonlySet<string>,
+ description = "",
 ): string {
  const trimmed = name.trim();
  const base = FINGERPRINT_TOOL_DISGUISE.get(trimmed.toLowerCase());
  if (base === undefined) return trimmed;
+ // The injected edit placeholder is already the gate's own shape. A second
+ // enforce pass over a repaired body must leave it (and the fixed point) alone;
+ // only a caller-declared edit is renamed away from the slot.
+ if (trimmed.toLowerCase() === "edit" && description === COMPAT_TOOL_DESCRIPTION) return trimmed;
  let candidate = base;
  let n = 2;
  while (reserved.has(candidate.toLowerCase()) || taken.has(candidate.toLowerCase())) {
@@ -745,7 +758,7 @@ export function buildFindGlobRestore(
   // too, and the allocator skips every name already reserved or emitted.
   let finalName = sanitized;
   if (opts?.forFingerprint === true) {
-   const disguised = disguiseFingerprintToolName(sanitized, disguiseReserved, seen);
+   const disguised = disguiseFingerprintToolName(sanitized, disguiseReserved, seen, canon.description);
    if (disguised !== sanitized) {
     finalName = disguised;
     seen.add(disguised.toLowerCase());
@@ -865,7 +878,7 @@ export function translateToolsForPath(tools: unknown[], pathname: string, opts?:
  let upstreamName = sanitizeUpstreamToolName(mappedName, seen);
  if (upstreamName.toLowerCase() !== dedupKey) seen.add(upstreamName.toLowerCase());
  if (opts?.forFingerprint === true) {
-  const disguisedName = disguiseFingerprintToolName(upstreamName, disguiseReserved, seen);
+  const disguisedName = disguiseFingerprintToolName(upstreamName, disguiseReserved, seen, canon.description);
   if (disguisedName !== upstreamName) {
    upstreamName = disguisedName;
    seen.add(disguisedName.toLowerCase());
