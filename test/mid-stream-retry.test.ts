@@ -929,6 +929,16 @@ test("rate-limit frames are retriable; quota/auth/billing stay terminal", () => 
 		"the free-tier 429 wording is a rate limit",
 	);
 	assert.equal(
+		isRetriableRateLimitFrame('data: {"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}\n\n'),
+		true,
+		"in-band Zen FreeUsageLimitError error frames are retriable across sibling relays",
+	);
+	assert.equal(
+		isRetriableRateLimitFrame('data: {"type":"error","error":{"code":"provider.free-limit","message":"Free limit hit"}}\n\n'),
+		true,
+		"provider.free-limit frames are retriable across sibling relays",
+	);
+	assert.equal(
 		isRetriableRateLimitFrame(frame("insufficient_quota", "quota exceeded for this project")),
 		false,
 		"a hard quota verdict must never be replayed",

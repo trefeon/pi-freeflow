@@ -40,9 +40,9 @@ src/
 ├── index.ts                 # Extension bootstrap, provider registration, lifecycle hooks
 ├── lease.ts                 # Client lease registry and heartbeat expiry for daemon retirement
 ├── logger.ts                # Structured, leveled, rotating file logger (10MB x 10)
-├── models.ts                # 33 bundled free model definitions and upstream mappings
+├── models.ts                # 32 bundled free model definitions and upstream mappings
 ├── opencode-fingerprint.ts  # Zen free-tier fingerprint enforcement + SSE stream aggregation
-├── probe.ts                 # Relay reachability probe (HTTP 200 + latency)
+├── probe.ts                 # Relay reachability and egress-identity probes
 ├── proxy.ts                 # Loopback HTTP proxy server on 28180 with master/worker reuse
 ├── relay.ts                 # Multi-cloud relay fetch with failover and direct fallback
 ├── relay-state.ts           # Persistent relay pool state and ordering logic

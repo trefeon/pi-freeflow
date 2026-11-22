@@ -7,13 +7,13 @@ import { VERCEL_RELAY_WORKER, CLOUDFLARE_RELAY_WORKER, DENO_RELAY_SCRIPT } from 
 import { isSubstantial } from "../src/stream-pipe.ts";
 import { loadRelayCore } from "./_relay-core.ts";
 
-test("catalog 33 = 12 OpenCode + 12 Kilo + 1 Cline + 8 OVH", () => {
-	assert.equal(OPENCODE_MODELS.length, 12);
+test("catalog 32 = 11 OpenCode + 12 Kilo + 1 Cline + 8 OVH", () => {
+	assert.equal(OPENCODE_MODELS.length, 11);
 	assert.equal(KILO_MODELS.length, 12);
 	assert.equal(CLINE_MODELS.length, 1);
 	assert.equal(OVH_MODELS.length, 8);
-	assert.equal(ALL_MODELS.length, 33);
-	assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 33);
+	assert.equal(ALL_MODELS.length, 32);
+	assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 32);
 });
 
 test("aliases deduplicated and wrong removed", () => {
@@ -31,8 +31,9 @@ test("aliases deduplicated and wrong removed", () => {
  assert.equal(resolveCanonicalModelId("hy4-flash"), "hy4-flash-free");
  assert.equal(resolveCanonicalModelId("crouton"), "crouton");
  assert.equal(resolveCanonicalModelId("iceman"), "iceman-free");
- assert.equal(resolveCanonicalModelId("inkling-2-small"), "inkling-2-small-free");
-	assert.equal(Object.keys(MODEL_ALIASES).length, 31);
+ assert.equal(resolveCanonicalModelId("inkling-2-small"), "inkling-2-small");
+ assert.equal(resolveCanonicalModelId("tidepool"), "tidepool-alpha-free");
+	assert.equal(Object.keys(MODEL_ALIASES).length, 30);
 });
 
 test("log rotation 10MB x10", () => {

@@ -66,7 +66,6 @@ test("1M context window models are properly configured", () => {
  // (drift guard — no unaccounted-for 1M models).
 	const oneMillionModels = [
 		"cline/nemotron-3.5-super-vl",
-		"glm-5.3-flash-free",
 		"mimo-v2.6-flash-free",
 		"beam-free",
 		"deepseek-v4.1-flash-free",
@@ -75,9 +74,9 @@ test("1M context window models are properly configured", () => {
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
 		"nvidia/nemotron-3.5-super-vl:free",
-		"inkling-2-small-free",
 		"longcat-2.5-free",
 		"hy4-flash-free",
+		"tidepool-alpha-free",
 		"baidu/ernie-5.5-flash-preview:free",
 		"particle-ai/particle-1:free",
 	];
@@ -129,17 +128,6 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
 	assert.equal(getModelUpstream("glyph-cluster"), "kilo");
 });
 	test("2026-10-16 Zen drift additions carry verified specs (issue #71)", () => {
-		const glm = getModelDef("glm-5.3-flash-free");
-		assert.ok(glm);
-		assert.equal(glm.reasoning, true);
-		assert.equal(glm.contextWindow, 1_048_576);
-		assert.equal(glm.maxTokens, 131_072);
-		assert.deepEqual(glm.input, ["text", "image"]);
-		assert.equal(glm.thinkingLevelMap?.minimal, null);
-		assert.equal(glm.thinkingLevelMap?.medium, null);
-		assert.equal(glm.thinkingLevelMap?.max, "max");
-		assert.equal(getModelUpstream("glm-5.3-flash-free"), "opencode");
-		assert.equal(getModelUpstream("glm-5.3-flash"), "opencode");
 		const beam = getModelDef("beam-free");
 		assert.ok(beam);
 		assert.equal(beam.reasoning, true);
@@ -210,7 +198,8 @@ test("model aliases resolve correctly to canonical IDs", () => {
  assert.equal(resolveCanonicalModelId("longcat"), "longcat-2.5-free");
  assert.equal(resolveCanonicalModelId("hy4-flash"), "hy4-flash-free");
  assert.equal(resolveCanonicalModelId("iceman"), "iceman-free");
- assert.equal(resolveCanonicalModelId("inkling-2-small"), "inkling-2-small-free");
+ assert.equal(resolveCanonicalModelId("inkling-2-small"), "inkling-2-small");
+ assert.equal(resolveCanonicalModelId("tidepool"), "tidepool-alpha-free");
  assert.equal(resolveCanonicalModelId("lfm-3"), "liquid/lfm-3-1.7b:free");
  // removed :free duplicate aliases must not be needed (canonical passthrough)
 
@@ -325,9 +314,6 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
   // output, the highest published ceiling across the twins.
   "nemotron-3.5-super-vl-free": { ctx: 1_048_576, max: 235_929, reasoning: true },
   "big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
-	// Built-in catalog spec: 1,048,576 context. The free lane's runtime cap is
-	// ~297K; the catalog follows the model's highest spec.
-	"glm-5.3-flash-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
 	// Added 2026-10-17: Reflection AI's Beam 501B open-weight MoE model, limited-time
 	// free model on Zen (/zen/v1/models: beam-free); boundary probe up to 900k words (~1.1M tokens).
 	"beam-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
@@ -346,9 +332,9 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
   // also accepted, so acceptance is not a cap).
   "flint-40b-free": { ctx: 262_144, max: 65_536, reasoning: true },
   "iceman-free": { ctx: 262_144, max: 131_072, reasoning: true },
-  "inkling-2-small-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "longcat-2.5-free": { ctx: 1_048_576, max: 262_144, reasoning: true },
   "hy4-flash-free": { ctx: 1_048_576, max: 65_536, reasoning: true },
+  "tidepool-alpha-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // KiloCode Gateway
   "dots-studio/dots-3-note-preview:free": { ctx: 393_216, max: 262_144, reasoning: true },
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": { ctx: 262_144, max: 65_536, reasoning: true },
@@ -483,7 +469,7 @@ test("new alias map resolves to canonical kilo ids", () => {
  assert.equal(resolveCanonicalModelId("inkling-small"), "inkling-small");
 	assert.equal(resolveCanonicalModelId("glyph-cluster"), "stealth/glyph-cluster");
 	assert.equal(resolveCanonicalModelId("mimo-v2.6-flash"), "mimo-v2.6-flash-free");
-	assert.equal(resolveCanonicalModelId("glm-5.3-flash"), "glm-5.3-flash-free");
+	assert.equal(resolveCanonicalModelId("glm-5.3-flash"), "glm-5.3-flash");
 	assert.equal(resolveCanonicalModelId("beam"), "beam-free");
 });
 
@@ -710,5 +696,33 @@ test("2026-11-16 Zen additions: longcat-2.5-free and hy4-flash-free lock twin sp
 		high: "high",
 		xhigh: null,
 		max: null,
+	});
+});
+
+test("2026-11-22 Zen sync: retire glm-5.3-flash-free & inkling-2-small-free, add tidepool-alpha-free", () => {
+	for (const retired of ["glm-5.3-flash-free", "inkling-2-small-free"]) {
+		assert.equal(MODEL_MAP.get(retired), undefined, `${retired} must not be in MODEL_MAP`);
+		assert.equal(ALL_MODELS.some((m) => m.id === retired), false, `${retired} must not be in ALL_MODELS`);
+		assert.ok(DEAD_MODEL_IDS.has(retired), `${retired} must be dead-listed so caches cannot revive it`);
+	}
+	assert.equal(MODEL_MAP.has("glm-5.3-flash"), false, "retired alias glm-5.3-flash must not resolve");
+	assert.equal(MODEL_MAP.has("inkling-2-small"), false, "retired alias inkling-2-small must not resolve");
+
+	const tidepool = getModelDef("tidepool-alpha-free");
+	assert.ok(tidepool, "tidepool-alpha-free must be registered");
+	assert.equal(resolveCanonicalModelId("tidepool"), "tidepool-alpha-free");
+	assert.equal(getModelUpstream("tidepool-alpha-free"), "opencode");
+	assert.equal(tidepool!.reasoning, true);
+	assert.equal(tidepool!.contextWindow, 1_048_576);
+	assert.equal(tidepool!.maxTokens, 131_072);
+	assert.deepEqual(tidepool!.input, ["text"]);
+	assert.deepEqual(tidepool!.thinkingLevelMap, {
+		off: null,
+		minimal: "minimal",
+		low: "low",
+		medium: "medium",
+		high: "high",
+		xhigh: "xhigh",
+		max: "max",
 	});
 });

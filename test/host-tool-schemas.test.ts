@@ -167,7 +167,7 @@ test("the nested patch-mode edit schema is not corrupted by repair", () => {
 });
 
 test("a text null sentinel on a nullable non-string property becomes real null", () => {
-	// Measured across 4 of 33 catalog models: free models answer a nullable
+	// Measured across 4 of 32 catalog models: free models answer a nullable
 	// slot with the SENTINEL AS TEXT — `"timeout":"null"`, `"pty":"None"`. The
 	// host rejects that because a string is neither the declared type nor null,
 	// and the turn loops. Collapsing it is lossless: the property can never

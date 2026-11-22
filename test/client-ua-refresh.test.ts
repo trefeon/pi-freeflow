@@ -16,6 +16,7 @@ import {
 	OPENCODE_USER_AGENT_ENV,
 	OPENCODE_VERSION_CACHE_ENV,
 	OPENCODE_VERSION_FALLBACK,
+	OPENCODE_CLI_VERSION_URL,
 	_resetLiveOpenCodeVersionForTest,
 	getOpenCodeUserAgent,
 } from "../src/config.ts";
@@ -63,13 +64,19 @@ function countingStub(version: string, counter: { calls: number }): typeof fetch
 
 test("attach + heartbeat kicks fetch exactly once (storm-guard)", async () => {
 	await withIsolatedUaCache(async () => {
+		const seenUrls: string[] = [];
 		const counter = { calls: 0 };
-		_setUaRefreshFetchForTest(countingStub("9.9.9", counter));
+		_setUaRefreshFetchForTest((async (input: RequestInfo | URL) => {
+			seenUrls.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+			counter.calls++;
+			return new Response(JSON.stringify({ version: "9.9.9" }), { status: 200 });
+		}) as typeof fetch);
 		// Simulate attach-time kick plus an immediate heartbeat re-arm.
 		maybeRefreshOpenCodeUserAgent();
 		maybeRefreshOpenCodeUserAgent();
 		await flush();
-		assert.equal(counter.calls, 1, "overlapping kicks must stampede npm only once");
+		assert.equal(counter.calls, 1, "overlapping kicks must stampede upstream only once");
+		assert.equal(seenUrls[0], OPENCODE_CLI_VERSION_URL);
 		assert.equal(getOpenCodeUserAgent(), "opencode/9.9.9 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4", "live version populates when online");
 	});
 });

@@ -210,6 +210,9 @@ test("requestCarriesEnvBlock and modelQuotaBucket read the wire body", () => {
 	assert.equal(requestCarriesEnvBlock("{}"), false);
 	assert.equal(requestCarriesEnvBlock(null), false);
 	assert.equal(modelQuotaBucket("deepseek-v4.1-flash-free"), "de");
+	assert.equal(modelQuotaBucket("mimo-v2.6-flash-free"), "de", "shared-quota twin maps onto de bucket");
+	assert.equal(modelQuotaBucket("nemotron-3.5-super-vl-free"), "de", "shared-quota twin maps onto de bucket");
+	assert.equal(modelQuotaBucket("opencode/mimo-v2.6-flash-free"), "de", "opencode/ prefix normalized before bucket lookup");
 	assert.equal(modelQuotaBucket("nemotron-3.5-lightning-free"), "ne");
 	assert.equal(modelQuotaBucket(""), null);
 	assert.equal(modelQuotaBucket(42), null);

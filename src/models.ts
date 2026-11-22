@@ -1,8 +1,8 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 33 verified free models (live-verified 2026-11-16):
- * - 12 OpenCode Zen models (all Chat Completions / Responses)
+ * Defines the 32 verified free models (live-verified 2026-11-22):
+ * - 11 OpenCode Zen models (all Chat Completions / Responses)
  * - 12 KiloCode Keyless Gateway models (OpenRouter format)
  * - 1 Cline direct-only model (per-user pool; cline/nemotron-3.5-super-vl)
  * - 8 OVHcloud AI Endpoints models (keyless, direct-only)
@@ -125,44 +125,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
    off: null,
    minimal: null,
    low: null,
-   medium: null,
-   high: "high",
-   xhigh: null,
-   max: "max",
-  },
- },
- {
-  // Added 2026-10-16 (issue #71 drift): Zen v1.19.2 added this free id;
-  // served through the fingerprint path (chat 200 with tools + stream).
-  // Context is 1,048,576 — the published twin value, adopted 2026-10-20
-  // (models.dev's 200,000 figure for the free id is a stale under-report: a
-  // marker planted at 90% depth of a ~250K-word prompt is recalled, and only
-  // above ~1M words does the gateway refuse with context_length_exceeded).
-  // It now matches the non-free twin (z-ai/glm-5.3-flash, Cline lane,
-  // 1,048,576 in this catalog); the 450K/700K-word recall probes timed out upstream and stayed
-  // inconclusive. maxTokens 131,072 is the highest output published across the
-  // twins — models.dev's free entry claims only 32,000, while the gateway
-  // accepted up to 131,072; acceptance is not a cap, so the twin figure stays
-  // the budget.
-  // Effort ladder: the free and paid datasheets both publish low/high/max
-  // (models.dev opencode + OMP's committed row); the other rungs stay null.
-  // Chat is the only native shape (/v1/responses answers 400
-  // "Model does not support this protocol"), so `api` stays unset. Vision is
-  // published. Video and PDF are documented upstream capabilities, but the
-  // host carries no input type for them, so neither is declared.
-  id: "glm-5.3-flash-free",
-  name: "GLM-5.3 Flash [OpenCode]",
-  reasoning: true,
-  // Built-in catalog spec: 1,048,576 context. The free lane's runtime cap is
-  // lower (296,517 accepted, 298,556 refused), but the catalog follows the
-  // model's built-in highest spec and surfaces the upstream error.
-  contextWindow: 1_048_576,
-  maxTokens: 131_072,
-  input: ["text", "image"],
-  thinkingLevelMap: {
-   off: null,
-   minimal: null,
-   low: "low",
    medium: null,
    high: "high",
    xhigh: null,
@@ -293,26 +255,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
   },
  },
  {
-  // Added 2026-11-05: Thinking Machines Inkling 2 Small on OpenCode Zen (/zen/v1/models: inkling-2-small-free).
-  // 1,048,576 context, 131,072 max output. Modalities: text and image.
-  id: "inkling-2-small-free",
-  name: "Inkling 2 Small [OpenCode]",
-  reasoning: true,
-  requiresReasoningContentOnAssistantMessages: true,
-  contextWindow: 1_048_576,
-  maxTokens: 131_072,
-  input: ["text", "image"],
-  thinkingLevelMap: {
-   off: null,
-   minimal: "minimal",
-   low: "low",
-   medium: "medium",
-   high: "high",
-   xhigh: "high",
-   max: "max",
-  },
- },
- {
   // Added 2026-11-16: Meituan LongCat 2.5 Free on OpenCode Zen (/inference/v1/models: longcat-2.5-free).
   // 1,048,576 context (published twin vs 1M rounded), 262,144 max output, vision, reasoning_content.
   id: "longcat-2.5-free",
@@ -348,6 +290,25 @@ export const OPENCODE_MODELS: ModelDef[] = [
    high: "high",
    xhigh: null,
    max: null,
+  },
+ },
+ {
+  // Added 2026-11-22: Tidepool Alpha Free on OpenCode Zen (/inference/openai/v1/models: tidepool-alpha-free, released 2026-11-18).
+  // 1,048,576 context, 131,072 max output, text-only, reasoning_content, effort minimal..max.
+  id: "tidepool-alpha-free",
+  name: "Tidepool Alpha [OpenCode]",
+  reasoning: true,
+  contextWindow: 1_048_576,
+  maxTokens: 131_072,
+  input: ["text"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: "minimal",
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: "max",
   },
  },
 ];
@@ -738,7 +699,6 @@ export const MODEL_ALIASES: Record<string, string> = {
  "nemotron-3.5-lightning": "nvidia/nemotron-3.5-lightning:free",
  "north-mini-code": "cohere/north-mini-code:free",
  "lfm-3": "liquid/lfm-3-1.7b:free",
- "glm-5.3-flash": "glm-5.3-flash-free",
  "glyph-cluster": "stealth/glyph-cluster",
  "mimo-v2.6-flash": "mimo-v2.6-flash-free",
  "nemotron-3.5-super-vl": "nemotron-3.5-super-vl-free",
@@ -747,8 +707,8 @@ export const MODEL_ALIASES: Record<string, string> = {
  "flint": "flint-40b-free",
  "longcat": "longcat-2.5-free",
  "hy4-flash": "hy4-flash-free",
+ "tidepool": "tidepool-alpha-free",
  "iceman": "iceman-free",
- "inkling-2-small": "inkling-2-small-free",
  "nemotron-3.5-super-vl-kilo": "nvidia/nemotron-3.5-super-vl:free",
  "kilo-auto": "kilo-auto/free",
  "openrouter": "openrouter/free",
@@ -803,7 +763,7 @@ export const OVH_MODEL_IDS = new Set<string>([
   .map(([alias]) => alias),
 ]);
 /**
- * Combined list of all 33 static free models (canonical)
+ * Combined list of all 32 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS, ...OVH_MODELS];
 

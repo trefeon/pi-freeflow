@@ -267,6 +267,61 @@ test("command spec: /freeflow test with no args falls back to active relay", asy
  });
 });
 
+test("command spec: /freeflow test pool reports shared egress identities across saved relays", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  const state: RelayState = {
+   mode: "auto",
+   enabled: true,
+   url: "https://relay1.example.com",
+   relays: [
+    { url: "https://relay1.example.com", label: "r1" },
+    { url: "https://relay2.example.com", label: "r2" },
+   ],
+  };
+  setActiveRelayState(state, false);
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+   const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+   if (u.includes("/cdn-cgi/trace")) {
+    return new Response("ip=2a09:bac5:1:2::55\ncolo=SIN\nloc=SG\n", { status: 200 });
+   }
+   return new Response("", { status: 200 });
+  });
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext();
+
+  await spec.handler("test pool", ctx);
+
+  assert.ok(
+   notifications.some((n) => n.type === "warning" && n.message.includes("Shared egress detected") && n.message.includes("2a09:bac5:1:2::/64")),
+   `expected shared egress warning, got: ${JSON.stringify(notifications)}`,
+  );
+ });
+});
+
+test("command spec: /freeflow test relay1 --egress appends resolved egress identity", async (t) => {
+ await withSavedDiskState(async () => {
+  resetAllRelayHealth();
+  setActiveRelayState(singleRelayState(), false);
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+   const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+   if (u.includes("/cdn-cgi/trace")) {
+    return new Response("ip=198.51.100.22\ncolo=SJC\nloc=US\n", { status: 200 });
+   }
+   return new Response("", { status: 200 });
+  });
+  const spec = createCommandSpec(mockApi);
+  const { ctx, notifications } = createMockContext();
+
+  await spec.handler("test relay1 --egress", ctx);
+
+  assert.ok(
+   notifications.some((n) => n.message.includes("ok (HTTP 200") && n.message.includes("egress 198.51.100.22 (SJC)")),
+   `expected egress suffix, got: ${JSON.stringify(notifications)}`,
+  );
+ });
+});
+
 // ── /freeflow status ─────────────────────────────────────────────────
 
 test("command spec: /freeflow status banner shows mode, pool size and state file", async () => {
