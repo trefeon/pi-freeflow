@@ -259,9 +259,11 @@ export function getOpenCodeUserAgent(): string {
  return buildOpenCodeUserAgent(currentOpenCodeVersion());
 }
 
+/** Official OpenCode CLI release feed serving current channel metadata. */
+export const OPENCODE_CLI_VERSION_URL = "https://opencode.ai/update/api/latest/cli/npm";
+
 /**
- * Refresh the live UA from `npm view opencode-ai version` (registry metadata,
- * same source the installer layer queries for the latest channel build).
+ * Refresh the live UA from OpenCode's CLI release metadata endpoint.
  * Offline-safe: any failure keeps the pinned fallback and returns it.
  * A fetched version below the floor never replaces the fallback.
  */
@@ -269,7 +271,7 @@ export async function refreshOpenCodeUserAgent(fetchImpl: typeof fetch = fetch):
  const override = toOpenCodeUserAgent(process.env[OPENCODE_USER_AGENT_ENV]);
  if (override) return getOpenCodeUserAgent();
  try {
-  const res = await fetchImpl("https://registry.npmjs.org/opencode-ai/latest", {
+  const res = await fetchImpl(OPENCODE_CLI_VERSION_URL, {
    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) return getOpenCodeUserAgent();

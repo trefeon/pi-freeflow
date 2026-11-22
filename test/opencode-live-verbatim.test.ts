@@ -57,12 +57,12 @@ test("live schemas: required arrays match the verbatim CLI shapes", () => {
 
 test("live wire: opencode/ model prefix is stripped to the bare id", () => {
 	const chat: Record<string, unknown> = {
-		model: "opencode/glm-5.3-flash-free",
+		model: "opencode/tidepool-alpha-free",
 		messages: [{ role: "user", content: "hi" }],
 		tools: [{ type: "function", function: { name: "bash", parameters: { type: "object" } } }],
 	};
 	enforceOpencodeFingerprint(chat, "/v1/chat/completions");
-	assert.equal(chat.model, "glm-5.3-flash-free");
+	assert.equal(chat.model, "tidepool-alpha-free");
 
 	const responses: Record<string, unknown> = {
 		model: "opencode/beam-free",
@@ -75,7 +75,7 @@ test("live wire: opencode/ model prefix is stripped to the bare id", () => {
 
 test("live wire: agent turns carry no temperature/reasoning_effort, title turns keep both", () => {
 	const agent: Record<string, unknown> = {
-		model: "glm-5.3-flash-free",
+		model: "tidepool-alpha-free",
 		messages: [{ role: "user", content: "hi" }],
 		temperature: 0.7,
 		reasoning_effort: "high",
@@ -86,7 +86,7 @@ test("live wire: agent turns carry no temperature/reasoning_effort, title turns 
 	assert.ok(!("reasoning_effort" in agent), "agent turn drops reasoning_effort");
 
 	const title: Record<string, unknown> = {
-		model: "glm-5.3-flash-free",
+		model: "tidepool-alpha-free",
 		messages: [{ role: "user", content: "hi" }],
 		temperature: 0.7,
 		reasoning_effort: "high",

@@ -38,7 +38,7 @@ import {
  readRecentLogs,
  saveDebugState,
 } from "./logger.ts";
-import { probeRelay } from "./probe.ts";
+import { probePoolEgress, probeRelay, probeRelayEgress } from "./probe.ts";
 import { resolveZenTransport } from "./zen-transport.ts";
 import { killPortHolder } from "./proxy.ts";
 import { getUpstreamHealth, resetUpstreamGate } from "./upstream-health.ts";
@@ -281,7 +281,7 @@ export function createCommandSpec(
 ): Omit<RegisteredCommand, "name"> {
  return {
   description:
-   "Relay egress: auto | sticky | spread | on | off | hide | show | widget hide/show | status | version|ver | kill|stop|shutdown | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | url [value] | test [target|opencode] [--chat] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | trace [reqId] | debug on|off|level <level> | refresh | models|reload | update [auto on|off] | autoupdate [on|off] | deploy cloudflare | deploy deno | deploy vercel | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot] | cline signout|switch",
+   "Relay egress: auto | sticky | spread | on | off | hide | show | widget hide/show | status | version|ver | kill|stop|shutdown | add <URL> [name] | list | use <URL|name|index> [name] | label <target> <name> | remove <target> | url [value] | test [target|opencode|pool] [--chat] [--egress] | export [path] [--include-secrets] | import <path> [--merge|--replace] [--dry-run] | logs [level] [n] | trace [reqId] | debug on|off|level <level> | refresh | models|reload | update [auto on|off] | autoupdate [on|off] | deploy cloudflare | deploy deno | deploy vercel | install-startup | uninstall-startup | cline login [--key] [slot] | cline accounts | cline logout [slot] | cline signout|switch",
   getArgumentCompletions: (prefix: string) =>
    [
     "auto",
@@ -308,6 +308,8 @@ export function createCommandSpec(
     "import",
     "test",
     "test opencode",
+    "test pool",
+    "test --egress",
     "url",
     "autoupdate",
     "autoupdate on",
@@ -954,27 +956,85 @@ export function createCommandSpec(
     const tokens = rest.trim() ? rest.trim().split(/\s+/) : [];
     let target: string | undefined;
     let chatMode = false;
+    let egressMode = false;
+    let poolMode = false;
     for (const t of tokens) {
      if (t === "--chat") {
       chatMode = true;
+     } else if (t === "--egress") {
+      egressMode = true;
+     } else if (t === "--pool") {
+      poolMode = true;
      } else if (t.startsWith("--")) {
-      ctx.ui.notify(`Unknown flag ${t} — usage: /freeflow test [target|opencode] [--chat]`, "warning");
+      ctx.ui.notify(`Unknown flag ${t} — usage: /freeflow test [target|opencode|pool] [--chat] [--egress]`, "warning");
       return;
      } else if (target === undefined) {
       target = t;
      }
     }
 
+    if (poolMode || target?.toLowerCase() === "pool") {
+     const relays = relayState.relays ?? [];
+     if (relays.length === 0) {
+      ctx.ui.notify("No relays configured — add relays first or run /freeflow test opencode", "warning");
+      return;
+     }
+     ctx.ui.notify(`Testing ${relays.length} relay(s)${chatMode ? " (chat probe)" : ""} and verifying egress identities…`, "info");
+     const [probes, egressReport] = await Promise.all([
+      Promise.all(relays.map((r) => probeRelay(r.url, r.auth, { endpoint: chatMode ? "chat" : "models" }))),
+      probePoolEgress(relays),
+     ]);
+     const lines = relays.map((r, i) => {
+      const p = probes[i]!;
+      const e = egressReport.entries[i];
+      const name = shortRelayLabel(r.url, relays);
+      const egressSuffix = e?.ok && e.egressKey
+       ? ` | egress ${e.egressKey}${e.colo ? ` (${e.colo})` : ""}`
+       : e?.ok
+        ? " | egress unknown"
+        : ` | egress probe failed (${e?.error || `HTTP ${e?.status ?? 0}`})`;
+      return p.ok
+       ? `✓ ${name} ok (HTTP ${p.status}, ${p.latencyMs}ms)${egressSuffix}`
+       : `✗ ${name} failed: ${p.error || `HTTP ${p.status}`}${egressSuffix}`;
+     });
+     if (egressReport.sharedGroups.length > 0) {
+      const groupSummary = egressReport.sharedGroups
+       .map((g) => `[${g.relays.map((r) => shortRelayLabel(r.url, relays)).join(", ")}] -> ${g.egressKey}`)
+       .join("; ");
+      lines.push(`⚠ Shared egress detected (${groupSummary}) — separate URLs sharing a platform egress do not add quota; use isolated egress routes for OpenCode Zen`);
+     } else {
+      const resolvedCount = egressReport.entries.filter((e) => Boolean(e.egressKey)).length;
+      if (resolvedCount > 1) {
+       lines.push(`✓ All ${resolvedCount} resolved relays use distinct egress identities`);
+      }
+     }
+     ctx.ui.notify(lines.join("\n"), egressReport.sharedGroups.length > 0 ? "warning" : "info");
+     return;
+    }
+
+    const resolveEgressSuffix = async (
+     probeUrl: string,
+     probeAuth?: string,
+     probeLabel?: string,
+    ): Promise<string> => {
+     if (!egressMode) return "";
+     const e = await probeRelayEgress(probeUrl, probeAuth, { label: probeLabel });
+     return e.ok && e.egressKey
+      ? ` | egress ${e.egressKey}${e.colo ? ` (${e.colo})` : ""}`
+      : " | egress unknown";
+    };
+
     const isDirect = target !== undefined && (target.toLowerCase() === "opencode" || target.toLowerCase() === "direct");
     if (isDirect) {
      ctx.ui.notify(`Testing OpenCode upstream endpoint${chatMode ? " (chat probe)" : ""}…`, "info");
-     const probe = await probeRelay("https://opencode.ai", undefined, {
-      endpoint: chatMode ? "chat" : "models",
-     });
+     const [probe, egressSuffix] = await Promise.all([
+      probeRelay("https://opencode.ai", undefined, { endpoint: chatMode ? "chat" : "models" }),
+      resolveEgressSuffix("https://opencode.ai"),
+     ]);
      if (probe.ok) {
-      ctx.ui.notify(`✓ OpenCode endpoint ok (HTTP ${probe.status}, ${probe.latencyMs}ms)`, "info");
+      ctx.ui.notify(`✓ OpenCode endpoint ok (HTTP ${probe.status}, ${probe.latencyMs}ms)${egressSuffix}`, "info");
      } else {
-      ctx.ui.notify(`✗ OpenCode endpoint failed: ${probe.error || `HTTP ${probe.status}`}`, "error");
+      ctx.ui.notify(`✗ OpenCode endpoint failed: ${probe.error || `HTTP ${probe.status}`}${egressSuffix}`, "error");
      }
      return;
     }
@@ -986,13 +1046,14 @@ export function createCommandSpec(
       target = relayState.relays[0].url;
      } else {
       ctx.ui.notify(`Testing OpenCode upstream endpoint${chatMode ? " (chat probe)" : ""}…`, "info");
-      const probe = await probeRelay("https://opencode.ai", undefined, {
-       endpoint: chatMode ? "chat" : "models",
-      });
+      const [probe, egressSuffix] = await Promise.all([
+       probeRelay("https://opencode.ai", undefined, { endpoint: chatMode ? "chat" : "models" }),
+       resolveEgressSuffix("https://opencode.ai"),
+      ]);
       if (probe.ok) {
-       ctx.ui.notify(`✓ OpenCode endpoint ok (HTTP ${probe.status}, ${probe.latencyMs}ms)`, "info");
+       ctx.ui.notify(`✓ OpenCode endpoint ok (HTTP ${probe.status}, ${probe.latencyMs}ms)${egressSuffix}`, "info");
       } else {
-       ctx.ui.notify(`✗ OpenCode endpoint failed: ${probe.error || `HTTP ${probe.status}`}`, "error");
+       ctx.ui.notify(`✗ OpenCode endpoint failed: ${probe.error || `HTTP ${probe.status}`}${egressSuffix}`, "error");
       }
       return;
      }
@@ -1004,13 +1065,14 @@ export function createCommandSpec(
      return;
     }
     ctx.ui.notify(`Testing ${matched.url}${chatMode ? " (chat probe)" : ""}…`, "info");
-    const probe = await probeRelay(matched.url, matched.auth, {
-     endpoint: chatMode ? "chat" : "models",
-    });
+    const [probe, egressSuffix] = await Promise.all([
+     probeRelay(matched.url, matched.auth, { endpoint: chatMode ? "chat" : "models" }),
+     resolveEgressSuffix(matched.url, matched.auth, matched.label),
+    ]);
     if (probe.ok) {
-     ctx.ui.notify(`✓ ${shortRelayLabel(matched.url, relayState.relays)} ok (HTTP ${probe.status}, ${probe.latencyMs}ms)`, "info");
+     ctx.ui.notify(`✓ ${shortRelayLabel(matched.url, relayState.relays)} ok (HTTP ${probe.status}, ${probe.latencyMs}ms)${egressSuffix}`, "info");
     } else {
-     ctx.ui.notify(`✗ ${shortRelayLabel(matched.url, relayState.relays)} failed: ${probe.error || `HTTP ${probe.status}`}`, "error");
+     ctx.ui.notify(`✗ ${shortRelayLabel(matched.url, relayState.relays)} failed: ${probe.error || `HTTP ${probe.status}`}${egressSuffix}`, "error");
     }
    } else if (sub === "deploy") {
     if (!rest.trim()) {

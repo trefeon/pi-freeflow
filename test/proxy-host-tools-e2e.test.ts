@@ -927,7 +927,7 @@ test("proxy e2e: cline responses returns the caller's own tool name", async () =
 		let clientBody = "";
 		await withProxyAndMock(29330, (res) => {
 			res.writeHead(200, { "content-type": "text/event-stream" });
-			res.end(chatSseWithCalls("glm-5.3-flash"));
+			res.end(chatSseWithCalls("tidepool-alpha-free"));
 		}, async (port) => {
 			const res = await postJson(port, "/v1/responses", {
 				model: CLINE_MODEL,

@@ -1,3 +1,4 @@
+import net from "node:net";
 import {
  OPENCODE_API_URL,
  OPENCODE_OPENAI_COMPAT_PATH,
@@ -7,6 +8,7 @@ import {
 import {
  enforceOpencodeFingerprint,
 } from "./opencode-fingerprint.ts";
+import type { KnownRelay } from "./types.ts";
 
 /**
  * Relay reachability probe: verifies a deployed relay answers requests
@@ -171,4 +173,162 @@ export async function probeRelay(
   opts?.onRetry?.(attempt + 1, retries, result);
  }
  return { ok: false, status: 0, latencyMs: 0, error: "Probe failed" };
+}
+
+export interface RelayEgressResult {
+ url: string;
+ label?: string;
+ ok: boolean;
+ status: number;
+ latencyMs: number;
+ ip?: string;
+ egressKey?: string;
+ colo?: string;
+ loc?: string;
+ error?: string;
+}
+
+export interface PoolEgressReport {
+ entries: RelayEgressResult[];
+ sharedGroups: Array<{ egressKey: string; relays: RelayEgressResult[] }>;
+}
+
+/** Parse Cloudflare `/cdn-cgi/trace` key=value text into structured fields. */
+export function parseTraceResponse(text: string): { ip?: string; colo?: string; loc?: string } {
+ const out: { ip?: string; colo?: string; loc?: string } = {};
+ for (const line of String(text || "").split(/\r?\n/)) {
+  const eq = line.indexOf("=");
+  if (eq <= 0) continue;
+  const k = line.slice(0, eq).trim();
+  const v = line.slice(eq + 1).trim();
+  if (!v) continue;
+  if (k === "ip") out.ip = v;
+  else if (k === "colo") out.colo = v;
+  else if (k === "loc") out.loc = v;
+ }
+ return out;
+}
+
+/** Normalize an IPv6 address (including RFC 5952 `::` compression) to its `/64` prefix. */
+export function canonicalizeIpv6Block(ip: string): string {
+ const clean = String(ip || "")
+  .trim()
+  .replace(/\/\d+$/, "")
+  .replace(/^\[|\]$/g, "")
+  .replace(/%.*$/, "");
+ if (net.isIP(clean) !== 6) return "";
+ let addr = clean;
+ const lastColon = addr.lastIndexOf(":");
+ if (lastColon >= 0 && addr.slice(lastColon + 1).includes(".")) {
+  const octets = addr.slice(lastColon + 1).split(".").map(Number);
+  if (octets.length === 4 && octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) {
+   const hi = ((octets[0]! << 8) | octets[1]!).toString(16);
+   const lo = ((octets[2]! << 8) | octets[3]!).toString(16);
+   addr = `${addr.slice(0, lastColon + 1)}${hi}:${lo}`;
+  }
+ }
+ const [head, tail] = addr.split("::");
+ const left = head ? head.split(":").filter(Boolean) : [];
+ const right = tail !== undefined ? tail.split(":").filter(Boolean) : [];
+ const missing = Math.max(0, 8 - left.length - right.length);
+ const groups = [...left, ...Array<string>(missing).fill("0"), ...right];
+ const words = [0, 1, 2, 3].map((i) => (parseInt(groups[i] || "0", 16) || 0).toString(16));
+ return `${words.join(":")}::/64`;
+}
+
+/** Canonical egress identity key: IPv6 `/64` prefix or exact IPv4 address. */
+export function egressIdentityKey(ip: string): string {
+ const clean = String(ip || "").trim().replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+ const family = net.isIP(clean);
+ if (family === 6) return canonicalizeIpv6Block(clean);
+ if (family === 4) return clean;
+ return "";
+}
+
+/**
+ * Probe a relay's effective outbound egress identity via `opencode.ai/cdn-cgi/trace`.
+ */
+export async function probeRelayEgress(
+ url: string,
+ auth?: string,
+ opts?: { timeoutMs?: number; label?: string },
+): Promise<RelayEgressResult> {
+ const cleanUrl = url.trim().replace(/\/+$/, "");
+ const isDirectOpenCode =
+  cleanUrl === "https://opencode.ai" ||
+  cleanUrl === "opencode" ||
+  cleanUrl === "direct";
+ const timeout = opts?.timeoutMs ?? 5_000;
+ const start = Date.now();
+ try {
+  const headers: Record<string, string> = {
+   ...opencodeHeaders(),
+   ...(auth ? { "x-relay-auth": auth } : {}),
+  };
+  let fetchUrl: string;
+  if (isDirectOpenCode) {
+   fetchUrl = "https://opencode.ai/cdn-cgi/trace";
+  } else {
+   fetchUrl = `${cleanUrl}/cdn-cgi/trace`;
+   headers["x-relay-target"] = "https://opencode.ai";
+   headers["x-relay-path"] = "/cdn-cgi/trace";
+  }
+  const res = await fetch(fetchUrl, {
+   method: "GET",
+   headers,
+   signal: AbortSignal.timeout(timeout),
+  });
+  const latencyMs = Date.now() - start;
+  if (!res.ok) {
+   return { url: cleanUrl, label: opts?.label, ok: false, status: res.status, latencyMs };
+  }
+  const text = await res.text();
+  const trace = parseTraceResponse(text);
+  const ip = trace.ip;
+  const egressKey = ip ? egressIdentityKey(ip) : undefined;
+  return {
+   url: cleanUrl,
+   label: opts?.label,
+   ok: true,
+   status: res.status,
+   latencyMs,
+   ...(ip ? { ip } : {}),
+   ...(egressKey ? { egressKey } : {}),
+   ...(trace.colo ? { colo: trace.colo } : {}),
+   ...(trace.loc ? { loc: trace.loc } : {}),
+  };
+ } catch (e) {
+  return {
+   url: cleanUrl,
+   label: opts?.label,
+   ok: false,
+   status: 0,
+   latencyMs: Date.now() - start,
+   error: (e as Error)?.message || String(e),
+  };
+ }
+}
+
+/**
+ * Probe every relay in a pool concurrently and group relays sharing an egress IP or `/64` block.
+ */
+export async function probePoolEgress(
+ relays: readonly KnownRelay[],
+ opts?: { timeoutMs?: number },
+): Promise<PoolEgressReport> {
+ const entries = await Promise.all(
+  relays.map((r) => probeRelayEgress(r.url, r.auth, { timeoutMs: opts?.timeoutMs, label: r.label })),
+ );
+ const groups = new Map<string, RelayEgressResult[]>();
+ for (const entry of entries) {
+  if (!entry.egressKey) continue;
+  const bucket = groups.get(entry.egressKey) ?? [];
+  bucket.push(entry);
+  groups.set(entry.egressKey, bucket);
+ }
+ const sharedGroups: Array<{ egressKey: string; relays: RelayEgressResult[] }> = [];
+ for (const [egressKey, members] of groups) {
+  if (members.length > 1) sharedGroups.push({ egressKey, relays: members });
+ }
+ return { entries, sharedGroups };
 }

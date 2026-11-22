@@ -357,11 +357,27 @@ export function requestCarriesEnvBlock(body: unknown): boolean {
  * free-tier buckets per `modelId[:2]` prefix, so `de`/`gl`/`ne` exhaust
  * independently through the same egress. Returns null for unknown models.
  */
+/**
+ * Zen models that share one upstream IP/quota bucket across distinct ids:
+ * burning quota on any member cools the sibling ids on the same egress so
+ * failover rolls straight to an unexhausted relay instead of retrying the same
+ * depleted pool under another model name.
+ */
+const SHARED_ZEN_QUOTA_BUCKET_OVERRIDES: Readonly<Record<string, string>> = {
+ "deepseek-v4.1-flash-free": "de",
+ "mimo-v2.6-flash-free": "de",
+ "nemotron-3.5-super-vl-free": "de",
+};
+
+/**
+ * Quota bucket key for a model id. Shared-quota families map to a common
+ * bucket ("de"); other models bucket on their two-character family prefix.
+ */
 export function modelQuotaBucket(model: unknown): string | null {
  if (typeof model !== "string") return null;
- const clean = model.trim();
+ const clean = model.trim().replace(/^opencode\//i, "").toLowerCase();
  if (clean.length < 2) return null;
- return clean.slice(0, 2).toLowerCase();
+ return SHARED_ZEN_QUOTA_BUCKET_OVERRIDES[clean] ?? clean.slice(0, 2);
 }
 
 /** Model id carried by a request body, or null when absent/unparseable. */

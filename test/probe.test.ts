@@ -7,7 +7,14 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { probeRelay } from "../src/probe.ts";
+import {
+ canonicalizeIpv6Block,
+ egressIdentityKey,
+ parseTraceResponse,
+ probePoolEgress,
+ probeRelay,
+ probeRelayEgress,
+} from "../src/probe.ts";
 
 /** Minimal stand-in Response: probeRelay only reads ok and status. */
 function fakeResponse(ok: boolean, status: number): Response {
@@ -382,4 +389,55 @@ test("probeRelay openaiCompat direct probe rides the openai URL with stream_opti
  } finally {
   globalThis.fetch = realFetch;
  }
+});
+
+test("parseTraceResponse, canonicalizeIpv6Block, and egressIdentityKey normalize exit identities", () => {
+	const parsed = parseTraceResponse("fl=999f\nip=2a09:bac5:3a10:00ab::1234\ncolo=SIN\nloc=SG\n");
+	assert.deepEqual(parsed, { ip: "2a09:bac5:3a10:00ab::1234", colo: "SIN", loc: "SG" });
+	assert.equal(canonicalizeIpv6Block("2a09:bac5:3a10:00ab::1234"), "2a09:bac5:3a10:ab::/64");
+	assert.equal(canonicalizeIpv6Block("2a09:bac5:3a10:ab:dead:beef:1:2"), "2a09:bac5:3a10:ab::/64");
+	assert.equal(egressIdentityKey("2a09:bac5:3a10:00ab::1234"), "2a09:bac5:3a10:ab::/64");
+	assert.equal(egressIdentityKey("203.0.113.42"), "203.0.113.42");
+	assert.equal(egressIdentityKey("not-an-ip"), "");
+});
+
+test("probeRelayEgress and probePoolEgress detect shared IPv6 /64 blocks across relays", async () => {
+	const realFetch = globalThis.fetch;
+	try {
+		const seenHeaders: Array<Record<string, string>> = [];
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const u = requestUrl(input);
+			const hdrs = (init?.headers ?? {}) as Record<string, string>;
+			seenHeaders.push(hdrs);
+			if (u.startsWith("https://r1.example.com")) {
+				return new Response("ip=2a09:bac5:1:2::11\ncolo=SIN\nloc=SG\n", { status: 200 });
+			}
+			if (u.startsWith("https://r2.example.com")) {
+				return new Response("ip=2a09:bac5:1:2::99\ncolo=SIN\nloc=SG\n", { status: 200 });
+			}
+			return new Response("ip=198.51.100.7\ncolo=SJC\nloc=US\n", { status: 200 });
+		}) as typeof fetch;
+
+		const single = await probeRelayEgress("https://r1.example.com/", "secret-1", { label: "r1" });
+		assert.equal(single.ok, true);
+		assert.equal(single.egressKey, "2a09:bac5:1:2::/64");
+		assert.equal(seenHeaders[0]!["x-relay-target"], "https://opencode.ai");
+		assert.equal(seenHeaders[0]!["x-relay-path"], "/cdn-cgi/trace");
+		assert.equal(seenHeaders[0]!["x-relay-auth"], "secret-1");
+
+		const report = await probePoolEgress([
+			{ url: "https://r1.example.com", label: "r1" },
+			{ url: "https://r2.example.com", label: "r2" },
+			{ url: "https://r3.example.com", label: "r3" },
+		]);
+		assert.equal(report.entries.length, 3);
+		assert.equal(report.sharedGroups.length, 1);
+		assert.equal(report.sharedGroups[0]!.egressKey, "2a09:bac5:1:2::/64");
+		assert.deepEqual(
+			report.sharedGroups[0]!.relays.map((r) => r.label),
+			["r1", "r2"],
+		);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
 });

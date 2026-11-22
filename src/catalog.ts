@@ -225,6 +225,12 @@ export const DEAD_MODEL_IDS = new Set<string>([
  // crouton-alpha-free: deprecated upstream on OpenCode Zen (2026-11-10, issue #130) —
  // removed from live /inference/v1/models and answers HTTP 410 ModelDeprecated.
  "crouton-alpha-free",
+ // glm-5.3-flash-free: retired upstream on OpenCode Zen (2026-11-22, issue #138) —
+ // removed from live /inference/v1/models and answers HTTP 400 Model is unavailable.
+ "glm-5.3-flash-free",
+ // inkling-2-small-free: deprecated upstream on OpenCode Zen (2026-11-22, issue #138) —
+ // removed from live /inference/v1/models and answers HTTP 410 ModelDeprecated.
+ "inkling-2-small-free",
 ]);
 /**
  * Free-tier allowlist for Zen network rows and legacy cache entries. Kilo live
@@ -398,38 +404,116 @@ export function formatCleanDisplayName(id: string, customName?: string): string 
 /**
  * Enrich a raw upstream model item into a fully typed RegisteredModel.
  */
-export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredModel {
+function validPosNum(n: unknown): number | undefined {
+ return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Inherit higher published context/output limits from a non-free twin in the
+ * same Zen `/models` payload when the `-free` row omits or caps them.
+ */
+function resolveTwinLimits(
+ raw: RawModelItem,
+ twinCatalog?: readonly unknown[],
+): { contextWindow?: number; maxTokens?: number } {
+ if (!Array.isArray(twinCatalog) || twinCatalog.length === 0) return {};
+ const selfId = raw.id;
+ const baseId = selfId.replace(/-free$/i, "");
+ const selfFamily = typeof raw.family === "string" ? raw.family.replace(/-free$/i, "") : "";
+ let bestContext: number | undefined;
+ let bestOutput: number | undefined;
+ for (const item of twinCatalog) {
+  if (item === null || typeof item !== "object" || Array.isArray(item)) continue;
+  const row = item as Record<string, unknown>;
+  if (typeof row.id !== "string" || row.id === selfId || /-free$/i.test(row.id)) continue;
+  const rowFamily = typeof row.family === "string" ? row.family.replace(/-free$/i, "") : "";
+  const idMatch = baseId !== selfId && row.id === baseId;
+  const familyMatch = selfFamily.length > 0 && rowFamily === selfFamily;
+  if (!idMatch && !familyMatch) continue;
+  const limit = row.limit !== null && typeof row.limit === "object" && !Array.isArray(row.limit)
+   ? row.limit as Record<string, unknown>
+   : null;
+  const ctx = validPosNum(limit?.context) ?? validPosNum(row.contextWindow) ?? validPosNum(row.context_length);
+  const out = validPosNum(limit?.output) ?? validPosNum(row.maxTokens) ?? validPosNum(row.max_output_tokens) ?? validPosNum(row.max_tokens);
+  if (ctx !== undefined && (bestContext === undefined || ctx > bestContext || (ctx === bestContext && (out ?? 0) > (bestOutput ?? 0)))) {
+   bestContext = ctx;
+   bestOutput = out;
+  } else if (out !== undefined && bestOutput === undefined) {
+   bestOutput = out;
+  }
+ }
+ return { contextWindow: bestContext, maxTokens: bestOutput };
+}
+
+export function enrichModelDef(
+ raw: RawModelItem,
+ source: Upstream,
+ twinCatalog?: readonly unknown[],
+): RegisteredModel {
  const known = MODEL_MAP.get(raw.id);
  if (known) {
   return { ...known, source };
  }
 
  const idLower = raw.id.toLowerCase();
+ const modalities = raw.modalities !== null && typeof raw.modalities === "object" && !Array.isArray(raw.modalities)
+  ? raw.modalities as Record<string, unknown>
+  : null;
+ const inputModalities = Array.isArray(modalities?.input) ? modalities.input : null;
+ const hasDeclaredVision =
+  inputModalities !== null &&
+  inputModalities.some((m) => typeof m === "string" && (m === "image" || m.startsWith("image/")));
  const hasVision =
-  idLower.includes("vision") ||
-  idLower.includes("vl") ||
-  idLower.includes("omni") ||
-  idLower.includes("note") ||
-  idLower.includes("image");
+  hasDeclaredVision ||
+  (inputModalities === null && (
+   idLower.includes("vision") ||
+   idLower.includes("vl") ||
+   idLower.includes("omni") ||
+   idLower.includes("note") ||
+   idLower.includes("image")
+  ));
+ const capabilities = raw.capabilities !== null && typeof raw.capabilities === "object" && !Array.isArray(raw.capabilities)
+  ? raw.capabilities as Record<string, unknown>
+  : null;
+ const capReasoning = capabilities?.reasoning !== null && typeof capabilities?.reasoning === "object" && !Array.isArray(capabilities.reasoning)
+  ? capabilities.reasoning as Record<string, unknown>
+  : null;
+ const effortList = Array.isArray(capReasoning?.effort)
+  ? capReasoning.effort.filter((e): e is string => typeof e === "string")
+  : [];
  const hasReasoning =
-  idLower.includes("reasoning") ||
-  idLower.includes("r1") ||
-  idLower.includes("o1") ||
-  idLower.includes("think") ||
-  idLower.includes("spark") ||
-  idLower.includes("flash") ||
-  idLower.includes("deepseek") ||
-  idLower.includes("glm") ||
-  idLower.includes("solar");
+  typeof raw.reasoning === "boolean" ? raw.reasoning
+  : typeof capReasoning?.supported === "boolean" ? capReasoning.supported
+  : (
+   idLower.includes("reasoning") ||
+   idLower.includes("r1") ||
+   idLower.includes("o1") ||
+   idLower.includes("think") ||
+   idLower.includes("spark") ||
+   idLower.includes("flash") ||
+   idLower.includes("deepseek") ||
+   idLower.includes("glm") ||
+   idLower.includes("solar")
+  );
 
- // Declared fields win over wire aliases: a listing that already names
- // contextWindow/maxTokens/reasoning keeps its values; the snake_case
- // upstream aliases and the id heuristics only fill gaps.
- const validPosNum = (n: unknown): n is number =>
-  typeof n === "number" && Number.isFinite(n) && n > 0;
- const declaredContext =
-  validPosNum(raw.contextWindow) ? raw.contextWindow
-  : validPosNum(raw.context_length) ? raw.context_length : undefined;
+ const limit = raw.limit !== null && typeof raw.limit === "object" && !Array.isArray(raw.limit)
+  ? raw.limit as Record<string, unknown>
+  : null;
+ // Declared fields win over nested Zen `limit.*` and wire aliases; twin lookup
+ // and id heuristics fill remaining gaps only when limits are absent.
+ const directContext =
+  validPosNum(raw.contextWindow)
+  ?? validPosNum(raw.context_length)
+  ?? validPosNum(limit?.context);
+ const directMaxTokens =
+  validPosNum(raw.maxTokens)
+  ?? validPosNum(raw.max_output_tokens)
+  ?? validPosNum(raw.max_tokens)
+  ?? validPosNum(limit?.output);
+ const twin = directContext === undefined || directMaxTokens === undefined
+  ? resolveTwinLimits(raw, twinCatalog)
+  : {};
+ const declaredContext = directContext ?? twin.contextWindow;
  let contextWindow = declaredContext ?? 262_144;
  if (
   declaredContext === undefined && (
@@ -443,10 +527,7 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
   contextWindow = 1_048_576;
  }
 
- const declaredMaxTokens =
-  validPosNum(raw.maxTokens) ? raw.maxTokens
-  : validPosNum(raw.max_output_tokens) ? raw.max_output_tokens
-  : validPosNum(raw.max_tokens) ? raw.max_tokens : undefined;
+ const declaredMaxTokens = directMaxTokens ?? twin.maxTokens;
  let maxTokens = declaredMaxTokens ?? 65_536;
  if (declaredMaxTokens === undefined && (idLower.includes("ultra") || idLower.includes("lightning"))) {
   maxTokens = 131_072;
@@ -457,18 +538,29 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
  // before that. Every known id short-circuits above, so this only decides for
  // ids Zen lists dynamically — matching the family keeps a future muse-spark
  // id off the chat endpoint it would 500 on.
- const isResponses = idLower.includes("muse-spark");
+ const isResponses = idLower.includes("muse-spark") || raw.recommended_api === "responses";
+
+ let thinkingLevelMap: RegisteredModel["thinkingLevelMap"];
+ if (effortList.length > 0) {
+  const advertised = new Set(effortList);
+  const map: NonNullable<RegisteredModel["thinkingLevelMap"]> = { off: null };
+  for (const level of ["minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+   map[level] = advertised.has(level) ? level : null;
+  }
+  thinkingLevelMap = map;
+ }
 
  return {
   id: raw.id,
   name: formatCleanDisplayName(raw.id),
   source,
-  reasoning: typeof raw.reasoning === "boolean" ? raw.reasoning : hasReasoning,
+  reasoning: hasReasoning,
   contextWindow,
   maxTokens,
   api: isResponses ? "openai-responses" : undefined,
   input: hasVision ? ["text", "image"] : ["text"],
   thinkingFormat: source === "kilo" && hasReasoning ? "openrouter" : undefined,
+  ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
  };
 }
 
@@ -562,13 +654,39 @@ export function parseKiloCatalogResponse(body: unknown): RegisteredModel[] {
  return sanitizeSourceSnapshot(parsed, "kilo", false);
 }
 
+function isChatCompatibleZenRow(row: RawModelItem): boolean {
+ const recApi = typeof row.recommended_api === "string" ? row.recommended_api.trim().toLowerCase() : "";
+ if (recApi.length > 0 && recApi !== "chat-completions" && recApi !== "responses" && recApi !== "messages") {
+  return false;
+ }
+ const modalities = row.modalities !== null && typeof row.modalities === "object" && !Array.isArray(row.modalities)
+  ? row.modalities as Record<string, unknown>
+  : null;
+ const output = Array.isArray(modalities?.output) ? modalities.output : null;
+ if (output !== null && !output.includes("text")) {
+  return false;
+ }
+ const capabilities = row.capabilities !== null && typeof row.capabilities === "object" && !Array.isArray(row.capabilities)
+  ? row.capabilities as Record<string, unknown>
+  : null;
+ const tools = capabilities?.tools !== null && typeof capabilities?.tools === "object" && !Array.isArray(capabilities.tools)
+  ? capabilities.tools as Record<string, unknown>
+  : null;
+ if (tools && tools.supported === false) {
+  return false;
+ }
+ return true;
+}
+
 function parseZenCatalogResponse(body: unknown): RegisteredModel[] {
  const rows = rawCatalogList(body).filter((item): item is RawModelItem =>
   item !== null && typeof item === "object" && !Array.isArray(item) &&
   typeof (item as Record<string, unknown>).id === "string"
  );
  return sanitizeSourceSnapshot(
-  rows.filter((row) => isFreeCatalogId(row.id)).map((row) => enrichModelDef(row, "opencode")),
+  rows
+   .filter((row) => isFreeCatalogId(row.id) && isChatCompatibleZenRow(row))
+   .map((row) => enrichModelDef(row, "opencode", rows)),
   "opencode",
   false,
  );

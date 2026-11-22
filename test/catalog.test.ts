@@ -351,6 +351,61 @@ test("jev-1.13-free cannot return through the Zen runtime refresh", () => {
 	assert.equal(merged.length, base.length, "dropping jev must not shrink the static catalog");
 });
 
+test("glm-5.3-flash-free and inkling-2-small-free stay dead-listed and non-chat Zen models are filtered on refresh", async (t) => {
+	for (const retired of ["glm-5.3-flash-free", "inkling-2-small-free"]) {
+		assert.equal(DEAD_MODEL_IDS.has(retired), true);
+		assert.equal(isFreeCatalogId(retired), false);
+		assert.equal(ALL_MODELS.some((m) => m.id === retired), false);
+	}
+	const enriched = enrichModelDef(
+		{
+			id: "omega-alpha-free",
+			limit: { context: 524_288, output: 131_072 },
+			modalities: { input: ["text", "image/png"], output: ["text"] },
+			capabilities: { reasoning: { supported: true, effort: ["low", "high"] }, tools: { supported: true } },
+		},
+		"opencode",
+	);
+	assert.equal(enriched.contextWindow, 524_288);
+	assert.equal(enriched.maxTokens, 131_072);
+	assert.equal(enriched.reasoning, true);
+	assert.deepEqual(enriched.input, ["text", "image"]);
+	assert.deepEqual(enriched.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: null,
+		high: "high",
+		xhigh: null,
+		max: null,
+	});
+
+	const twinEnriched = enrichModelDef(
+		{ id: "sigma-free" },
+		"opencode",
+		[{ id: "sigma", limit: { context: 1_000_000, output: 65_536 } }],
+	);
+	assert.equal(twinEnriched.contextWindow, 1_000_000);
+	assert.equal(twinEnriched.maxTokens, 65_536);
+
+	t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+		const u = String(input);
+		if (u === KILO_CATALOG_URL) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+		return new Response(
+			JSON.stringify({
+				data: [
+					{ id: "nova-free", recommended_api: "chat-completions", modalities: { input: ["text"], output: ["text"] }, limit: { context: 500_000, output: 64_000 } },
+					{ id: "decision-only-free", recommended_api: "systemone", modalities: { input: ["text"], output: ["decision"] }, limit: { context: 64_000 } },
+				],
+			}),
+			{ status: 200 },
+		);
+	});
+	const refreshed = await refreshCatalog(true);
+	assert.equal(refreshed.some((m) => m.id === "nova-free"), true);
+	assert.equal(refreshed.some((m) => m.id === "decision-only-free"), false, "non-chat protocol rows must be filtered");
+});
+
 test("deepseek-v4-flash-free stays excluded while served models are untouched", () => {
 	assert.equal(DEAD_MODEL_IDS.has("deepseek-v4-flash-free"), true);
 	assert.equal(isFreeCatalogId("deepseek-v4-flash-free"), false);

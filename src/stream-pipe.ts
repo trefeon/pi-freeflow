@@ -136,6 +136,9 @@ const RATE_LIMIT_MARKERS = [
  '"status":429',
  '"code":429',
  "shared free-tier ip quota",
+ "freeusagelimiterror",
+ "free usage limit",
+ "provider.free-limit",
 ];
 const RATE_LIMIT_HARD_MARKERS = [
  "invalid_request",

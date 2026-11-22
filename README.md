@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 33 verified free models (plus dynamically discovered Kilo models) with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 32 verified free models (plus dynamically discovered Kilo models) with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -15,7 +15,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **33+ free models** | 12 from OpenCode Zen, 12 from KiloCode Gateway (plus compatible free Kilo models discovered dynamically), 1 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
+| **32+ free models** | 11 from OpenCode Zen, 12 from KiloCode Gateway (plus compatible free Kilo models discovered dynamically), 1 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own relays: a self-hosted egress pool (many egress IPs on one small host) or Cloudflare Workers / Deno Deploy / Vercel Edge workers. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. With the Bun transport on, relays that support `CONNECT` keep serving OpenCode Zen too — the TLS handshake stays local, only the TCP leg leaves through the relay. | **$0** beyond your host or platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>` (including `cline-super-vl` for Cline). | **$0** |
@@ -218,7 +218,7 @@ The same command set works identically in OMP and Pi:
 /freeflow add <url> [label]       # Add new relay to the pool
 /freeflow label|rename <index|url> <name>  # Assign a friendly label to a relay
 /freeflow remove <index|url|label># Remove a relay from the pool
-/freeflow test <index|url|label>  # Probe a relay for reachability and latency
+/freeflow test [target|opencode|pool] [--chat] [--egress]  # Probe a relay (or entire pool + shared egress) for reachability and exit IP
 /freeflow on|off|auto|sticky|spread  # Relay mode (auto/sticky = sticky primary, spread = rotate pool)
 /freeflow deploy <platform>       # Guided relay deploy: vercel|cloudflare|deno, token in-memory, auto-adds
 /freeflow logs [lines]            # Inspect recent proxy logs (alias: log)
@@ -241,7 +241,7 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 33 baseline models, one command
+### 32 baseline models, one command
 
 ```bash
 /model → freeflow → pick
@@ -251,7 +251,7 @@ Every model specification is reconciled against [models.dev](https://models.dev/
 
 The host catalog carries text and image inputs only. Upstream video and audio support (MiMo: audio + video; GLM 5.3 Flash: video + PDF; Nemotron Super VL and Nano Omni: video) is therefore not selectable from the picker and is not declared in `input`.
 
-#### OpenCode Zen (12 models), Chat Completions API
+#### OpenCode Zen (11 models), Chat Completions API
 
 Good defaults for long coding sessions and agentic work.
 
@@ -261,14 +261,13 @@ Good defaults for long coding sessions and agentic work.
 | `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **235K** (235.929) | `minimal … xhigh` | ❌ |
 | `nemotron-3.5-super-vl-free` | NVIDIA | **1M** (1.048.576) | **235K** (235.929) | `minimal … xhigh` | ✅ |
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
-| `glm-5.3-flash-free` | Zhipu AI | **1M** (1.048.576) | **131K** (131.072) | `low / high / max` | ✅ |
 | `beam-free` | Reflection AI | **1M** (1.048.576) | **131K** (131.072) | `low … max` | ❌ |
 | `deepseek-v4.1-flash-free` | DeepSeek | **1M** (1.048.576) | **393K** (393.216) | `low / high / max` | ✅ |
 | `flint-40b-free` | Recursive | **262K** (262.144) | **65K** (65.536) | `low … max` | ❌ |
 | `iceman-free` | Stealth | **262K** (262.144) | **131K** (131.072) | `low / high / max` | ❌ |
-| `inkling-2-small-free` | Thinking Machines | **1M** (1.048.576) | **131K** (131.072) | `minimal … max` | ✅ |
 | `longcat-2.5-free` | Meituan | **1M** (1.048.576) | **262K** (262.144) | `minimal … xhigh` | ✅ |
 | `hy4-flash-free` | Tencent | **1M** (1.048.576) | **65K** (65.536) | `high` | ✅ |
+| `tidepool-alpha-free` | Stealth | **1M** (1.048.576) | **131K** (131.072) | `minimal … max` | ❌ |
 
 #### KiloCode Gateway (12 models), OpenRouter compatible
 
@@ -421,7 +420,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 #### Project structure
 
 ```
-├── models.ts                # 33-model baseline catalog definitions
+├── models.ts                # 32-model baseline catalog definitions
 ├── index.ts                 # extension entry, lifecycle hooks
 ├── catalog.ts               # model catalog cache (24h disk)
 ├── proxy.ts                 # local proxy server (127.0.0.1:28180)

@@ -125,7 +125,9 @@ Cloudflare Worker deployments can share a platform egress range, and Zen
 refuses shared ranges outright (issue #116). What buys quota is a pool that
 controls its own addresses — the self-hosted WARP pool below exposes one port
 per egress and its keep-cold controller rotates a `/64` block when that relay
-answers 429. Verify independence at the pool, not by counting pool entries.
+answers 429. Verify pool independence directly with `/freeflow test pool` (or
+`/freeflow test <target> --egress`), which checks outbound exit IPs and `/64`
+IPv6 blocks across saved relays and warns if any share the same egress.
 
 ## Choosing a relay setup
 

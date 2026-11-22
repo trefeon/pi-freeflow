@@ -372,11 +372,7 @@ test("F: buildProviderConfig emits the host-compatible provider contract", () =>
 	assert.ok(deepseek);
 	assert.equal(deepseek.compat?.requiresReasoningContentOnAssistantMessages, true,
 		"DeepSeek requires reasoning content even when earlier assistant turns have none");
-	const inkling = cfg.models.find((m) => m.id === "inkling-2-small-free");
-	if (inkling) {
-		assert.equal(inkling.compat?.requiresReasoningContentOnAssistantMessages, true);
-	}
-	for (const model of cfg.models.filter((m) => m.id !== deepseek.id && m.id !== "inkling-2-small-free")) {
+	for (const model of cfg.models.filter((m) => m.id !== deepseek.id)) {
 		assert.equal(model.compat?.requiresReasoningContentOnAssistantMessages, undefined,
 			`${model.id} must retain its existing reasoning replay policy`);
 	}
