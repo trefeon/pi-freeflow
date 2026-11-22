@@ -5,12 +5,6 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      use_self_hosted:
-        description: "Run on self-hosted acerblue-local runner (fallback when GitHub Actions quota is limited)"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -25,7 +19,6 @@ jobs:
   # and everything else runs the full matrix.
   changes:
     name: Detect changed areas
-    if: "!inputs.use_self_hosted"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -81,17 +74,19 @@ jobs:
   test:
     name: Test (${{ matrix.os }} - Node ${{ matrix.node-version }})
     needs: changes
-    if: "!inputs.use_self_hosted && needs.changes.outputs.code == 'true'"
+    if: "needs.changes.outputs.code == 'true'"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        node-version: ["lts/*", "22.19.0"]
+        node-version: ["22.19.0", "lts/*", "current"]
         include:
           - os: windows-latest
             node-version: "lts/*"
+          - os: windows-latest
+            node-version: "current"
 
     steps:
       - name: Checkout repository
@@ -125,7 +120,7 @@ jobs:
   docs:
     name: Build docs (vitepress)
     needs: changes
-    if: "!inputs.use_self_hosted && needs.changes.outputs.docs == 'true'"
+    if: "needs.changes.outputs.docs == 'true'"
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -152,49 +147,10 @@ jobs:
       - name: Build docs (vitepress)
         run: pnpm run docs:build
 
-  # Fallback runner: only used when explicitly requested (e.g. GitHub Actions minutes limit reached)
-  test-local:
-    name: Test (acerblue-local - Node 22.x fallback)
-    if: "inputs.use_self_hosted == true"
-    runs-on: [self-hosted, Linux, X64, acerblue-local]
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        with:
-          version: 9
-
-      - name: Setup Node.js (LTS)
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: "lts/*"
-          cache: "pnpm"
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Typecheck (tsc --noEmit)
-        run: pnpm run typecheck
-
-      - name: Build docs (vitepress)
-        run: pnpm run docs:build
-
-      - name: Smoke test (extension entrypoint)
-        run: pnpm run smoke
-
-      - name: Run test suite
-        run: pnpm test
-
   package-check:
     name: Package Integrity & Tarball Whitelist
     needs: changes
-    if: "!inputs.use_self_hosted && needs.changes.outputs.pack == 'true'"
+    if: "needs.changes.outputs.pack == 'true'"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

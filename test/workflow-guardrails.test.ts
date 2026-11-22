@@ -387,11 +387,28 @@ test("ci.yml exercises the declared node floor and scopes the token", { skip: SK
 	const versions = jobOf(doc, "test").strategy?.matrix?.["node-version"];
 	assert.ok(Array.isArray(versions), `matrix node-version must be a list: ${JSON.stringify(versions)}`);
 	assert.ok(versions.includes("lts/*"), JSON.stringify(versions));
+	assert.ok(versions.includes("current"), `latest current runtime must be exercised: ${JSON.stringify(versions)}`);
 	assert.ok(versions.includes(floor), `the declared engines floor ${floor} must be exercised: ${JSON.stringify(versions)}`);
 
-	const fallback = jobOf(doc, "test-local");
-	assert.deepEqual(fallback["runs-on"], ["self-hosted", "Linux", "X64", "acerblue-local"]);
-	assert.equal(fallback.strategy, undefined);
+	const includes = jobOf(doc, "test").strategy?.matrix?.include as Array<Record<string, unknown>> | undefined;
+	assert.ok(Array.isArray(includes), "windows matrix entries must be present");
+	assert.ok(
+		includes.some((e) => e.os === "windows-latest" && e["node-version"] === "lts/*"),
+		"windows-latest must run on lts/*",
+	);
+	assert.ok(
+		includes.some((e) => e.os === "windows-latest" && e["node-version"] === "current"),
+		"windows-latest must run on current",
+	);
+
+	assert.equal(doc.jobs?.["test-local"], undefined, "self-hosted fallback runner job must not remain");
+	for (const file of fs.readdirSync(WORKFLOWS).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))) {
+		const wf = loadWorkflow(file);
+		for (const [jobName, job] of Object.entries(wf.jobs ?? {})) {
+			const runner = JSON.stringify(job["runs-on"] ?? "");
+			assert.equal(runner.includes("self-hosted"), false, `${file} job ${jobName} must use GitHub-hosted runners only`);
+		}
+	}
 });
 
 test("ci.yml classifies changed paths into the gates it promises", { skip: SKIP_NO_YAML ?? SKIP_NO_SHELL ?? SKIP_NO_GIT }, () => {
